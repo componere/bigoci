@@ -4,7 +4,6 @@
 
 # Agent/runtime state
 .agents/
-.claude/
 .journal/
 .wt/
 
