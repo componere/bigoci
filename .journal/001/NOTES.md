@@ -20,3 +20,8 @@ Next: open a PR when the developer wants to integrate (squash merge; PR title = 
 
 ## 2026-08-05 23:11 — PR merged and cleaned up
 Done: opened PR #7 and squash-merged it (merge commit 16938b6). Fast-forwarded local master to origin/master; `wt remove` cleaned up the `docs/agents-go-best-practices` worktree and branch. The Go Best Practices rules (cited as A1/D4/etc.) are now live in AGENTS.md on master.
+
+## 2026-08-05 23:15 — New goal: initial design document
+Goal: produce the initial design document for `bigoci` — a surgical Go library with one purpose: efficiently upload/download large files (>5GB, up to tens of GB) to/from OCI registries. No other use cases, ever.
+Open questions to research first: (1) build on an existing OCI SDK (oras-go v2, go-containerregistry, regclient) vs narrow from-scratch implementation over the distribution spec; (2) auth strategy — reuse existing ecosystem (docker config, credential helpers, cloud-provider helpers) vs custom.
+Next: research the current library landscape and registry protocol realities (chunked upload support, Range GET, S3 redirects), then deliver an assessment.
