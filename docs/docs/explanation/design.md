@@ -274,8 +274,11 @@ type Source interface {
     Size() int64
 }
 
+// Sink also reads: resume hashes the existing partial file's part ranges.
 type Sink interface {
+    io.ReaderAt
     io.WriterAt
+    Size() (int64, error)
     Truncate(size int64) error
     Commit() error // atomic rename onto the destination
 }
