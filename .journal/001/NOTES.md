@@ -17,3 +17,6 @@ Plan: create implementation worktree `docs/agents-go-best-practices` from origin
 ## 2026-08-05 22:32 — Template commit ported
 Done: created worktree/branch `docs/agents-go-best-practices` from origin/master; applied AGENTS.md and .gitignore hunks straight from template commit 2dc7b01 via `git show -- | git apply`; replaced the tracked `.claude -> .agents` symlink with a real `.claude/` dir containing `skills -> ../.agents/skills` to match the template. Verified AGENTS.md byte-identical to template and symlink target identical. Committed as 4ced85a and pushed; `git ls-files .journal` clean on the branch.
 Next: open a PR when the developer wants to integrate (squash merge; PR title = commit subject).
+
+## 2026-08-05 23:11 — PR merged and cleaned up
+Done: opened PR #7 and squash-merged it (merge commit 16938b6). Fast-forwarded local master to origin/master; `wt remove` cleaned up the `docs/agents-go-best-practices` worktree and branch. The Go Best Practices rules (cited as A1/D4/etc.) are now live in AGENTS.md on master.
