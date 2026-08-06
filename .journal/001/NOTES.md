@@ -25,3 +25,14 @@ Done: opened PR #7 and squash-merged it (merge commit 16938b6). Fast-forwarded l
 Goal: produce the initial design document for `bigoci` — a surgical Go library with one purpose: efficiently upload/download large files (>5GB, up to tens of GB) to/from OCI registries. No other use cases, ever.
 Open questions to research first: (1) build on an existing OCI SDK (oras-go v2, go-containerregistry, regclient) vs narrow from-scratch implementation over the distribution spec; (2) auth strategy — reuse existing ecosystem (docker config, credential helpers, cloud-provider helpers) vs custom.
 Next: research the current library landscape and registry protocol realities (chunked upload support, Range GET, S3 redirects), then deliver an assessment.
+
+## 2026-08-05 23:24 — Research findings: SDK and auth landscape
+Protocol facts that shape the design:
+- OCI chunked upload is strictly sequential (out-of-order chunk => 416), so a single blob can never be pushed in parallel. Parallel upload requires splitting a file into multiple blobs — a manifest/format decision, not transport.
+- Distribution spec v1.1 added resumable push (GET on session returns received range) and blob Range GET is in conformance tests; cloud registries redirect blob GETs to presigned object-storage URLs (S3/GCS/Azure) that support parallel Range reads well. Parallel pull of one blob is very feasible.
+- Registry chunked-push support is inconsistent (GHCR historically broken for >1 chunk; monolithic streaming PUT is the universal path). Layer size limits vary: GHCR 10GB, ECR ~50GiB, ACR 200GiB.
+Library facts:
+- oras-go v2: monolithic push only; chunked push (issue #338) open since 2022, milestone "Future". Clean auth: registry/remote/auth + credentials (docker config, native stores, helpers).
+- go-containerregistry: active (releases mid-2026), image-centric model; authn keychain is the de-facto auth standard with in-process cloud helper adapters (ECR/ACR/GCR) and reusable token-dance transport RoundTripper.
+- regclient: closest in spirit (blob-level API, monolithic-with-chunked-fallback, retries, progress callbacks) but v0 API, effectively single-maintainer, no parallel range pull.
+Assessment direction: own the transport (narrow distribution-spec v1.1 implementation — the value of bigoci lives exactly in the transport layer none of the SDKs deliver, per L1); reuse auth behind a small port, default adapter wrapping ggcr authn keychain + transport (oras-go v2 credentials is the lighter alternative).
