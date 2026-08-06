@@ -37,6 +37,8 @@ nav:
   - Home: index.md
   - Explanation:
       - Design: explanation/design.md
+  - Reference:
+      - Format: reference/format.md
 
 plugins:
   - search
