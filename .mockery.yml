@@ -1,0 +1,47 @@
+# mockery: mock generation for the transfer ports (AGENTS.md T2/T3).
+#
+# Every mock in this repository is generated; none is hand-written. The ports
+# live in internal/transfer, but the mocks live under the adapter that
+# implements each one, in a `mocks` subpackage, so a test importing
+# internal/oci/mocks gets the registry doubles and one importing
+# internal/file/mocks gets the file doubles.
+#
+# Regenerate with `mise x -- mockery` (or `moon run root:mocks`) after
+# changing internal/transfer/ports.go, and commit the result.
+
+# Only the interfaces listed below are mocked; nothing is generated wholesale.
+all: false
+
+# The testify template emits testify/mock-based doubles, matching the
+# assertion library the tests already use.
+template: testify
+
+# Generated files are real source, not test-only files: they are imported
+# across package boundaries by the tests of other packages.
+formatter: goimports
+force-file-write: true
+pkgname: mocks
+structname: '{{.Mock}}{{.InterfaceName}}'
+
+packages:
+  github.com/componere/bigoci/internal/transfer:
+    interfaces:
+      # Registry ports: implemented by internal/oci, the net/http
+      # distribution client.
+      Blobs:
+        config:
+          dir: internal/oci/mocks
+          filename: blobs.go
+      Manifests:
+        config:
+          dir: internal/oci/mocks
+          filename: manifests.go
+      # File ports: implemented by internal/file, the OS filesystem adapter.
+      Source:
+        config:
+          dir: internal/file/mocks
+          filename: source.go
+      Sink:
+        config:
+          dir: internal/file/mocks
+          filename: sink.go

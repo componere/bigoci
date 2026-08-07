@@ -62,11 +62,25 @@ tasks:
       cache: false
 
   test:
-    command: 'go test ./...'
+    # -race is load bearing: the adapters promise concurrent-safe ReadAt and
+    # WriteAt over shared file handles, and only the race detector proves it.
+    command: 'go test -race ./...'
     inputs:
       - '@group(goSources)'
     options:
       cache: false
+
+  # Regenerates every mock from the ports in internal/transfer (AGENTS.md
+  # T2/T3). Mocks are committed, so this is a hand-run task: it writes source
+  # files, which is not something CI should do behind a contributor's back.
+  mocks:
+    command: 'mockery'
+    inputs:
+      - '.mockery.yml'
+      - '@group(goSources)'
+    options:
+      cache: false
+      runInCI: false
 
   check:
     deps:
