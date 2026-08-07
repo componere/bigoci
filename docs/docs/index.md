@@ -1,16 +1,18 @@
 ---
-title: template-go Docs
+title: bigoci
 slug: /
-description: Starting point for Meigma Go projects.
+description: Go library for uploading and downloading large files to and from OCI registries.
 ---
 
-# template-go Docs
+# bigoci
 
-This repository is the starting point for Meigma Go projects.
+bigoci is a Go library that uploads and downloads large files to and from OCI
+registries. Large means 5 GB and up, into the tens of GB. That is the whole
+library.
 
-Generated projects should replace this page with project-specific documentation after bootstrapping:
+The project is in the design phase; the library is not yet implemented.
 
-- project summary
-- quick start
-- operating notes
-- support and security paths
+- [Design](explanation/design.md) — why bigoci works the way it does: the
+  split-part format, the transport, and the architecture.
+- [Format](reference/format.md) — the artifact format contract for
+  implementers.
