@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "MkDocs documentation site for bigoci."
 requires-python = ">=3.14"
 dependencies = [
-    "mkdocs-material>=9.7.0",
+    "mkdocs-material>=9.7.7",
 ]
 
 [tool.uv]
