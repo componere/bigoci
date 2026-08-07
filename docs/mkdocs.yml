@@ -1,8 +1,8 @@
-site_name: template-go
-site_description: Meigma Go repository template
-site_url: https://meigma.github.io/template-go/
-repo_name: meigma/template-go
-repo_url: https://github.com/meigma/template-go
+site_name: bigoci
+site_description: Go library for uploading and downloading large files to and from OCI registries
+site_url: https://componere.github.io/bigoci/
+repo_name: componere/bigoci
+repo_url: https://github.com/componere/bigoci
 edit_uri: edit/master/docs/docs/
 docs_dir: docs
 site_dir: build
