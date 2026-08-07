@@ -40,3 +40,20 @@ manual-verification vehicle since the library ships no CLI; AGENTS.md rule
 compliance (hexagonal, mockery-only mocks, godoc/doc.go, D6 docs-with-PR)
 is restated as a per-phase ground rule. Awaiting user review of the plan
 before starting phase 1.
+
+## 2026-08-07 14:30 — Plan revised: reference CLI replaces dev driver
+User feedback on the plan: instead of a throwaway `internal/dev` driver,
+build a proper **reference CLI** — reference meaning never published, no
+production intent, exists purely to demonstrate push/pull. It lives in its
+own Go module (`cli/`, `replace` directive at the core) so CLI dependencies
+never enter the core module's graph, and gets its own phase before it is
+needed.
+
+PLAN.md rewritten accordingly: new Phase 2 "Reference CLI" inserted after
+the walking skeleton (the CLI needs the public API, so it cannot precede
+phase 1); phases renumbered to 7 total. Phase 1's manual proofs are
+deliberately deferred into phase 2's gate since the CLI is the instrument
+that exercises them — this is the plan's one sequencing exception. The CLI
+carries a `--debug` request-logging mode because later manual gates (HEAD
+skips in phase 4, the no-auth-header-leak check in phase 5) depend on that
+observability.

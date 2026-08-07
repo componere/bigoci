@@ -20,10 +20,11 @@ Ground rules for every phase:
   met, including the manual checks. Passing CI is necessary, never sufficient
   ("a feature is done when it works against a real registry").
 - **Manual-verification vehicle:** the library ships no CLI (non-goal), so
-  phase 1 adds a tiny throwaway driver at `internal/dev/` (`go run`-able
-  push/pull wrapper, excluded from the public surface, no API promises). All
-  manual checks below use it plus generic tools (`curl`, `oras`, `sha256sum`,
-  `docker`).
+  phase 2 builds a **reference CLI** in its own Go module (no CLI dependencies
+  in the core; never published, no production intent). All manual checks in
+  later phases use it plus generic tools (`curl`, `oras`, `sha256sum`,
+  `docker`). Phase 1's manual proofs are deliberately deferred into phase 2's
+  gate, since the CLI is the vehicle that exercises them.
 
 ---
 
@@ -45,8 +46,8 @@ else is built on them.
    mocks.
 3. `feat(api): transfer orchestrator and public Push/Pull API` —
    `internal/transfer` (workers, no retry logic yet), root `Client` /
-   `New` / `FromFile` / `ToFile` / options, `internal/dev` driver,
-   zot testcontainers e2e for happy-path push + pull.
+   `New` / `FromFile` / `ToFile` / options, zot testcontainers e2e for
+   happy-path push + pull.
 
 **Tasks:**
 
@@ -70,28 +71,75 @@ else is built on them.
 
 **Success criteria:**
 
-- [ ] Manual: `go run ./internal/dev push` a ~100 MiB file to a locally
-      running zot; `curl` the manifest and confirm by eye it matches
-      `format.md` (artifactType, empty config, ordered part layers,
-      all four annotations, sizes sum to file size).
-- [ ] Manual: pull the artifact back into a different directory with the dev
-      driver; `sha256sum` of pulled file equals the original **and** equals
-      the `io.bigoci.file.digest` annotation.
-- [ ] Manual: push the same file twice; second push visibly skips every part
-      (dev driver logs/timing show HEAD-hits, near-instant completion), and
-      the manifest digest is identical both times (determinism observed, not
-      just unit-tested).
-- [ ] Manual: a file smaller than the part size produces a single part whose
-      digest equals the file digest (verify with `sha256sum` against the
-      layer descriptor).
 - [ ] Automated gates: unit tests for plan/manifest; integration tests of the
       orchestrator against mockery mocks; zot e2e green in CI.
 - [ ] Structure audit: every package has `doc.go` + full godoc; mocks are
       generated only; no file over 1,000 lines; core packages import no I/O.
+- [ ] Manual functional proof of the skeleton is deferred to phase 2, which
+      exists to make it possible; phase 1 is not considered *proven* until
+      phase 2's manual criteria pass.
 
 ---
 
-## Phase 2 — Retries: transient failure never reaches the caller
+## Phase 2 — Reference CLI: the manual-verification vehicle
+
+**Goal:** a small reference CLI that demonstrates push and pull, in its own
+Go module so no CLI dependency ever touches the core library's module graph.
+"Reference" means: never published, never released, no production intent —
+it exists to demonstrate the library and to make every later phase's manual
+verification real. Landing it now, immediately after the skeleton, means
+every subsequent phase has its vehicle before it needs it.
+
+**PRs:**
+
+1. `feat(cli): reference CLI for push and pull` — `cli/` directory with its
+   own `go.mod` (module `github.com/componere/bigoci/cli`), `replace`
+   directive pointing at the core module in the repo root; `bigoci push
+   <file> <ref>` and `bigoci pull <ref> <dest>`; flags for part size, worker
+   count, and plain-HTTP (local registries); progress/log output verbose
+   enough to observe HEAD skips, retries (later), and request headers
+   (needed by phase 5's no-auth-leak check).
+2. `ci: build and test the cli module` — moon/CI wiring so the CLI module
+   compiles and its (thin) tests run per commit; explicitly excluded from
+   release-please and any publishing path.
+
+**Tasks:**
+
+- Module isolation: core `go.mod` stays free of cobra/CLI deps; the CLI
+  module requires the core via `replace`; verify with `go mod graph` that
+  nothing flows backward.
+- Command surface: push, pull, and a `--debug` mode that logs each HTTP
+  request (method, URL, selected headers) — this observability is what makes
+  later manual gates checkable.
+- Keep it thin: flags map 1:1 onto public API options. If the CLI needs
+  something the API cannot express, that is API feedback, not cause for CLI
+  logic (A3 pressure valve).
+- README in `cli/` stating its reference-only status.
+- Run phase 1's deferred manual proofs (below).
+
+**Success criteria** (these double as phase 1's manual proof):
+
+- [ ] Manual: `bigoci push` a ~100 MiB file to a locally running zot;
+      `curl` the manifest and confirm by eye it matches `format.md`
+      (artifactType, empty config, ordered part layers, all four
+      annotations, sizes sum to file size).
+- [ ] Manual: pull the artifact back into a different directory;
+      `sha256sum` of pulled file equals the original **and** equals the
+      `io.bigoci.file.digest` annotation.
+- [ ] Manual: push the same file twice; second push visibly skips every part
+      (debug output shows HEAD-hits, near-instant completion), and the
+      manifest digest is identical both times (determinism observed, not
+      just unit-tested).
+- [ ] Manual: a file smaller than the part size produces a single part whose
+      digest equals the file digest (verify with `sha256sum` against the
+      layer descriptor).
+- [ ] Structure audit: `go mod graph` on the core module shows zero
+      CLI-originated dependencies; CLI module builds and runs from a clean
+      checkout; nothing publishes it.
+
+---
+
+## Phase 3 — Retries: transient failure never reaches the caller
 
 **Goal:** the full retry policy from the design's Defaults table — 4 attempts,
 exponential backoff (1 s base, 30 s cap, full jitter), `Retry-After` honored,
@@ -120,20 +168,19 @@ retry on network errors/429/5xx, fail fast on other 4xx — applied per part.
 **Success criteria:**
 
 - [ ] Manual: run a push through a toxiproxy with periodic connection resets;
-      watch the dev driver ride through failures and finish; pulled file still
+      watch the CLI ride through failures and finish; pulled file still
       byte-identical.
 - [ ] Manual: restart the zot container mid-push; the in-flight attempt fails,
       retries recover once the registry is back (within backoff budget), and
       the artifact completes intact.
-- [ ] Manual: point the dev driver at a dead port; observe fail-fast with a
-      clear terminal error after the bounded attempts — no hang, no infinite
-      retry.
+- [ ] Manual: point the CLI at a dead port; observe fail-fast with a clear
+      terminal error after the bounded attempts — no hang, no infinite retry.
 - [ ] Automated gates: table-driven unit tests for the backoff/decision
       matrix; failure-injection integration suite; flaky-network e2e green.
 
 ---
 
-## Phase 3 — Resume: interrupted transfers cost only the missing parts
+## Phase 4 — Resume: interrupted transfers cost only the missing parts
 
 **Goal:** a killed push or pull, re-run, transfers only what is missing.
 Push resume via `HEAD` skip (already present) re-validated under kill; pull
@@ -163,9 +210,9 @@ when not.
 
 **Success criteria:**
 
-- [ ] Manual: Ctrl-C a large push at ~50%; re-run; dev driver shows completed
-      parts skipped via HEAD and only the remainder uploads; final artifact
-      pulls back byte-identical.
+- [ ] Manual: Ctrl-C a large push at ~50%; re-run; debug output shows
+      completed parts skipped via HEAD and only the remainder uploads; final
+      artifact pulls back byte-identical.
 - [ ] Manual: Ctrl-C a large pull at ~50%; confirm `<dest>.bigoci-partial`
       exists and `<dest>` does **not**; re-run; observe only unfinished parts
       fetched; `<dest>` appears only at the end, correct by `sha256sum`.
@@ -176,7 +223,7 @@ when not.
 
 ---
 
-## Phase 4 — Auth and real registries: leave the lab
+## Phase 5 — Auth and real registries: leave the lab
 
 **Goal:** authenticated push/pull via the Docker credential ecosystem, plus
 the transport work real registries force: presigned-redirect handling. After
@@ -209,22 +256,22 @@ this phase bigoci works against GHCR with `docker login`, not just local zot.
 **Success criteria:**
 
 - [ ] Manual: `docker login ghcr.io`, then push a multi-part file to a
-      private GHCR repo with the dev driver and pull it back byte-identical —
+      private GHCR repo with the CLI and pull it back byte-identical —
       credentials read from Docker config, zero bigoci-side config.
 - [ ] Manual: pull from GHCR (which redirects blob GETs to object storage)
       succeeds — proving the clean-client redirect re-issue works against a
       real presigned URL, and no `Authorization` header leaks (verify via
-      debug logging of request headers).
+      the CLI's `--debug` request-header logging).
 - [ ] Manual: with no/bad credentials, the unauthorized sentinel error
-      surfaces with an actionable message (`errors.Is` demonstrable in the
-      dev driver).
+      surfaces with an actionable message (`errors.Is` demonstrable via the
+      CLI's exit path).
 - [ ] Manual: tagless (digest-only) push + pull round-trip against GHCR.
 - [ ] Automated gates: auth adapter integration tests; auth-enabled e2e in
       CI; conformance workflow runs green when triggered by hand.
 
 ---
 
-## Phase 5 — Measurement: benchmark harness sets the real defaults
+## Phase 6 — Measurement: benchmark harness sets the real defaults
 
 **Goal:** the benchmark harness from the design's Testing section, then
 evidence-based final defaults (part size, worker count) before v1, and data
@@ -262,7 +309,7 @@ for the design's one open question (adaptive worker count).
 
 ---
 
-## Phase 6 — Finishing touches: API polish, docs, v0.1.0
+## Phase 7 — Finishing touches: API polish, docs, v0.1.0
 
 **Goal:** everything a first real user touches: progress reporting, the full
 sentinel-error contract, documentation per Diátaxis, and the first release.
@@ -271,11 +318,12 @@ sentinel-error contract, documentation per Diátaxis, and the first release.
 
 1. `feat(api): progress reporting option` — callback-based progress
    (bytes/parts, push and pull), wired through the orchestrator's existing
-   progress accounting.
+   progress accounting; the reference CLI adopts it for its own output.
 2. `docs: user documentation set` — tutorial (first push/pull), how-to guides
    (auth, resume, tuning part size/workers), reference (API surface, errors;
    format.md already exists), explanation (design.md already exists). Plain
-   Language style (D5).
+   Language style (D5). The reference CLI may appear in docs as a
+   demonstration, clearly labeled as unsupported reference material.
 3. `chore: v0.1.0 release` — API surface review (thin exported set, A3),
    godoc/example pass on the public boundary (D2), then merge the
    release-please PR once it reads `0.1.0`.
@@ -298,7 +346,7 @@ sentinel-error contract, documentation per Diátaxis, and the first release.
 - [ ] Manual: follow the tutorial verbatim on a clean machine/checkout (fresh
       clone, no repo context) and reach a successful push + pull against a
       registry — the doc, not tribal knowledge, is sufficient.
-- [ ] Manual: progress output observed live in the dev driver during a real
+- [ ] Manual: progress output observed live in the CLI during a real
       multi-part transfer, including sane behavior across an induced retry
       and a resume.
 - [ ] Manual: docs site at componere.github.io/bigoci renders correctly
@@ -315,11 +363,15 @@ sentinel-error contract, documentation per Diátaxis, and the first release.
 
 - Phases are strictly ordered; each depends on the previous one's proven
   behavior. No phase starts before the prior phase's success criteria are
-  checked off (recorded in this file / NOTES.md as they complete).
+  checked off (recorded in this file / NOTES.md as they complete). The one
+  deliberate exception: phase 1's manual proof lives in phase 2's gate,
+  because the reference CLI is the instrument that makes it checkable.
 - Within a phase, PRs land in the listed order; each PR keeps CI green and
   respects D6 (docs travel with behavior).
-- The dev driver (`internal/dev`) is scaffolding, not product. It exists so
-  every phase has a manual-verification vehicle; it must never grow into an
-  unplanned CLI or leak into the public API.
-- Registry-behavior discoveries made during any phase (esp. 4) get recorded
+- The reference CLI (`cli/`, own Go module) is demonstration and
+  verification tooling, not product: never published or released, no
+  backward-compatibility promises, and no CLI dependency may enter the core
+  module's graph. If the CLI needs capability the public API lacks, extend
+  the API (or record why not) — never work around it inside the CLI.
+- Registry-behavior discoveries made during any phase (esp. 5) get recorded
   in NOTES.md and promoted to TECH_NOTES.md at session close.
