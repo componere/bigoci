@@ -57,3 +57,29 @@ that exercises them — this is the plan's one sequencing exception. The CLI
 carries a `--debug` request-logging mode because later manual gates (HEAD
 skips in phase 4, the no-auth-header-leak check in phase 5) depend on that
 observability.
+
+## 2026-08-07 14:40 — Phase 1 kickoff (PR 1 of 3)
+Plan approved by user. Starting PR 1: `feat(core): split planner and
+manifest codec`. Repo recon done: Go 1.26.4 (mise-pinned, GOTOOLCHAIN=local),
+moon tasks format/lint/build/test/check, strict golangci config (notable:
+mnd, funlen, cyclop≤30, dupl, gochecknoglobals, godoclint, godot; depguard
+only denies deprecated pkgs; tests get relaxed rules). go.mod has zero deps.
+
+Working pattern per user: implementation legwork by Opus/Sonnet workflow
+agents (never Fable-inherited), with my own line-by-line review before
+anything is committed — agents' understanding of AGENTS.md rules is not
+trusted, it is verified.
+
+Key PR-1 design calls (mine, to be enforced in review):
+- deps: opencontainers/image-spec (manifest struct, DescriptorEmptyJSON),
+  opencontainers/go-digest, stretchr/testify. All mature/canonical (L1).
+  Pre-added to go.mod by me before agents run so parallel agents never race
+  on go.mod.
+- internal/manifest imports internal/plan for decode-side split-rule
+  validation: the format's split rule *is* the planner, one source of truth.
+- canonical encoding = compact json.Marshal of the image-spec struct
+  (fixed field order, sorted annotation keys) → determinism; decode accepts
+  any valid JSON formatting. Round-trip byte-stability test required.
+- empty file = one zero-length part (format math holds: part 0 covers
+  [0,0)); document it.
+Worktree: `feat/core-plan-manifest` off fetched master.
