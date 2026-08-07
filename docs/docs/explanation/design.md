@@ -145,6 +145,13 @@ References are parsed with
 the canonical implementation of the `registry/repo[:tag][@digest]` grammar.
 Parsing is fiddly and interop-critical, and not where bigoci adds value.
 
+A reference may be tagless. Push accepts a digest-only reference and writes
+the manifest by digest, so an artifact can exist untagged; pull accepts one
+and verifies against it. This lets callers compose bigoci artifacts into
+larger structures — a standard OCI image index that references several
+artifacts under one tag, for example — without bigoci knowing about the
+composition.
+
 ## Decision: reuse the auth ecosystem behind a port
 
 Authentication is where from-scratch would be waste. The interop point that

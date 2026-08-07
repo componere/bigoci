@@ -91,6 +91,15 @@ A 732.5 MiB file pushed at the default 512 MiB part size:
 }
 ```
 
+## Determinism
+
+The manifest is a pure function of the file bytes, the part size, and the
+file name. It contains no timestamps and no other nondeterministic fields,
+and writers must encode it identically on every run. Re-pushing the same
+file at the same part size therefore reproduces the same manifest digest.
+Anything bound to that digest — signatures, SBOM attachments, referrers, or
+an index that references the manifest — stays valid across re-pushes.
+
 ## Versioning
 
 The `.v1` suffix in the media types is the format version. A breaking format
