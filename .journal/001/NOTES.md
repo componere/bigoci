@@ -72,3 +72,6 @@ Merged #1 (checkout 7.0.1) and #6 (mkdocs-material 9.7.7); closed #2/#3/#5 (setu
 
 ## 2026-08-07 13:20 — Security alerts fixed; dependabot sweep complete except #4
 GitHub flagged 2 vulns (pymdown-extensions in docs/uv.lock: high ReDoS + medium path traversal, both fixed in 11.0.1). Fixed via PR #10 (uv lock --upgrade-package pymdown-extensions, 10.21.3 -> 11.0.1, strict docs build verified), merged after CI green. Alerts should auto-resolve on Dependabot's next default-branch scan. Final sweep tally: #1 checkout + #6 mkdocs-material + #10 pymdown merged; #2/#3/#5 closed (deleted workflows); #4 mise-action still open awaiting user's `gh auth refresh -s workflow` so the token can merge workflow-file changes.
+
+## 2026-08-07 13:35 — Sweep fully complete
+User refreshed gh token with workflow scope; PR #4 (mise-action 4.2.4) merged. Open PRs: 0. Open Dependabot alerts: 0 (pymdown fix rescanned). master at ea54e75. Repo is fully bootstrapped: design docs published, template converted, settings applied, dependencies current. Next natural step: the design doc's first slice (walking skeleton) in a new session.
