@@ -6,12 +6,11 @@
   "force-tag-creation": true,
   "draft": true,
   "bump-minor-pre-major": true,
-  "bump-patch-for-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
   "packages": {
     ".": {
       "package-name": "bigoci",
-      "changelog-path": "CHANGELOG.md",
-      "release-as": "0.1.0"
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "changelog-sections": [
