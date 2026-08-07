@@ -83,3 +83,30 @@ Key PR-1 design calls (mine, to be enforced in review):
 - empty file = one zero-length part (format math holds: part 0 covers
   [0,0)); document it.
 Worktree: `feat/core-plan-manifest` off fetched master.
+
+## 2026-08-07 15:19 — PR 1 merged (#15, master 7c40d85)
+Workflow ran 2 Opus implementers + Opus stabilizer + 3-lens review panel
+(contract/rules/tests). Tree was green as delivered; the panel + my own
+line-by-line review surfaced real defects I then fixed myself:
+- HIGH (confirmed via `go list -deps`): internal/manifest never linked
+  crypto/sha256, so go-digest Validate() would reject EVERY valid manifest
+  in a binary that does not link the hash some other way. Tests
+  structurally cannot catch it (testing framework links sha256). Fix:
+  blank import in non-test code. **This trap recurs for any future package
+  that validates digests (internal/oci, internal/transfer) — remember it.**
+- json.Marshal HTML-escapes &<> → canonical encoding now uses
+  SetEscapeHTML(false); format.md Determinism section now specifies the
+  cross-implementation canonical encoding; golden test pins an escapable
+  title.
+- Non-UTF-8 titles rejected (were silently corrupted by the encoder).
+- Part digests pinned to sha256 like the file digest (format.md updated).
+- Config `data` member verified against the config digest when present.
+- Absent body mediaType accepted (image-spec: member is optional).
+- I1: plan.PartSize domain type; transposition now a compile error.
+- Split rule single-gated through plan.New; too-many-parts wraps
+  plan.ErrTooManyParts consistently on encode and decode.
+- plan.New guard order fixed + misnamed test case now asserts messages.
+Coverage: plan 100%, manifest ~98%. Local quirk (stabilizer): `mise x --
+moon run` collides with proto's go on GOROOT; use `mise x -- env -u GOROOT
+moon run ...` or run the go/golangci commands directly.
+Next: PR 2 (ports + oci/file adapters + mockery).
