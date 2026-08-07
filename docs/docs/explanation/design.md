@@ -264,10 +264,11 @@ type Blobs interface {
     Put(ctx context.Context, dgst Digest, size int64, r io.Reader) error
 }
 
-// Manifests is the distribution-spec manifest surface of one repository.
+// Manifests is the distribution-spec manifest surface of one repository,
+// bound at construction to one reference (a tag or a digest).
 type Manifests interface {
-    Get(ctx context.Context, ref Reference) ([]byte, Descriptor, error)
-    Put(ctx context.Context, ref Reference, mediaType string, body []byte) (Digest, error)
+    Get(ctx context.Context) ([]byte, Descriptor, error)
+    Put(ctx context.Context, mediaType string, body []byte) (Digest, error)
 }
 
 // Auth returns a RoundTripper that authenticates requests to one registry scope.
@@ -290,6 +291,12 @@ type Sink interface {
     Commit() error // atomic rename onto the destination
 }
 ```
+
+`Manifests` carries no reference parameter because the adapter is bound to
+one reference when it is built. A transfer touches exactly one manifest, and
+binding it at construction keeps reference grammar out of the core: nothing
+behind the ports parses, validates, or renders
+`registry/repository:tag@digest`.
 
 **Adapters, one purpose each:** the `net/http` distribution client
 (implements `Blobs` and `Manifests`), the oras-go credentials wrapper
