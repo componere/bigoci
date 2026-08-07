@@ -9,9 +9,8 @@
   "bump-patch-for-minor-pre-major": true,
   "packages": {
     ".": {
-      "package-name": "template-go",
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": ["melange.yaml", "apko.yaml"]
+      "package-name": "bigoci",
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "changelog-sections": [
