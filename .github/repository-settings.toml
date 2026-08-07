@@ -82,7 +82,12 @@ contexts = [
 [rulesets.tags_default]
 name = "Default tags"
 enforcement = "active"
-restrict_creations = true
+# Creation stays open: only write-access actors (the maintainer and GitHub
+# Actions, which release-please uses to create v* tags) can create tags, and
+# the GitHub Actions integration cannot be a ruleset bypass actor via the
+# API ("must be part of the ruleset source or owner organization"). Tags are
+# immutable once created via the update/deletion/force-push restrictions.
+restrict_creations = false
 restrict_updates = true
 update_allows_fetch_and_merge = false
 restrict_deletions = true
@@ -92,9 +97,6 @@ block_force_pushes = true
 
 bypass = [
   { type = "repository_admin_role", mode = "always" },
-  # Release Please (running on GITHUB_TOKEN) needs tag-creation bypass because
-  # tags are protected here.
-  { type = "app", slug = "github-actions", mode = "always" },
 ]
 
 [rulesets.tags_default.status_checks]

@@ -1,7 +1,7 @@
 # Runs on the default GITHUB_TOKEN. Release PRs created by the token do not
-# trigger other workflows' CI; the protected-tag ruleset needs a bypass for
-# the github-actions app because this workflow creates protected v* tags
-# after the release PR is merged.
+# trigger other workflows' CI. The tag ruleset leaves creation open (write
+# access required) so this workflow can create v* tags; tags are immutable
+# once created.
 
 name: Release Please
 
