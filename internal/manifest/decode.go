@@ -1,12 +1,15 @@
 package manifest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
 
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/componere/bigoci/internal/plan"
 )
 
 // Decode parses manifest JSON and returns the artifact it describes.
@@ -15,17 +18,21 @@ import (
 // unmarshals into an OCI image manifest is accepted, whatever its whitespace
 // or member order, so a manifest fetched from a registry decodes even though
 // it was not encoded by [Encode]. Members bigoci does not use — a subject, a
-// config "data" member, annotations outside the format — are ignored, so a
-// future format revision that adds fields stays readable.
+// config "data" member that matches the config digest, annotations outside
+// the format — are ignored, and an absent body mediaType is tolerated because
+// the image spec makes the embedded member optional.
 //
 // What Decode does not accept is content that breaks the contract. A manifest
-// whose media type is not an OCI image manifest, or whose artifactType is not
-// [ArtifactType], fails with an error wrapping [ErrNotBigociArtifact]: it
-// describes something that is not a bigoci artifact. Everything else — a
-// schema version other than 2, a config that is not the OCI empty descriptor,
-// a layer with the wrong media type, a missing or unparseable annotation, or
-// parts that disagree with the split rule — fails with a descriptive error
-// against an artifact that claims to be bigoci but is broken.
+// whose media type names something other than an OCI image manifest, or whose
+// artifactType is not [ArtifactType], fails with an error wrapping
+// [ErrNotBigociArtifact]: it describes something that is not a bigoci
+// artifact. Everything else — a schema version other than 2, a config that is
+// not the OCI empty descriptor, config data that contradicts the config
+// digest, a layer with the wrong media type, a missing or unparseable
+// annotation, or parts that disagree with the split rule (wrapping the plan
+// package's errors, including [plan.ErrTooManyParts]) — fails with a
+// descriptive error against an artifact that claims to be bigoci but is
+// broken.
 func Decode(data []byte) (Artifact, error) {
 	var manifest ocispec.Manifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
@@ -63,8 +70,12 @@ func Decode(data []byte) (Artifact, error) {
 // artifact. Both mismatches wrap [ErrNotBigociArtifact], which is how a caller
 // tells a reference that points at some other artifact apart from a broken
 // bigoci one.
+//
+// An empty media type is accepted when the artifactType matches: the image
+// spec only recommends the embedded member, so a conforming third-party
+// writer may omit it and let the registry's Content-Type carry the type.
 func checkKind(mediaType, artifactType string) error {
-	if mediaType != ocispec.MediaTypeImageManifest {
+	if mediaType != "" && mediaType != ocispec.MediaTypeImageManifest {
 		return fmt.Errorf(
 			"%w: media type is %q, want %q", ErrNotBigociArtifact, mediaType, ocispec.MediaTypeImageManifest,
 		)
@@ -77,9 +88,10 @@ func checkKind(mediaType, artifactType string) error {
 }
 
 // checkConfig checks the config descriptor against the OCI empty descriptor.
-// Only the three members the format pins are compared: a manifest that also
-// inlines the two config bytes in a "data" member is accepted, because that
-// spelling refers to the same blob.
+// The three members the format pins must match exactly. A manifest may also
+// inline the config bytes in a "data" member; when it does, the bytes must be
+// the two the config digest addresses, because the image spec defines "data"
+// as the embedded content of that very blob.
 func checkConfig(config ocispec.Descriptor) error {
 	want := ocispec.DescriptorEmptyJSON
 
@@ -90,6 +102,8 @@ func checkConfig(config ocispec.Descriptor) error {
 		return fmt.Errorf("config digest is %q, want %q", config.Digest.String(), want.Digest.String())
 	case config.Size != want.Size:
 		return fmt.Errorf("config size is %d, want %d", config.Size, want.Size)
+	case len(config.Data) > 0 && !bytes.Equal(config.Data, want.Data):
+		return fmt.Errorf("config data is %q, want %q or no data at all", config.Data, want.Data)
 	}
 
 	return nil
@@ -129,7 +143,7 @@ func readAnnotations(annotations map[string]string) (Artifact, error) {
 	return Artifact{
 		FileDigest: digest.Digest(fileDigest),
 		FileSize:   fileSize,
-		PartSize:   partSize,
+		PartSize:   plan.PartSize(partSize),
 		Title:      annotations[ocispec.AnnotationTitle],
 		Parts:      nil,
 	}, nil

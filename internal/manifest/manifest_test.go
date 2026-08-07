@@ -5,6 +5,7 @@ import (
 	// below is a well-formed digest and reaches the algorithm check.
 	_ "crypto/sha512"
 	"fmt"
+	"strings"
 	"testing"
 
 	digest "github.com/opencontainers/go-digest"
@@ -30,10 +31,16 @@ const (
 	smallFileSize = 10
 )
 
+// escapedTitle is a file name built from every character
+// [encoding/json.Marshal] would HTML-escape. The canonical encoding must
+// carry it raw, or bigoci's manifest digests diverge from every non-Go
+// implementation of the format.
+const escapedTitle = `a&b<c>.bin`
+
 // goldenManifest is the exact encoding of the artifact in TestEncodeGolden. It
 // is written out in full so any drift in the canonical encoding — field order,
-// annotation order, whitespace — fails loudly instead of quietly changing every
-// manifest digest bigoci would ever publish.
+// annotation order, whitespace, escaping — fails loudly instead of quietly
+// changing every manifest digest bigoci would ever publish.
 const goldenManifest = `{"schemaVersion":2,` +
 	`"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
 	`"artifactType":"application/vnd.bigoci.file.v1",` +
@@ -63,6 +70,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 		{name: "file that is an exact multiple has no short tail", fileSize: exactMultipleFileSize, title: "disk.img"},
 		{name: "empty file becomes one empty part", fileSize: 0, title: "empty.bin"},
 		{name: "artifact without a title round trips", fileSize: multiPartFileSize, title: ""},
+		{name: "title with HTML-escapable characters round trips", fileSize: smallFileSize, title: escapedTitle},
 	}
 
 	for _, tt := range tests {
@@ -84,22 +92,42 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 }
 
 func TestEncodeGolden(t *testing.T) {
-	artifact := manifest.Artifact{
-		FileDigest: digest.FromString("bigoci golden file"),
-		FileSize:   multiPartFileSize,
-		PartSize:   partSize,
-		Title:      "golden.bin",
-		Parts: []manifest.Part{
-			{Digest: digest.FromString("part-0"), Size: partSize},
-			{Digest: digest.FromString("part-1"), Size: partSize},
-			{Digest: digest.FromString("part-2"), Size: shortPartSize},
+	tests := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{
+			name:  "the canonical encoding is pinned byte for byte",
+			title: "golden.bin",
+			want:  goldenManifest,
+		},
+		{
+			name:  "a title with HTML-escapable characters stays raw",
+			title: escapedTitle,
+			want:  strings.Replace(goldenManifest, "golden.bin", escapedTitle, 1),
 		},
 	}
 
-	encoded, err := manifest.Encode(artifact)
-	require.NoError(t, err)
-	//nolint:testifylint // JSONEq would accept exactly the drift this test exists to catch.
-	assert.Equal(t, goldenManifest, string(encoded))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			artifact := manifest.Artifact{
+				FileDigest: digest.FromString("bigoci golden file"),
+				FileSize:   multiPartFileSize,
+				PartSize:   partSize,
+				Title:      tt.title,
+				Parts: []manifest.Part{
+					{Digest: digest.FromString("part-0"), Size: partSize},
+					{Digest: digest.FromString("part-1"), Size: partSize},
+					{Digest: digest.FromString("part-2"), Size: shortPartSize},
+				},
+			}
+
+			encoded, err := manifest.Encode(artifact)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(encoded))
+		})
+	}
 }
 
 func TestEncodeOmitsTheEmptyConfigData(t *testing.T) {
@@ -161,6 +189,24 @@ func TestEncodeRejectsArtifactsThatBreakTheFormat(t *testing.T) {
 			name:    "unparseable file digest",
 			corrupt: func(a *manifest.Artifact) { a.FileDigest = "sha256:short" },
 			wantErr: `file digest "sha256:short"`,
+		},
+		{
+			name:    "part digest that is not sha256",
+			corrupt: func(a *manifest.Artifact) { a.Parts[0].Digest = otherAlgorithmDigest(t) },
+			wantErr: `part 0 digest algorithm is "sha512"`,
+		},
+		{
+			name:    "title that is not valid UTF-8",
+			corrupt: func(a *manifest.Artifact) { a.Title = "\xff\xfe.bin" },
+			wantErr: "not valid UTF-8",
+		},
+		{
+			name: "split that needs more parts than the format allows",
+			corrupt: func(a *manifest.Artifact) {
+				a.FileSize = 10_000_000
+				a.PartSize = 1
+			},
+			wantErr: "split of 10000000 bytes at part size 1: too many parts",
 		},
 	}
 

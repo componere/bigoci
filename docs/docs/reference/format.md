@@ -40,6 +40,9 @@ per distribution spec v1.1.
 The empty config blob must exist in the repository before the manifest is
 pushed; registries reject manifests that reference blobs they do not hold.
 
+Every digest in a v1 artifact — the layer digests and the whole-file digest —
+uses sha256.
+
 ## Annotations
 
 Manifest-level annotations:
@@ -94,11 +97,18 @@ A 732.5 MiB file pushed at the default 512 MiB part size:
 ## Determinism
 
 The manifest is a pure function of the file bytes, the part size, and the
-file name. It contains no timestamps and no other nondeterministic fields,
-and writers must encode it identically on every run. Re-pushing the same
-file at the same part size therefore reproduces the same manifest digest.
-Anything bound to that digest — signatures, SBOM attachments, referrers, or
-an index that references the manifest — stays valid across re-pushes.
+file name. It contains no timestamps and no other nondeterministic fields.
+
+Writers must produce the canonical encoding: compact JSON with no
+insignificant whitespace, members in the order the example above shows,
+annotation keys sorted lexicographically, and string values as raw UTF-8
+with no escaping beyond what JSON requires (in particular, no HTML escaping
+of `&`, `<`, or `>`). Any two conforming writers therefore produce
+byte-identical manifests — and the same manifest digest — for the same file,
+part size, and file name. Re-pushing the same file at the same part size
+reproduces the same manifest digest, so anything bound to that digest —
+signatures, SBOM attachments, referrers, or an index that references the
+manifest — stays valid across re-pushes.
 
 ## Versioning
 

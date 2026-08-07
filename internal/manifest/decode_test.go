@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/componere/bigoci/internal/manifest"
+	"github.com/componere/bigoci/internal/plan"
 )
 
 // The example artifact from the format reference: a 732.5 MiB file pushed at
@@ -90,6 +91,10 @@ func TestDecodeIgnoresWhatTheFormatDoesNotDefine(t *testing.T) {
 		{
 			name: "config that also inlines its two bytes",
 			add:  func(m map[string]any) { configOf(m)["data"] = "e30=" },
+		},
+		{
+			name: "manifest without the optional body media type",
+			add:  func(m map[string]any) { delete(m, "mediaType") },
 		},
 		{
 			name: "annotation from outside the format",
@@ -176,6 +181,11 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 			wantErr: "config size is 3, want 2",
 		},
 		{
+			name:    "config data that contradicts the config digest",
+			corrupt: func(m map[string]any) { configOf(m)["data"] = "Zm9vYmFy" },
+			wantErr: "config data is",
+		},
+		{
 			name:    "no layers",
 			corrupt: func(m map[string]any) { m["layers"] = []any{} },
 			wantErr: "no parts",
@@ -183,7 +193,15 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 		{
 			name:    "more layers than the format allows",
 			corrupt: overLimitLayers,
-			wantErr: "artifact has 4097 parts, more than the maximum of 4096",
+			wantErr: "too many parts",
+		},
+		{
+			name: "file size that needs more parts than the format allows",
+			corrupt: func(m map[string]any) {
+				annotationsOf(m)[manifest.AnnotationFileSize] = "10000000"
+				annotationsOf(m)[manifest.AnnotationPartSize] = "1"
+			},
+			wantErr: "split of 10000000 bytes at part size 1: too many parts",
 		},
 		{
 			name:    "layer that is a tar layer",
@@ -283,6 +301,22 @@ func TestDecodeRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestTooManyPartsWrapsThePlanSentinel(t *testing.T) {
+	artifact := fixtureArtifact(t, multiPartFileSize, "model.bin")
+	artifact.FileSize = 10_000_000
+	artifact.PartSize = 1
+
+	_, err := manifest.Encode(artifact)
+	require.ErrorIs(t, err, plan.ErrTooManyParts, "encode must surface the plan sentinel")
+
+	data := manifestJSON(t, func(m map[string]any) {
+		annotationsOf(m)[manifest.AnnotationFileSize] = "10000000"
+		annotationsOf(m)[manifest.AnnotationPartSize] = "1"
+	})
+	_, err = manifest.Decode(data)
+	require.ErrorIs(t, err, plan.ErrTooManyParts, "decode must surface the plan sentinel")
+}
+
 // manifestJSON encodes a valid manifest after change has had its way with it,
 // so a test can break exactly one thing about an otherwise correct document.
 func manifestJSON(t *testing.T, change func(m map[string]any)) []byte {
@@ -326,7 +360,7 @@ func validManifest(t *testing.T) map[string]any {
 		"annotations": map[string]any{
 			manifest.AnnotationFileDigest: artifact.FileDigest.String(),
 			manifest.AnnotationFileSize:   strconv.FormatInt(artifact.FileSize, 10),
-			manifest.AnnotationPartSize:   strconv.FormatInt(artifact.PartSize, 10),
+			manifest.AnnotationPartSize:   strconv.FormatInt(int64(artifact.PartSize), 10),
 			ocispec.AnnotationTitle:       artifact.Title,
 		},
 	}

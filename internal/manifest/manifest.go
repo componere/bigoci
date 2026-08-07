@@ -1,10 +1,19 @@
 package manifest
 
 import (
+	"bytes"
+
+	// Register sha256 with go-digest. Digest validation reports any
+	// unregistered algorithm as unsupported, and nothing else in this
+	// package's non-test dependency graph links the one hash the format
+	// requires — the tests cannot catch its absence because the testing
+	// framework links it for them.
+	_ "crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"unicode/utf8"
 
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -64,7 +73,8 @@ var ErrNotBigociArtifact = errors.New("not a bigoci artifact")
 // holding one byte range of the file. A part's position in the file is its
 // index in [Artifact.Parts].
 type Part struct {
-	// Digest is the digest of the part's bytes, as stored in the registry.
+	// Digest is the sha256 digest of the part's bytes, as stored in the
+	// registry.
 	Digest digest.Digest
 	// Size is the length of the part in bytes.
 	Size int64
@@ -81,7 +91,7 @@ type Artifact struct {
 	FileSize int64
 	// PartSize is the part size the file was split at, in bytes. Pull reads it
 	// instead of guessing.
-	PartSize int64
+	PartSize plan.PartSize
 	// Title is the file name recorded at push time. It is informational, and
 	// empty when the manifest carries no title annotation.
 	Title string
@@ -93,18 +103,20 @@ type Artifact struct {
 // Encode marshals a into the canonical JSON encoding of a bigoci manifest.
 //
 // The encoding is canonical in the sense the format reference means: compact
-// JSON with no whitespace, a field order fixed by the OCI manifest struct, and
-// annotation keys in sorted order because [encoding/json.Marshal] sorts map
-// keys. The same [Artifact] therefore encodes to byte-identical output on
-// every run and in every process, which is what lets a re-push of the same
-// file at the same part size reproduce the same manifest digest.
+// JSON with no whitespace, a member order fixed by the OCI manifest struct,
+// annotation keys in sorted order because [encoding/json] sorts map keys, and
+// raw UTF-8 with no HTML escaping, so a title like "a&b.bin" reads back
+// byte-for-byte. The same [Artifact] therefore encodes to byte-identical
+// output on every run, in every process, and in any conforming third-party
+// implementation, which is what lets a re-push of the same file at the same
+// part size reproduce the same manifest digest.
 //
 // Encode validates a first and returns a descriptive error when it breaks the
-// format contract: no parts, more parts than the format allows, part sizes
-// that disagree with the split rule, a file digest that is unparseable or not
-// sha256, an unparseable part digest, a part size that is not positive, or a
-// negative file size. [Decode] enforces the same rules, so bigoci never writes
-// a manifest it would later refuse to read.
+// format contract: no parts, a split the plan package rejects (wrapping its
+// errors, including [plan.ErrTooManyParts]), part sizes that disagree with
+// the split rule, a digest that is unparseable or not sha256, or a title that
+// is not valid UTF-8. [Decode] enforces the same rules, so bigoci never
+// writes a manifest it would later refuse to read.
 func Encode(a Artifact) ([]byte, error) {
 	if err := validate(a); err != nil {
 		return nil, fmt.Errorf("invalid artifact: %w", err)
@@ -122,13 +134,13 @@ func Encode(a Artifact) ([]byte, error) {
 	annotations := map[string]string{
 		AnnotationFileDigest: a.FileDigest.String(),
 		AnnotationFileSize:   strconv.FormatInt(a.FileSize, decimalBase),
-		AnnotationPartSize:   strconv.FormatInt(a.PartSize, decimalBase),
+		AnnotationPartSize:   strconv.FormatInt(int64(a.PartSize), decimalBase),
 	}
 	if a.Title != "" {
 		annotations[ocispec.AnnotationTitle] = a.Title
 	}
 
-	data, err := json.Marshal(ocispec.Manifest{
+	return encodeCanonical(ocispec.Manifest{
 		Versioned:    specs.Versioned{SchemaVersion: schemaVersion},
 		MediaType:    ocispec.MediaTypeImageManifest,
 		ArtifactType: ArtifactType,
@@ -136,11 +148,24 @@ func Encode(a Artifact) ([]byte, error) {
 		Layers:       layers,
 		Annotations:  annotations,
 	})
-	if err != nil {
+}
+
+// encodeCanonical marshals the manifest without the HTML escaping
+// [encoding/json.Marshal] applies. Escaping "&", "<", and ">" would make
+// bigoci's bytes diverge from every non-Go implementation of the format the
+// moment a title contains one of them, breaking the shared manifest digest
+// the format's determinism promises.
+func encodeCanonical(manifest ocispec.Manifest) ([]byte, error) {
+	var buf bytes.Buffer
+
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+
+	if err := encoder.Encode(manifest); err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
 
-	return data, nil
+	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
 // emptyConfig returns the OCI empty descriptor a bigoci manifest uses as its
@@ -161,31 +186,31 @@ func emptyConfig() ocispec.Descriptor {
 // [Decode] both call it, so a writer and a reader enforce identical
 // invariants.
 //
-// The part checks defer to the plan package: the number of parts and every
-// part's size must match the split the file size and part size imply, which
-// keeps the split rule defined in exactly one place.
+// The size checks and the part checks defer to the plan package: the file
+// size, the part size, the number of parts, and every part's size must match
+// the split they imply, which keeps the split rule defined in exactly one
+// place. Split errors wrap the plan package's errors, including
+// [plan.ErrTooManyParts].
 func validate(a Artifact) error {
-	if a.PartSize <= 0 {
-		return fmt.Errorf("part size must be positive, got %d", a.PartSize)
+	if a.Title != "" && !utf8.ValidString(a.Title) {
+		return fmt.Errorf("title %q is not valid UTF-8", a.Title)
 	}
-	if a.FileSize < 0 {
-		return fmt.Errorf("file size must not be negative, got %d", a.FileSize)
-	}
-	if err := validateFileDigest(a.FileDigest); err != nil {
+	if err := validateDigest("file", a.FileDigest); err != nil {
 		return err
 	}
 
 	return validateParts(a)
 }
 
-// validateFileDigest checks that the whole-file digest parses and uses sha256,
-// the algorithm the format names.
-func validateFileDigest(fileDigest digest.Digest) error {
-	if err := fileDigest.Validate(); err != nil {
-		return fmt.Errorf("file digest %q: %w", fileDigest.String(), err)
+// validateDigest checks that a digest parses and uses sha256, the one
+// algorithm the format allows. The what prefix names the digest in the error:
+// "file", "part 0", and so on.
+func validateDigest(what string, d digest.Digest) error {
+	if err := d.Validate(); err != nil {
+		return fmt.Errorf("%s digest %q: %w", what, d.String(), err)
 	}
-	if algorithm := fileDigest.Algorithm(); algorithm != digest.SHA256 {
-		return fmt.Errorf("file digest algorithm is %q, want %q", algorithm, digest.SHA256)
+	if algorithm := d.Algorithm(); algorithm != digest.SHA256 {
+		return fmt.Errorf("%s digest algorithm is %q, want %q", what, algorithm, digest.SHA256)
 	}
 
 	return nil
@@ -196,9 +221,6 @@ func validateFileDigest(fileDigest digest.Digest) error {
 func validateParts(a Artifact) error {
 	if len(a.Parts) == 0 {
 		return errors.New("artifact has no parts, want at least one")
-	}
-	if len(a.Parts) > plan.MaxParts {
-		return fmt.Errorf("artifact has %d parts, more than the maximum of %d", len(a.Parts), plan.MaxParts)
 	}
 
 	split, err := plan.New(a.FileSize, a.PartSize)
@@ -213,8 +235,8 @@ func validateParts(a Artifact) error {
 	}
 
 	for i, part := range a.Parts {
-		if err := part.Digest.Validate(); err != nil {
-			return fmt.Errorf("part %d digest %q: %w", i, part.Digest.String(), err)
+		if err := validateDigest(fmt.Sprintf("part %d", i), part.Digest); err != nil {
+			return err
 		}
 		if want := split.Part(i).Size; part.Size != want {
 			return fmt.Errorf("part %d is %d bytes, split rule requires %d", i, part.Size, want)

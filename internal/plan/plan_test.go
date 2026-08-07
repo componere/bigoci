@@ -14,17 +14,19 @@ import (
 
 const (
 	// partSize is the part size most fixtures below split at. Its value is
-	// arbitrary; the arithmetic under test does not depend on it.
-	partSize = int64(100)
+	// arbitrary; the arithmetic under test does not depend on it. It is
+	// untyped so the same constant serves file-size arithmetic and
+	// [plan.PartSize] arguments.
+	partSize = 100
 	// capacity is the largest file that fits the part cap at partSize.
 	capacity = int64(plan.MaxParts) * partSize
 	// hugePartSize is a part size large enough that a maximum-length file
 	// still fits under the part cap, used to prove offsets do not overflow.
-	hugePartSize = int64(1) << 50
+	hugePartSize = 1 << 50
 )
 
 // newPlan builds a plan and fails the test when the inputs are not plannable.
-func newPlan(t *testing.T, fileSize, size int64) plan.Plan {
+func newPlan(t *testing.T, fileSize int64, size plan.PartSize) plan.Plan {
 	t.Helper()
 
 	p, err := plan.New(fileSize, size)
@@ -39,7 +41,7 @@ func TestNewCountsParts(t *testing.T) {
 	tests := []struct {
 		name     string
 		fileSize int64
-		partSize int64
+		partSize plan.PartSize
 		want     int
 	}{
 		{
@@ -118,27 +120,32 @@ func TestNewRejectsBadInput(t *testing.T) {
 	tests := []struct {
 		name     string
 		fileSize int64
-		partSize int64
+		partSize plan.PartSize
+		wantErr  string
 	}{
 		{
 			name:     "a zero part size is rejected",
 			fileSize: partSize,
 			partSize: 0,
+			wantErr:  "part size must be positive",
 		},
 		{
 			name:     "a negative part size is rejected",
 			fileSize: partSize,
 			partSize: -partSize,
+			wantErr:  "part size must be positive",
 		},
 		{
 			name:     "a negative file size is rejected",
 			fileSize: -1,
 			partSize: partSize,
+			wantErr:  "file size must not be negative",
 		},
 		{
-			name:     "a negative file size is rejected before the part size",
+			name:     "a negative file size is reported before a bad part size",
 			fileSize: -1,
 			partSize: 0,
+			wantErr:  "file size must not be negative",
 		},
 	}
 
@@ -148,7 +155,7 @@ func TestNewRejectsBadInput(t *testing.T) {
 
 			_, err := plan.New(tt.fileSize, tt.partSize)
 
-			require.Error(t, err)
+			require.ErrorContains(t, err, tt.wantErr)
 			assert.NotErrorIs(t, err, plan.ErrTooManyParts)
 		})
 	}
@@ -160,7 +167,7 @@ func TestNewRejectsSplitsOverThePartCap(t *testing.T) {
 	tests := []struct {
 		name     string
 		fileSize int64
-		partSize int64
+		partSize plan.PartSize
 	}{
 		{
 			name:     "one byte past the part cap needs a larger part size",
@@ -215,7 +222,7 @@ func TestPartCoversItsByteRange(t *testing.T) {
 	tests := []struct {
 		name     string
 		fileSize int64
-		partSize int64
+		partSize plan.PartSize
 		index    int
 		want     plan.Part
 	}{
@@ -298,7 +305,7 @@ func TestPartsCoverTheFileExactly(t *testing.T) {
 	tests := []struct {
 		name     string
 		fileSize int64
-		partSize int64
+		partSize plan.PartSize
 	}{
 		{
 			name:     "an empty file",

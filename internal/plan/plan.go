@@ -12,6 +12,11 @@ import (
 // size.
 const MaxParts = 4096
 
+// PartSize is the size in bytes of the parts a file splits into: the P of the
+// format's split rule. It is a distinct type so a part size cannot be
+// transposed with a file size in a call that takes both.
+type PartSize int64
+
 // ErrTooManyParts reports that a file and part size would split into more
 // than [MaxParts] parts. Callers recover by retrying with a larger part size;
 // the wrapped message names the smallest one that fits.
@@ -37,7 +42,7 @@ type Plan struct {
 	// fileSize is the total length of the planned file in bytes.
 	fileSize int64
 	// partSize is the part size P the split was computed with.
-	partSize int64
+	partSize PartSize
 	// numParts is how many parts the file splits into: at least one, never
 	// more than MaxParts.
 	numParts int
@@ -50,16 +55,16 @@ type Plan struct {
 // plans a single zero-byte part, which the split rule allows because part 0
 // covers the empty range at offset 0.
 //
-// New returns an error when partSize is not positive, when fileSize is
-// negative, or when the split would need more than [MaxParts] parts. The last
+// New returns an error when fileSize is negative, when partSize is not
+// positive, or when the split would need more than [MaxParts] parts. The last
 // case wraps [ErrTooManyParts] and can be tested with [errors.Is].
-func New(fileSize, partSize int64) (Plan, error) {
-	if partSize <= 0 {
-		return Plan{}, fmt.Errorf("part size must be positive, got %d", partSize)
-	}
-
+func New(fileSize int64, partSize PartSize) (Plan, error) {
 	if fileSize < 0 {
 		return Plan{}, fmt.Errorf("file size must not be negative, got %d", fileSize)
+	}
+
+	if partSize <= 0 {
+		return Plan{}, fmt.Errorf("part size must be positive, got %d", partSize)
 	}
 
 	numParts := countParts(fileSize, partSize)
@@ -81,7 +86,7 @@ func (p Plan) FileSize() int64 {
 
 // PartSize returns the part size the plan was computed with. Only the last
 // part may be shorter than this.
-func (p Plan) PartSize() int64 {
+func (p Plan) PartSize() PartSize {
 	return p.partSize
 }
 
@@ -122,12 +127,12 @@ func (p Plan) Parts() iter.Seq[Part] {
 // cannot overflow: a plan only holds index i when i*partSize is a byte offset
 // inside the file, so the product is bounded by fileSize.
 func (p Plan) part(i int) Part {
-	offset := int64(i) * p.partSize
+	offset := int64(i) * int64(p.partSize)
 
 	return Part{
 		Index:  i,
 		Offset: offset,
-		Size:   min(p.partSize, p.fileSize-offset),
+		Size:   min(int64(p.partSize), p.fileSize-offset),
 	}
 }
 
@@ -136,9 +141,9 @@ func (p Plan) part(i int) Part {
 // negative. It divides first and adds the remainder afterwards instead of
 // rounding up with (fileSize+partSize-1)/partSize, which overflows for file
 // sizes near the top of the int64 range.
-func countParts(fileSize, partSize int64) int64 {
-	parts := fileSize / partSize
-	if parts == 0 || fileSize%partSize != 0 {
+func countParts(fileSize int64, partSize PartSize) int64 {
+	parts := fileSize / int64(partSize)
+	if parts == 0 || fileSize%int64(partSize) != 0 {
 		parts++
 	}
 
@@ -148,11 +153,11 @@ func countParts(fileSize, partSize int64) int64 {
 // smallestPartSize returns the smallest part size that splits a file of
 // fileSize bytes into at most [MaxParts] parts, for use in the error a
 // too-large split reports.
-func smallestPartSize(fileSize int64) int64 {
+func smallestPartSize(fileSize int64) PartSize {
 	size := fileSize / MaxParts
 	if fileSize%MaxParts != 0 {
 		size++
 	}
 
-	return size
+	return PartSize(size)
 }
