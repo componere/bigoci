@@ -110,3 +110,32 @@ Coverage: plan 100%, manifest ~98%. Local quirk (stabilizer): `mise x --
 moon run` collides with proto's go on GOROOT; use `mise x -- env -u GOROOT
 moon run ...` or run the go/golangci commands directly.
 Next: PR 2 (ports + oci/file adapters + mockery).
+
+## 2026-08-07 16:16 — PR 2 merged (#16, master a1e423d)
+3 Opus implementers (ports+mockery / oci adapter / file adapter) + Opus
+stabilizer + 3-lens panel. My design calls going in: Manifests port binds
+its reference at construction (core never sees reference grammar) —
+design.md updated in-PR (D6); Auth port deferred to phase 5; mockery 3.7.2
+mise-pinned by me pre-spawn; deps (distribution/reference) pre-added by me.
+
+Panel findings I verified and fixed myself:
+- 206 responses now verify Content-Range starts at the requested offset
+  (an off-position range would silently corrupt the assembled file).
+- Digest references restricted to sha256 (v1 format pin, consistent with
+  PR 1's decision).
+- Sink: refuses a planted symlink at the predictable partial path
+  (Lstat + O_NOFOLLOW via build-tagged const), and Commit fsyncs the
+  parent dir after rename (publish durability).
+- Dropped file.ErrCommitted sentinel (E1: nobody branches on it).
+- Added oci.StatusError (typed, errors.As-able HTTP status) — the seam
+  phase 3 retry classification builds on.
+- ctx-cancellation tests extended to all five endpoint methods; post-commit
+  ReadAt/Truncate covered; mocks got compile-time staleness asserts; moon
+  test task now runs -race; OpenSource rejects non-regular files.
+Declined (recorded): I1 typedef `oci.Reference string` — the parsed
+reference.Named one line in IS the domain type; public Reference type
+arrives with the API in PR 3.
+Implementer disclosures both PRs: `mise x --cd` sets the child cwd —
+two agents accidentally ran go mod tidy in the worktree because of it.
+Watch that flag in prompts.
+Next: PR 3 — orchestrator + public API + zot e2e (testcontainers).
