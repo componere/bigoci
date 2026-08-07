@@ -75,3 +75,6 @@ GitHub flagged 2 vulns (pymdown-extensions in docs/uv.lock: high ReDoS + medium 
 
 ## 2026-08-07 13:35 — Sweep fully complete
 User refreshed gh token with workflow scope; PR #4 (mise-action 4.2.4) merged. Open PRs: 0. Open Dependabot alerts: 0 (pymdown fix rescanned). master at ea54e75. Repo is fully bootstrapped: design docs published, template converted, settings applied, dependencies current. Next natural step: the design doc's first slice (walking skeleton) in a new session.
+
+## 2026-08-07 14:00 — Release Please fixed
+Run 31211748270 failed with "GitHub Actions is not permitted to create or approve pull requests" — an Actions permission the template never needed (it used a GitHub App token). Fix required two toggles: org-level componere Actions workflow permission (needed user's admin:org token refresh) and repo-level, both set can_approve_pull_request_reviews=true via API. Note: this setting lives in the Actions permissions API, outside repository-settings.toml's supported surface. Re-run succeeded; release PR #11 "chore(master): release 0.1.1" created (manifest 0.1.0 -> 0.1.1, changelog has the pymdown fix). Cosmetic notes: compare link references nonexistent v0.1.0 tag; trailing "## Changelog" artifact in the generated changelog. Recommended leaving #11 open until there is code worth releasing.
