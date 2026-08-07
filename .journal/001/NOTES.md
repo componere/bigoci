@@ -87,3 +87,6 @@ User pushed back on release-as: they want organic versioning (release PR floats 
 
 ## 2026-08-07 15:35 — Versioning settled
 PR #14 merged (baseline 0.0.1). Release PR #11 now proposes 0.0.2 and bumps organically: feat -> minor pre-1.0 (first feat carries it to 0.1.0), breaking -> minor, fix -> patch. No pins left in config. Final config state: bump-minor-pre-major=true, bump-patch-for-minor-pre-major=false, manifest baseline 0.0.1.
+
+## 2026-08-07 16:00 — Close
+Session closed. All work landed: PRs #7 (agent rules), #8 (design + format docs), #9 (template conversion), #10 (pymdown security fix), #12/#13/#14 (release versioning config) merged via squash; dependabot #1/#4/#6 merged, #2/#3/#5 closed as obsolete. master at 205361c, all implementation worktrees removed. PR #11 (release 0.0.2) intentionally left open — it self-updates; merge when cutting the first release. Handoff: read SUMMARY.md here, then the design doc (docs/docs/explanation/design.md) — next work is its "First slice" (zot + testcontainers walking skeleton). No library code exists yet beyond root doc.go.
