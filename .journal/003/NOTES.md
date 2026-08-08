@@ -82,3 +82,46 @@ Launched phase2-cli-implement workflow: Opus implementer (commit on branch),
 then parallel acceptance re-check (Sonnet), live zot smoke test (Sonnet,
 Docker), and three Opus reviewers (correctness/rules/spec-fidelity). My
 line-by-line review follows when it returns.
+
+## 2026-08-07 23:40 — Implementation landed; review adjudicated; fixes applied
+Implement workflow done (6 agents, ~2.5k lines incl. tests + 525-line README,
+commit 7abae4e on feat/reference-cli). Independent acceptance re-check: all
+green. Live zot smoke (8 checks incl. manifest conformance, warm-push
+HEAD-skip, sentinel exits): ALL PASS. One environment quirk: Go stamps
+vcs.revision as the worktree's PARENT commit inside a git worktree — README
+caveat, not a code bug.
+
+Review panel returned 36 findings; my line-by-line pass confirmed and I
+applied the correctness fixes MYSELF:
+1. redact.go: query-name log-line INJECTION (percent-decoded names re-emitted
+   raw into RawQuery → a registry-controlled Location could forge whole
+   http< lines) + digest= pass-through keyed on the parameter NAME (a host
+   calling its signed token "digest" would be logged in full) + unparseable
+   queries silently shortened. Fixed: QueryEscape names, isDigest() gates the
+   value (sha256:64-lower-hex only), parse failure renders the query as `…`.
+2. watchSignals: signal.Reset ran AFTER cancel + a blockable stderr write —
+   second Ctrl-C swallowed while stderr stalls (the exact NotifyContext trap
+   the handler exists to avoid). Reset is now first after the receive.
+3. reportError: 130/143 were gated on context.Canceled surviving the chain;
+   now a recorded signal wins over any error shape, with documented lines
+   `interrupted by SIGINT (exit 130)` / `terminated by SIGTERM (exit 143)`.
+4. `--` terminator now disarms the misplaced-flag guard (was rejected with
+   misleading advice); messages teach it.
+5. Negative -timeout is now a usage error (was silently unbounded).
+6. Summary line prints ALL classes always (fixed shape; warm-push gate reads
+   blob-write=0 explicitly instead of noticing an absence).
+7. size.go: dropped the TiB special case that hardcoded the internal
+   4096-part constant with a rationale 1024G contradicted.
+Rejected/deferred: CI-wiring "blocker" (deliberate PR-2 scope per plan);
+gomoddirectives config change (PR 2 uses per-project --disable, verified);
+auth fingerprint idea (scheme-only is the safer contract).
+
+Delegated to an Opus fix agent (FIXLIST.md): the 3 test updates my changes
+require, review-driven test hardening (exact option-slice assertions,
+pullOptions test, quoted-value-aware grammar regexes, injection/digest-gate/
+unparseable-query redaction tests, signal-beats-error-shape row), a NEW
+in-process fake-registry integration test (push/pull through run(), stdout
+contract, warm-push dedup, -title wire check), and ~16 README/doc.go
+consistency fixes (port 5050, -part-size 64MiB recipes with true numbers,
+curl by digest, dead-port wording, provenance caveat, etc.). I review its
+diff before committing.
