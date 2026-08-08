@@ -23,3 +23,16 @@ Plan (from PLAN.md phase 2):
    release-please and any publishing path.
 3. Run the phase-2 manual success criteria (which double as phase 1's
    manual proof) and check them off in PLAN.md.
+
+## 2026-08-07 21:52 — Phase 2 underway (ultracode mode)
+User confirmed phase 2 (earlier "phase 3" was a misstatement). Ultracode is on:
+workflow orchestration for substantive tasks, agent models overridden per task
+(Opus/Sonnet/Haiku only — Fable excluded per user directive). Delegation
+pattern from session 002 stays: agents do legwork, I review every diff line.
+
+Done so far: verified phase 2 untouched on master (0ce9ecc, no cli/, no PRs);
+created implementation worktree `.wt/feat-reference-cli` (branch
+feat/reference-cli); surveyed public API (client.go, options.go, errors.go,
+file.go), moon.yml, workspace.yml, release-please config, CI workflow.
+Launched 3-lens design panel (stdlib-minimal / cobra-conventional /
+verification-first, all Opus): I synthesize the spec when it returns.
