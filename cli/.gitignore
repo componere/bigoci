@@ -1,0 +1,4 @@
+# Build output. "go build ./..." in a main package writes a binary named after
+# the directory; "go build -o bin/bigoci ." writes into bin/.
+/cli
+/bin/
