@@ -244,3 +244,33 @@ for that). PR2 implementer running (wf_e8cfa721-0f5, opus xhigh): transfer
 wiring + uploader refactor + ErrPartTooLarge + CLI exit 7 + full
 failure-injection suite + all D6 docs, per governing DESIGN §9.2. PR3
 (toxiproxy e2e) remains after that, then the three manual gates.
+
+## 2026-08-08 12:15 — PR2 implemented, lead-reviewed, committed; panel running
+Implementer (36min, 418k tokens) delivered the full PR2 scope green with ten
+recorded deviations, all sound (best: the config-blob fresh-reader row must
+script the PUT not the Exists — only a draining Put catches a hoisted
+reader; the mixed-kind row needs a 1500ms hint because a 1s hint is
+indistinguishable from the 1s window under floor semantics; found the
+existing wrong-length pull row would silently gain ~4.4s of REAL sleeping —
+now runs an explicit one-attempt policy).
+
+My line-by-line review: push.go/pull.go/ports.go/errors.go/client.go/
+options.go/cli/run.go all faithful to the governing design, house voice
+kept, all inner messages byte-stable. Test suites strong: overwrite proof
+uses a garbage prefix + whole-file byte equality; served==closed accounting;
+wake-on-peer-failure test blocks the terminal Put until a sibling is
+provably inside a backoff. Docs: dead-port recipe rewritten with the real
+"after 4 attempts:" line; retry recipe promoted from forward-pointers with
+both uniq -d greps; design.md pull-path prose reconciled + Retry policy
+subsection.
+
+My decisions on the implementer's open questions: split the 859-line
+fixtures file NOW (R2 says before the cap; phase 4 adds more) →
+retry_fixtures_test.go (408+474 lines); moved the two new CLI tests to
+registry_test.go (house layout beats my instruction); kept noRetry() on the
+wrong-length row (suite stays clock-free), the design.md altitude, the
+~0.5s real-clock CLI test, and no root-level 413-on-manifest row.
+
+Committed e985d53 feat(transfer): per-part retry with backoff (signed G).
+Review panel wf_a9bedb85-580 running (3 opus xhigh lenses + sonnet
+acceptance incl. the real dead-port and E2E runs).
