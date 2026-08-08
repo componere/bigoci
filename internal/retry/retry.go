@@ -2,7 +2,6 @@ package retry
 
 import (
 	"context"
-	"errors"
 	"fmt"
 )
 
@@ -18,9 +17,12 @@ import (
 //
 // A failure is repeated only when some layer under it called [Transient].
 // Anything else comes back on the first attempt: bigoci does not guess that
-// an unrecognized failure might be temporary. Cancellation outranks any tag —
-// a request the caller ended surfaces as a transport failure an adapter could
-// plausibly have marked, and repeating it would only wait on a dead context.
+// an unrecognized failure might be temporary. Cancellation outranks any tag,
+// and it is read off ctx itself and never off the failure's shape: Go's
+// transport renders an ordinary dial or header timeout as an error that
+// matches [context.DeadlineExceeded], and a transfer that mistook one of
+// those for the caller ending it would refuse to retry exactly the failure a
+// retry exists for. Only ctx knows whether the transfer is over.
 //
 // The wait between attempts is the policy's jittered backoff, raised to meet
 // a wait the failure carried from the far end. A registry's Retry-After is
@@ -32,8 +34,8 @@ import (
 // run on its first attempt comes back exactly as op returned it, so nothing
 // reads as retry bookkeeping that never happened; attempts running out wraps
 // it with the count, which is the one thing the caller could not otherwise
-// know. A context that ends during a wait comes back wrapped together with
-// the failure that caused the wait, on one line, and both match under
+// know. A context that ends between attempts comes back wrapped together
+// with the failure the run was retrying, on one line, and both match under
 // [errors.Is].
 func Do(ctx context.Context, p Policy, op func(ctx context.Context) error) error {
 	p = p.normalized()
@@ -42,7 +44,7 @@ func Do(ctx context.Context, p Policy, op func(ctx context.Context) error) error
 
 	for attempt := 1; attempt <= p.Attempts; attempt++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+			return interrupted(ctxErr, attempt-1, err)
 		}
 
 		err = op(ctx)
@@ -50,7 +52,10 @@ func Do(ctx context.Context, p Policy, op func(ctx context.Context) error) error
 			return nil
 		}
 
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// The guard reads ctx, not the error: a transport timeout matches
+		// context.DeadlineExceeded by design in net and net/http, and only the
+		// context can say whether the transfer itself is over.
+		if ctx.Err() != nil {
 			return err
 		}
 
@@ -73,7 +78,7 @@ func Do(ctx context.Context, p Policy, op func(ctx context.Context) error) error
 		}
 
 		if waitErr := p.Sleep(ctx, wait); waitErr != nil {
-			return fmt.Errorf("%w after %d attempts: %w", waitErr, attempt, err)
+			return interrupted(waitErr, attempt, err)
 		}
 	}
 
@@ -82,4 +87,17 @@ func Do(ctx context.Context, p Policy, op func(ctx context.Context) error) error
 	}
 
 	return err
+}
+
+// interrupted renders a run the context ended: the reason it stopped wrapped
+// together with the failure it was retrying, on one line because the CLI
+// prints a failure on one line, and both reachable under [errors.Is]. A run
+// that had not failed yet — ended before its first attempt — reports the
+// cause alone.
+func interrupted(cause error, attempts int, last error) error {
+	if last == nil {
+		return cause
+	}
+
+	return fmt.Errorf("%w after %d attempts: %w", cause, attempts, last)
 }

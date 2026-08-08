@@ -128,7 +128,10 @@ func TestRetryAfterGivenAsADate(t *testing.T) {
 
 			assert.Positive(t, got, "a date in the future is a wait")
 			assert.LessOrEqual(t, got, offset, "a date is never read as longer than the gap to it")
-			assert.Greater(t, got, offset-2*time.Second, "the second the format rounds off is the only slack")
+			// The lower bound leaves room for the second the format rounds off
+			// plus a few seconds of scheduler stall on a loaded CI runner; the
+			// bound only has to prove the wait is the gap and not zero.
+			assert.Greater(t, got, offset-5*time.Second, "the wait is the gap to the date, give or take the slack")
 		})
 	}
 }

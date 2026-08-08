@@ -31,6 +31,24 @@ func halved(n int64) int64 {
 	return n / 2
 }
 
+// timeoutError renders the way the transport's own timeouts do: it matches
+// [context.DeadlineExceeded] under [errors.Is] without any context having
+// ended. net and net/http both ship errors shaped exactly like this — a dial
+// timeout, a response-header timeout, a client timeout — which is why the
+// loop must read cancellation off its context and never off the failure.
+type timeoutError struct{}
+
+// Error renders the message a dial timeout really produces.
+func (timeoutError) Error() string {
+	return "dial tcp 10.255.255.1:5000: i/o timeout"
+}
+
+// Is matches the deadline sentinel, exactly as net.errTimeout and
+// net/http's timeout errors do.
+func (timeoutError) Is(target error) bool {
+	return target == context.DeadlineExceeded
+}
+
 // clock is the pair of seams a [Policy] takes as data, recording what the
 // loop asked of them. It is how a row reads an entire run's schedule off a
 // slice with no wall clock anywhere near the test.
@@ -49,12 +67,19 @@ type clock struct {
 	// interruptAt is the one-based Sleep call that returns interrupt. Zero
 	// leaves every wait successful.
 	interruptAt int
+	// during runs in the middle of every wait, standing in for the world
+	// changing while the loop sleeps. Nil does nothing.
+	during func()
 }
 
 // sleep records the wait it was asked for and reports the interruption the
 // fixture was built with, if this is the call that carries it.
 func (c *clock) sleep(_ context.Context, d time.Duration) error {
 	c.waits = append(c.waits, d)
+
+	if c.during != nil {
+		c.during()
+	}
 
 	if c.interrupt != nil && len(c.waits) == c.interruptAt {
 		return c.interrupt
@@ -182,18 +207,35 @@ func TestDo(t *testing.T) {
 			wantCeilings: []int64{int64(time.Second)},
 		},
 		{
-			name:        "a cancelled attempt outranks the tag over it",
-			script:      []error{Transient(fmt.Errorf("GET /v2/blobs: %w", context.Canceled), 0)},
-			wantCalls:   1,
-			wantErrIs:   context.Canceled,
-			wantMessage: "GET /v2/blobs: context canceled",
+			name:         "a transport timeout that renders as a deadline is still retried",
+			script:       []error{Transient(timeoutError{}, 0), nil},
+			wantCalls:    2,
+			wantWaits:    []time.Duration{500 * time.Millisecond},
+			wantCeilings: []int64{int64(time.Second)},
 		},
 		{
-			name:        "an expired deadline outranks the tag over it",
-			script:      []error{Transient(fmt.Errorf("GET /v2/blobs: %w", context.DeadlineExceeded), 0)},
-			wantCalls:   1,
-			wantErrIs:   context.DeadlineExceeded,
-			wantMessage: "GET /v2/blobs: context deadline exceeded",
+			name: "a tagged failure that merely resembles a cancellation is still retried",
+			script: []error{
+				Transient(fmt.Errorf("GET /v2/blobs: %w", context.Canceled), 0),
+				nil,
+			},
+			wantCalls:    2,
+			wantWaits:    []time.Duration{500 * time.Millisecond},
+			wantCeilings: []int64{int64(time.Second)},
+		},
+		{
+			name: "a hint in the middle of a run neither resets the count nor the escalation",
+			script: []error{
+				Transient(errUnwell, 0),
+				Transient(errUnwell, 1500*time.Millisecond),
+				Transient(errUnwell, 0),
+				Transient(errLast, 0),
+			},
+			wantCalls:    4,
+			wantWaits:    []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond, 2 * time.Second},
+			wantCeilings: []int64{int64(time.Second), int64(2 * time.Second), int64(4 * time.Second)},
+			wantErrIs:    errLast,
+			wantMessage:  "after 4 attempts: registry returned 502 Bad Gateway",
 		},
 		{
 			name:        "a policy of one attempt reports the failure without a count",
@@ -234,6 +276,62 @@ func TestDo(t *testing.T) {
 			assert.Equal(t, tt.wantMessage, err.Error())
 		})
 	}
+}
+
+func TestDoStopsWhenTheTransferEndsDuringAnAttempt(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	recorded := &clock{draw: halved}
+
+	// The attempt ends the transfer itself and still reports a tagged
+	// failure, the way a request cut down by its own cancellation surfaces
+	// through a tagged body read. The context, not the tag, is what decides.
+	calls := 0
+	op := func(context.Context) error {
+		calls++
+
+		cancel()
+
+		return Transient(errUnwell, 0)
+	}
+
+	err := Do(ctx, recorded.policy(), op)
+
+	require.ErrorIs(t, err, errUnwell)
+	assert.Equal(t, 1, calls, "a transfer that is over is not retried")
+	assert.Empty(t, recorded.waits, "a transfer that is over does not back off first")
+	assert.Equal(
+		t,
+		"registry returned 503 Service Unavailable",
+		err.Error(),
+		"the failure comes back exactly as the attempt reported it",
+	)
+}
+
+func TestDoReportsACancellationBetweenAttemptsWithTheFailureInHand(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// The wait completes normally but the transfer ends while it runs, which
+	// is exactly what a recording Sleep that never consults its context hands
+	// the loop. The next attempt must not run, and the failure the run was
+	// retrying must not vanish behind the bare cancellation.
+	recorded := &clock{draw: halved, during: cancel}
+	op, calls := scripted(t, []error{Transient(errUnwell, 0)})
+
+	err := Do(ctx, recorded.policy(), op)
+
+	require.ErrorIs(t, err, context.Canceled, "why the run stopped")
+	require.ErrorIs(t, err, errUnwell, "why the run was waiting")
+	assert.Equal(t, 1, *calls)
+	assert.Equal(
+		t,
+		"context canceled after 1 attempts: registry returned 503 Service Unavailable",
+		err.Error(),
+		"one line, with the failure in hand, matching what an interrupted wait reports",
+	)
 }
 
 func TestDoStopsBeforeTheFirstAttemptWhenTheContextIsDone(t *testing.T) {

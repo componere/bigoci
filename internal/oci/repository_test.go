@@ -286,8 +286,9 @@ func TestUnexpectedStatusesAreClassifiedForTheRetryPolicy(t *testing.T) {
 
 			require.Error(t, err)
 
-			_, transient := retry.IsTransient(err)
+			after, transient := retry.IsTransient(err)
 			assert.Equal(t, tt.wantTransient, transient)
+			assert.Zero(t, after, "no Retry-After header means no wait rides on the tag")
 
 			var statusErr *oci.StatusError
 
@@ -404,6 +405,12 @@ func TestWithHTTPClient(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
+
+				// The caller's context is alive, so the client's own timeout is
+				// a transport failure like any other and stays worth repeating —
+				// each new attempt gets a fresh timeout window.
+				_, transient := retry.IsTransient(err)
+				assert.True(t, transient, "a client timeout with a live transfer context is retryable")
 
 				return
 			}

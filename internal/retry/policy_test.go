@@ -275,7 +275,10 @@ func TestDefaultSleep(t *testing.T) {
 		wait      time.Duration
 		wantErr   error
 	}{
-		{name: "a short wait passes", wait: time.Millisecond},
+		// The wait is long enough that a sleep which never waited would be
+		// caught by the elapsed check below, and short enough to be noise in
+		// the suite. Timers never fire early, so the check cannot flake.
+		{name: "a short wait really waits", wait: 25 * time.Millisecond},
 		{name: "no wait at all passes", wait: 0},
 		{
 			name:      "a long wait on a dead context returns at once",
@@ -297,6 +300,7 @@ func TestDefaultSleep(t *testing.T) {
 				cancel()
 			}
 
+			start := time.Now()
 			err := sleep(ctx, tt.wait)
 
 			if tt.wantErr != nil {
@@ -306,6 +310,25 @@ func TestDefaultSleep(t *testing.T) {
 			}
 
 			require.NoError(t, err)
+			assert.GreaterOrEqual(t, time.Since(start), tt.wait, "a wait that passed must really have waited")
 		})
 	}
+}
+
+func TestDefaultSleepIsCutShortByCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	// The wait is an hour, so this test finishing at all is the proof that a
+	// cancellation reaches a wait already in progress; the test suite's own
+	// timeout is the backstop if it ever stops doing so.
+	err := sleep(ctx, time.Hour)
+
+	require.ErrorIs(t, err, context.Canceled)
 }
