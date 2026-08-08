@@ -218,3 +218,29 @@ retried).
 Commits (both signed G, joshuagilman@gmail.com): fd98e93 feat(oci) classify,
 bf81069 fix(retry) ctx-not-shape guard + test hardening. root:check green
 after fixes. PR #21 open (3-PR plan documented in body); CI monitor armed.
+
+## 2026-08-08 11:33 — PR #21 and #22 merged; PR2 implementer running
+PR #21 first CI run FAILED on cli:test TestTapSummary — "http:
+CloseIdleConnections called" on a package the PR never touched. Diagnosis
+(verified in code, not assumed): httptest.Server.Close calls
+http.DefaultTransport.CloseIdleConnections() as a courtesy, and the five
+debug-tap tests passing nil to newTap all shared DefaultTransport under
+t.Parallel(), so any sibling test's deferred srv.Close() could kill a tap
+test's request mid-flight. Pre-existing flake since PR #19, surfaced by CI
+timing. Rerun passed (flake confirmed). Fix shipped as its own PR #22
+(test(cli): isolate the debug tap tests from the shared default transport —
+per-test http.Transport with Cleanup; nil-fallback still covered by the
+run-driven -debug tests); 10× -race green.
+
+LESSON (promote to TECH_NOTES at close): httptest.Server.Close reaches into
+http.DefaultTransport — parallel Go tests that do real HTTP through the
+default transport race with every other test's server Close; give taps/
+clients per-test transports.
+
+Merged (squash): PR #21 → cb02877, PR #22 → 34e56ce. Master local ff'd.
+Old worktree removed; PR2 worktree .wt/feat-transfer-retry created and reset
+to fetched master (wt --base master had used the stale local master — watch
+for that). PR2 implementer running (wf_e8cfa721-0f5, opus xhigh): transfer
+wiring + uploader refactor + ErrPartTooLarge + CLI exit 7 + full
+failure-injection suite + all D6 docs, per governing DESIGN §9.2. PR3
+(toxiproxy e2e) remains after that, then the three manual gates.
