@@ -139,3 +139,29 @@ Implementer disclosures both PRs: `mise x --cd` sets the child cwd —
 two agents accidentally ran go mod tidy in the worktree because of it.
 Watch that flag in prompts.
 Next: PR 3 — orchestrator + public API + zot e2e (testcontainers).
+
+## 2026-08-07 17:28 — PR 3 merged (#17, master 829a861) — PHASE 1 COMPLETE
+2 Opus implementers (orchestrator / public API) → Opus e2e author → Opus
+stabilizer → 3-lens panel. e2e passed against real zot first try — no
+implementation bug surfaced. Notable: the e2e agent found a REAL zot defect
+(v2.1.9 loses zero-length blobs via its dedupe hardlinking; logged
+`failed to hard link`) and pinned v2.1.20 — registry-variance lesson #2
+for the design's thesis.
+
+Panel findings I verified and fixed myself:
+- Identical parts raced Exists→Put and uploaded the same blob once per
+  worker; added an in-flight claim set (skip-not-wait is sound: a failed
+  claimant fails the whole push).
+- Pull's io.CopyBuffer collapsed read/write errors → registry hang-ups
+  were blamed on the disk; added a tagging reader so phase 3 can classify.
+- Hash pass now rejects a source that shrank mid-push (was: silent
+  wrong-manifest risk when the short digest's blob already existed).
+- io.ReadFull for the long-blob probe ((0,nil) reads no longer skip it).
+- min(workers, parts) goroutines; empty-partial cleanup on failed lookup
+  (a not-found pull no longer litters); classify() chain tests; Example()
+  compile-pinned; how-to doc (docs/how-to/push-and-pull.md) added per D6.
+CI: e2e verified actually running on GH Actions (9.3s root pkg incl. zot).
+
+Phase 1 success criteria: both automated gates checked off in PLAN.md.
+Manual proof deferred to phase 2 (reference CLI) per plan. Phase 2 not
+started — awaiting user go-ahead.

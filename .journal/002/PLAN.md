@@ -71,10 +71,13 @@ else is built on them.
 
 **Success criteria:**
 
-- [ ] Automated gates: unit tests for plan/manifest; integration tests of the
+- [x] Automated gates: unit tests for plan/manifest; integration tests of the
       orchestrator against mockery mocks; zot e2e green in CI.
-- [ ] Structure audit: every package has `doc.go` + full godoc; mocks are
+      *(2026-08-07: PRs #15, #16, #17 merged; e2e confirmed running in CI.)*
+- [x] Structure audit: every package has `doc.go` + full godoc; mocks are
       generated only; no file over 1,000 lines; core packages import no I/O.
+      *(2026-08-07: verified per-PR by stabilizer agents and my own review;
+      largest file 656 lines; transfer imports no adapter or I/O package.)*
 - [ ] Manual functional proof of the skeleton is deferred to phase 2, which
       exists to make it possible; phase 1 is not considered *proven* until
       phase 2's manual criteria pass.
