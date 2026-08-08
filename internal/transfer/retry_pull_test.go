@@ -173,6 +173,7 @@ func TestPullRetriesPartFetches(t *testing.T) {
 
 			assert.Equal(t, tt.wantGets, calls.gets(target.Digest), "fetches of the part")
 			assert.Equal(t, tt.wantWaits, sleeps.waits(), "the waits between attempts, in order")
+			assertOnlyTargetRetried(t, artifact.Parts, retriedPart, calls.gets, "fetched")
 
 			served, closed := store.counts()
 			assert.Equal(t, served, closed, "every blob body must be closed, including a failed attempt's")

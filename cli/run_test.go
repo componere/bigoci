@@ -456,6 +456,12 @@ func TestReportErrorExitCodes(t *testing.T) {
 			wants: []string{"matched sentinel bigoci.ErrDigestMismatch (exit 5)"},
 		},
 		{
+			name:  "part too large",
+			err:   twoLayers(bigoci.ErrPartTooLarge),
+			code:  exitPartTooLarge,
+			wants: []string{"matched sentinel bigoci.ErrPartTooLarge (exit 7)"},
+		},
+		{
 			name:  "nothing the library classifies",
 			err:   twoLayers(errPlain),
 			code:  exitFailure,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	filemocks "github.com/componere/bigoci/internal/file/mocks"
+	"github.com/componere/bigoci/internal/manifest"
 	ocimocks "github.com/componere/bigoci/internal/oci/mocks"
 	"github.com/componere/bigoci/internal/retry"
 )
@@ -177,6 +179,29 @@ func halved(n int64) int64 {
 	return n / 2
 }
 
+// assertOnlyTargetRetried checks the budget stayed with the part that failed:
+// however many attempts part target cost, every other part cost at most one
+// call. It is the assertion that separates a per-part budget from a
+// per-transfer one, which every happy row would otherwise let through.
+func assertOnlyTargetRetried(
+	t *testing.T,
+	parts []manifest.Part,
+	target int,
+	count func(digest.Digest) int,
+	verb string,
+) {
+	t.Helper()
+
+	for i, part := range parts {
+		if i == target {
+			continue
+		}
+
+		assert.LessOrEqual(t, count(part.Digest), 1,
+			"part %d was %s again for a failure that was not its own", i, verb)
+	}
+}
+
 // readLog records where a push read its source, keyed by offset. The hash
 // pass and the workers read at once, so it lives behind a mutex.
 type readLog struct {
@@ -282,7 +307,16 @@ func scriptedBlobs(t *testing.T, script blobScript) (*ocimocks.MockBlobs, *blobC
 			// reader from a spent one.
 			content, err := io.ReadAll(r)
 			if err != nil {
-				return err
+				// What the adapter really does with a body its transport could
+				// not read: the failure comes back tagged, because from where
+				// the adapter stands a source that stopped reading looks like
+				// a connection that stopped carrying. Discarding the tag when
+				// the failure is the source's own is the orchestrator's job,
+				// and the double has to hand it the same puzzle. The attempt
+				// still counts — an upload that died mid-body was an upload.
+				calls.put(dgst, size, content)
+
+				return retry.Transient(fmt.Errorf("PUT %s: %w", dgst, err), 0)
 			}
 
 			answers, scripted := script.put[dgst]

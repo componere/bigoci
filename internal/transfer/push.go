@@ -273,6 +273,13 @@ func (u *uploader) upload(ctx context.Context, job partJob) error {
 // given exactly once, so every attempt needs a fresh one over the same range.
 // The file is the transfer's buffer, so re-reading a range costs a read and
 // no memory, which is why a push takes a path and not a stream.
+//
+// The reader travels through a tagging wrapper because a range the source
+// will not read fails from inside the upload, where the adapter cannot tell
+// it from a connection that stopped carrying and marks it worth repeating.
+// The orchestrator knows better: it unwraps its own tag and reports the disk
+// failure plain, so a source that went away ends the push at once instead of
+// costing three more reads of a range that will not read.
 func (u *uploader) attempt(ctx context.Context, job partJob) error {
 	exists, err := u.blobs.Exists(ctx, job.dgst)
 	if err != nil {
@@ -282,12 +289,57 @@ func (u *uploader) attempt(ctx context.Context, job partJob) error {
 		return nil
 	}
 
-	content := io.NewSectionReader(u.source, job.part.Offset, job.part.Size)
+	content := tagSourceReads{r: io.NewSectionReader(u.source, job.part.Offset, job.part.Size)}
 	if err := u.blobs.Put(ctx, job.dgst, job.part.Size, content); err != nil {
+		var src *sourceError
+		if errors.As(err, &src) {
+			return fmt.Errorf(
+				"read part %d of the source at offset %d: %w", job.part.Index, job.part.Offset, src.err,
+			)
+		}
+
 		return fmt.Errorf("upload part %d (%s): %w", job.part.Index, job.dgst, err)
 	}
 
 	return nil
+}
+
+// tagSourceReads wraps the section reader an upload streams from, so a
+// failure the source raises stays recognizable after the adapter has wrapped
+// it as a failed request. [io.EOF] passes through untouched — the transport
+// reads it as the end of the body.
+type tagSourceReads struct {
+	// r is the range of the file being uploaded.
+	r io.Reader
+}
+
+// Read reads from the source's range and tags every failure except EOF.
+func (t tagSourceReads) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, &sourceError{err: err}
+	}
+
+	return n, err
+}
+
+// sourceError marks a failure as coming from the source the upload was
+// reading, which is what lets the orchestrator keep a local disk failure
+// terminal after the adapter — which cannot tell it from a broken connection
+// — has marked the request worth repeating.
+type sourceError struct {
+	// err is the underlying read failure.
+	err error
+}
+
+// Error renders the underlying failure unchanged.
+func (e *sourceError) Error() string {
+	return e.err.Error()
+}
+
+// Unwrap exposes the underlying failure to [errors.Is] and [errors.As].
+func (e *sourceError) Unwrap() error {
+	return e.err
 }
 
 // claimSet tracks the digests some worker of this push already owns, so a

@@ -1,10 +1,12 @@
 package transfer_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,6 +210,7 @@ func TestPushRetriesPartUploads(t *testing.T) {
 			assert.Equal(t, tt.wantPuts, calls.puts(target.Digest), "uploads of the part")
 			assert.Equal(t, tt.wantReads, reads.at(offset), "reads that began at the part's first byte")
 			assert.Equal(t, tt.wantWaits, sleeps.waits(), "the waits between attempts, in order")
+			assertOnlyTargetRetried(t, parts, tt.part, calls.checks, "checked")
 
 			if tt.wantErr == nil {
 				require.NoError(t, err)
@@ -338,6 +341,64 @@ func TestPushDoesNotRetryASourceItCannotRead(t *testing.T) {
 
 	assert.Empty(t, sleeps.waits(), "the hash pass runs under no budget")
 	blobs.AssertNotCalled(t, "Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestPushDoesNotRetryASourceThatFailsMidUpload pins the harder half of the
+// Source contract. A range that fails DURING an upload surfaces from inside
+// the adapter, which cannot tell it from a broken connection and tags it
+// worth repeating — so the orchestrator must unwrap its own marker and keep
+// the disk terminal, or a dead source costs the whole budget per part.
+func TestPushDoesNotRetryASourceThatFailsMidUpload(t *testing.T) {
+	t.Parallel()
+
+	unreadable := errors.New("the disk went away")
+	content := fileContent(multiPartSize)
+	parts := splitParts(t, content)
+	target := 1
+	offset := int64(target) * int64(fixturePartSize)
+
+	// The range reads once for the hash pass and fails on every read after
+	// it, which is a disk that died between hashing and uploading.
+	var mu sync.Mutex
+
+	readsAtTarget := 0
+
+	source := filemocks.NewMockSource(t)
+	source.EXPECT().Size().Return(int64(len(content))).Maybe()
+	source.EXPECT().ReadAt(mock.Anything, mock.Anything).RunAndReturn(
+		func(p []byte, off int64) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			if off == offset {
+				readsAtTarget++
+				if readsAtTarget > 1 {
+					return 0, unreadable
+				}
+			}
+
+			return bytes.NewReader(content).ReadAt(p, off)
+		},
+	).Maybe()
+
+	blobs, calls := scriptedBlobs(t, blobScript{})
+	policy, sleeps := testPolicy(t)
+
+	_, err := transfer.Push(t.Context(), transfer.PushSpec{
+		Source:    source,
+		Blobs:     blobs,
+		Manifests: ocimocks.NewMockManifests(t),
+		PartSize:  fixturePartSize,
+		Workers:   len(parts),
+		Title:     "model.bin",
+		Retry:     policy,
+	})
+	require.ErrorIs(t, err, unreadable, "the disk failure stays reachable")
+	require.ErrorContains(t, err, "read part 1 of the source at offset")
+	assert.NotContains(t, err.Error(), "attempts", "a source failure is attempted exactly once")
+
+	assert.Equal(t, 1, calls.puts(parts[target].Digest), "the registry is retried, never the disk")
+	assert.Empty(t, sleeps.waits())
 }
 
 func TestPushStopsWhenABackoffIsInterrupted(t *testing.T) {
@@ -499,6 +560,8 @@ func TestPushWakesAWorkerBackingOffWhenAnotherFails(t *testing.T) {
 	content := fileContent(exactMultipleSize)
 	parts := splitParts(t, content)
 	require.Len(t, parts, 2, "the fixture needs one part per worker")
+	require.NotEqual(t, parts[0].Digest, parts[1].Digest,
+		"twin parts would be claimed once, leaving nobody to back off")
 
 	policy, sleeps := blockingPolicy(t)
 

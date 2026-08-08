@@ -561,10 +561,13 @@ echo "exit=$?"
 
 Every request that goes out gets an `http!` line with `err="dial tcp …:
 connect: connection refused"`. A refused connection is worth another attempt,
-so the library makes four per unit of work: exactly four lines for any one
-digest, and up to sixteen in total, because each of the four workers burns its
-own part's budget before the first one to run out cancels the rest. Then
-`failed=` matching that count, then exit 1 with `no sentinel matched`.
+so the digest whose worker runs out of attempts first shows exactly four
+`http!` lines. The other digests show fewer — between one and four — because
+that first exhaustion cancels the peers mid-backoff, which is itself the
+behavior worth seeing: nobody waits out a schedule for a transfer that is
+already over. The total is at most four per worker (sixteen here), eight to
+thirteen on a typical run. Then `failed=` matching whatever was sent, then
+exit 1 with `no sentinel matched`.
 
 The first failure line says how many attempts it took:
 
