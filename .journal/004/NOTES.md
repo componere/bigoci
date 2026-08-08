@@ -139,3 +139,44 @@ the seam. Final synthesis (scratchpad/DESIGN-phase3.md is the governing doc):
 Next: implementation worktree from fetched master; Opus implementer builds
 PR1; I review line-by-line, commit myself (verified-signature rule), then
 review panel.
+
+## 2026-08-08 11:08 — PR1 implemented, lead-reviewed, committed; panel running
+Worktree .wt/feat-oci-retry-classify (branch feat/oci-retry-classify from
+fetched master 796d477). Opus implementer (xhigh, wf_989e3f47-32e) built PR1
+in one pass: internal/retry (doc/fault/policy/retry + 3 test files, 1124
+lines, stdlib-only) + oci classification (classify.go, StatusError.RetryAfter,
+ErrTooLarge + Is row, tagging at do/statusError/blobBody/readManifest,
+doc.go, ~500 diff lines of tests). All five check commands passed for the
+implementer including full root:check with real-zot e2e; existing assertions
+untouched.
+
+Implementer deviations, all accepted after my line-by-line review: (1)
+delta-seconds overflow guard in retryAfter (MaxInt64/time.Second — a
+readability bound, not a policy clamp; overflow would go negative); (2)
+halfway-to-Cap guard in backoff's doubling loop (Cap near MaxInt64 would
+overflow the last doubling); (3) whitebox classify_test.go for pure funcs +
+HTTP rows in existing external files; (4) resetConnection/dropConnection
+split (flush-before-hijack commits a 200 on the PUT row — found by a failing
+test); (5) floor proof via recorded jitter ceilings instead of rng-not-called.
+
+My line-by-line verdict: matches the governing design incl. all amendments
+(context-first guard; floor max(jitter, min(after, Cap)); single-line
+interrupted wrap; exhaustion-only wrapping — note terminal-mid-budget also
+returns unwrapped, consistent with 2 of 3 lenses and CLI rendering). Test
+quality high (ceilings assertion = positive floor proof; adapter-does-not-
+retry request counting; golden 503 message through the tag).
+
+Implementer's open question worth carrying to PR2: http.Client.Timeout
+(caller-supplied via WithHTTPClient) surfaces as req.Context().Err() ≠ nil →
+UNtagged → terminal → no retries on slow parts. Accepted as designed (the
+deadline is the caller's instruction); PR2 must add the WithHTTPClient godoc
+sentence about it.
+
+Verified myself: build + race tests + lint/format green; committed as
+fd98e93 "feat(oci): classify registry failures for retry" under
+joshuagilman@gmail.com, signature G. Stale-LSP scare ("policy_placeholder"
+package) checked and dismissed — files all declare package retry.
+
+Review panel wf_4823b998-7b2 running: correctness/contracts/tests lenses
+(opus xhigh) + acceptance full-gate rerun (sonnet). I verify findings myself
+before applying any fix.
