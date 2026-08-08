@@ -49,3 +49,58 @@ Launched a three-lens design panel (workflow wf_0cd5dd2b-ce7, all opus:
 concurrency@xhigh, boundaries@high, verification@high). Each returns a full
 design proposal + key decisions + risks + PR split; I synthesize the final
 design myself before spawning the implementer.
+
+## 2026-08-08 10:21 — Design panel results; boundaries lens re-running
+Panel finished (601k tokens). Concurrency and verification lenses returned
+complete, high-quality designs (scratchpad design-*.md). The boundaries agent
+burned its budget on research and submitted literal placeholders
+("DEFERRED_TO_TOOL_INPUT") — re-running it as wf_938926b3-846 with an explicit
+anti-deferral instruction and a minLength on the schema.
+
+Where the two finished lenses AGREE (locked in for synthesis):
+- Push retry unit = Exists+Put as one attempt sharing one per-part budget
+  (idempotency win: a PUT that landed but lost its response is found by the
+  next attempt's HEAD). Claim stays outside the loop. Section reader and the
+  empty-config bytes.Reader are constructed INSIDE the attempt.
+- Pull retry unit = Get+stream+verify whole-part; hasher.Reset + fresh
+  OffsetWriter per attempt; every retry calls Get(dgst, 0) — no Range in
+  phase 3. Manifest Get/Put and empty config get their own budgets.
+- Terminal: unclassified errors (default-stop), digest mismatch, long body,
+  sink write/truncate/commit, source reads, ctx cancellation (checked FIRST —
+  a cancelled request looks like a transport error underneath).
+- Transient: transport failures (unconditionally — no per-errno table),
+  429/503 overloaded (carry Retry-After), 408/5xx faulted, mid-stream read
+  errors (short body). Two adapter choke points: Repository.do + statusError.
+- Two real bug-catches to fold in: (a) the one-extra-byte tail probe in
+  pull.stream must read through tagReads or a connection dying right after
+  the last byte is a terminal false alarm; (b) manifest body reads (io.ReadAll
+  in Manifests.Get) must classify as transport failures too.
+- 413 only → oci-level match via StatusError.Is → public ErrPartTooLarge →
+  CLI exit 7 activated; codes table comment narrows to 6. No vendor tables.
+- No public retry knobs (design doc API sketch names none; ctx +
+  WithHTTPClient are the seams). Internal policy fully injectable via specs.
+- Injected Sleep func(ctx,d) error selecting on ctx.Done (a terminal peer
+  failure wakes sleeping workers instantly); injected jitter fn; rand/v2.
+- Windows double in an overflow-proof guarded loop: 1s/2s/4s defaults, no
+  sleep after last attempt, wrap only on exhaustion ("after N attempts:"),
+  attempts never reset on kind change.
+- e2e: new test file, zot+toxiproxy on one docker network, Shopify
+  toxiproxy/v2/client (stdlib-only), toxic removed on first OBSERVED failure
+  via a counting gate transport (never a wall-clock schedule), limit_data +
+  reset_peer; no new moon task, no build tag. Dead-port automated shadow test
+  at root (20s ceiling, NotErrorIs DeadlineExceeded).
+- Digest mismatch stays terminal — contradicts one design.md prose line ("a
+  corrupt part re-fetches alone") which gets reconciled in the doc edit. Real
+  behavior decision to surface at review.
+
+Where they DISAGREE (boundaries lens breaks the tie, then I decide):
+1. Vocabulary/layout: internal/fault (Kind enum: Broken/Overloaded/Faulted/
+   Rejected + Fault() interface; oci imports fault) + internal/retry package
+   — vs — Transient()/Delayed() interfaces declared in transfer, oci
+   implements structurally (no new import edge), retry loop unexported inside
+   transfer.
+2. Retry-After: floor (max(jitter, min(hint, Cap)), one 30s cap) — vs —
+   override (hint replaces jitter, separate 60s clamp).
+3. PR order: oci-classification-first (user-visible ErrPartTooLarge lands
+   alone, then transfer flips behavior) — vs — transfer-inert-first, oci
+   flips. Both 3-PR splits keep e2e+deps last.
