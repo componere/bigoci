@@ -52,7 +52,9 @@ tasks:
     # carries a mandatory local replace to the core library, and disabling the
     # linter per-invocation keeps the guard armed for the core module, where a
     # stray local replace is exactly what it exists to catch.
-    command: 'golangci-lint run --config ../.golangci.yml --disable gomoddirectives ./... --show-stats=false'
+    # --allow-parallel-runners: moon runs this and root:lint concurrently, and
+    # golangci-lint otherwise refuses to start while another instance runs.
+    command: 'golangci-lint run --config ../.golangci.yml --disable gomoddirectives ./... --show-stats=false --allow-parallel-runners'
     inputs:
       - '@group(goSources)'
       - '@group(lintConfig)'

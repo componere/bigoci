@@ -47,7 +47,9 @@ tasks:
       cache: false
 
   lint:
-    command: 'golangci-lint run --config .golangci.yml ./... --show-stats=false'
+    # --allow-parallel-runners: moon runs this and cli:lint concurrently, and
+    # golangci-lint otherwise refuses to start while another instance runs.
+    command: 'golangci-lint run --config .golangci.yml ./... --show-stats=false --allow-parallel-runners'
     inputs:
       - '@group(goSources)'
       - '@group(lintConfig)'
