@@ -112,3 +112,37 @@ break row; resumeOffset=5 fixture in blobs_test is the ready honored-range
 case. The DESIGN.md cap rule (done==part.Size → restart at 0) is what keeps
 the orchestrator from ever sending an unsatisfiable range, so 416-terminal
 stays safe for the complete-partial case (cold verify never fetches).
+
+## 2026-08-08 16:55 — PR 2 merged (#26, master d789849)
+feat(transfer): pull resume from partial files — the behavior flip. Opus
+implementer + 3-lens panel (wf_31660ca4-150). State-machine reviewer walked
+all 14 failure-table rows with in-package probes (hasher==sink==count after
+every transient shape, incl. composite break→200-fallback→break). Tests
+reviewer ran 29 mutations: 24 killed outright, 4 real survivors each got a
+killing test from me before merge — (1) offsets assertion in
+TestPullAssemblesTheFileThroughARetry pins done-unchanged-on-Get-error, (2)
+TestPullContinuesTheRefetchOfAResumedPart crosses resume×continuation and
+pins verify-outside-retry.Do (moving it inside would false-ErrDigestMismatch
+the likeliest field scenario: killed pull rerun on the same flaky link), (3)
+TestPullRefusesAnOverlongBlobOnAContinuedAttempt pins the remaining-bytes
+limit, (4) stream_internal_test.go pins write-side no-progress-recording
+(only observable in-package). Also added TestPullRefusesAPartialThatReadsShort
+(verify short-read row), tightened blobStore.serve to refuse at-end offsets,
+brokenPrefix now takes content (was coupled to a prefix-stable PRNG
+coincidence). Docs fixes from panel: front-page README still denied resume
+(D6 miss in DESIGN docs list — README.md was absent from it), client.go
+"before fetching anything" contradiction, range-capping-intermediary cost
+sentence in design.md+how-to, cli/README byte-flip made a real flip (xxd
+XOR; printf 'x' is a no-op 1/256), variable summary block reframed, blob-read
+"count of missing parts" qualified with no-retries.
+e2e: ZERO assertion changes needed; flaky suite passes 5/5 (continuation
+strictly helps limit_data rows converge). Implementer deviations all
+accepted (wholeBlob folded into serve(dgst, off) — Go forbids f(a, g())
+multi-value; brokenPrefix real-bytes flip was semantically forced by
+continuation; two test files on the which-parts vs inside-one-part seam).
+Declined: ctx param on verify (doc'd the one-part cancellation bound
+instead); design.md "First slice" prose left as plan record.
+Lesson: mockery .NotBefore(call) pins cross-method ordering (Size before
+Truncate) — the TOCTOU-ish claims that mutation testing can't reach via
+behavior get pinned as mock-declared ordering instead.
+Next: PR 3 test(e2e) kill-and-resume.
