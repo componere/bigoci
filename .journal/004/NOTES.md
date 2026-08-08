@@ -395,3 +395,17 @@ be scoped per toxic.
 
 Commits d20caf7 + df6eaf8 (both G). PR #24 open, CI monitored. After merge:
 PLAN.md phase-3 boxes + TECH_NOTES promotions + session close.
+
+## 2026-08-08 13:35 — PHASE 3 COMPLETE
+PR #24 merged (CI green first try) → master fdbfc03. All four phase-3
+success criteria checked in .journal/002/PLAN.md with dated evidence
+annotations. The phase shipped as four PRs: #21 feat(oci) classification +
+internal/retry (inert), #22 test(cli) tap de-flake (found by #21's CI),
+#23 feat(transfer) the behavior flip + ErrPartTooLarge + exit 7 + all D6
+docs, #24 test(e2e) the toxiproxy suite. Three manual gates passed with
+journaled evidence (13:09 entry). Release PR #11 will pick up the two feat
+commits (stays open per policy until the first release is cut).
+
+Phase 4 (resume) is next per PLAN.md; its seams are already in place
+(Sink.ReadAt/Size/Discard, Blobs.Get offset + Content-Range verification).
+Session stays open pending user review / close request.

@@ -181,16 +181,33 @@ retry on network errors/429/5xx, fail fast on other 4xx — applied per part.
 
 **Success criteria:**
 
-- [ ] Manual: run a push through a toxiproxy with periodic connection resets;
+- [x] Manual: run a push through a toxiproxy with periodic connection resets;
       watch the CLI ride through failures and finish; pulled file still
       byte-identical.
-- [ ] Manual: restart the zot container mid-push; the in-flight attempt fails,
+      *(2026-08-08: limit_data toxicity 0.3 per the README recipe; 2 http!
+      lines mid-PUT, retry visible as new seq + fresh session after a 0.787s
+      jittered gap; summary failed=2 with one blob-check HIT — a reset PUT
+      that had landed, found by the retry's HEAD; pull via clean port
+      byte-identical. Evidence: session 004 NOTES 13:09.)*
+- [x] Manual: restart the zot container mid-push; the in-flight attempt fails,
       retries recover once the registry is back (within backoff budget), and
       the artifact completes intact.
-- [ ] Manual: point the CLI at a dead port; observe fail-fast with a clear
+      *(2026-08-08: docker restart -t 0 mid 1 GiB push; PUT dies EOF, retries
+      after a 0.805s gap (largest in log, << 7s budget); total 2.17s vs 1.46s
+      clean — one backoff, not a storm; byte-identical.)*
+- [x] Manual: point the CLI at a dead port; observe fail-fast with a clear
       terminal error after the bounded attempts — no hang, no infinite retry.
-- [ ] Automated gates: table-driven unit tests for the backoff/decision
+      *(2026-08-08: exit 1 in 2.49s with no -timeout; "after 4 attempts: …
+      connection refused"; per-digest http! 4/3/3/3 — first-exhausted digest
+      spends the full budget, peers cancelled mid-backoff; zero deadline
+      errors.)*
+- [x] Automated gates: table-driven unit tests for the backoff/decision
       matrix; failure-injection integration suite; flaky-network e2e green.
+      *(2026-08-08: PRs #21/#23/#24 — retry unit matrix incl. the
+      timeout-renders-as-deadline regression row, ~30-row mock
+      failure-injection suite with budget-isolation assertions, real-clock
+      dead-port test, four-row toxiproxy suite with causal damage removal;
+      all green in CI at fdbfc03.)*
 
 ---
 
