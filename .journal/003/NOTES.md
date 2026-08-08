@@ -190,3 +190,14 @@ criteria checked with annotations, and phase 1's deferred manual-proof box
 closed — phases 1 AND 2 are now both fully proven. Phase 3 (retries) is next;
 its instrument (the CLI with -debug and -timeout, dead-port fail-fast
 observed today) is ready for it.
+
+## 2026-08-08 09:35 — Close
+Phase 2 complete and closed at the user's request; phase 3 (retries) is
+deliberately saved for the next session. Merged: PR #19 (a658d00, the cli/
+reference CLI) and PR #20 (796d477, moon/CI wiring). Master is 796d477 and
+the local default branch is fast-forwarded; both feature worktrees removed.
+All five phase-2 manual gates passed with evidence in the 09:05 entry, and
+PLAN.md now has phases 1 and 2 fully checked. SUMMARY.md written;
+TECH_NOTES.md updated (CLI frozen contracts, phase-5 instrument constraint,
+agent commit-identity trap, golangci parallel runners, worktree vcs-stamp
+quirk). Next session starts at PLAN.md phase 3 with its instrument ready.
