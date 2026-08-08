@@ -1,11 +1,14 @@
 // Package transfer moves one file between a local file and an OCI
 // repository.
 //
-// The package will hold the transfer orchestrator: the worker scheduling,
-// retry decisions, verification bookkeeping, and progress accounting that
-// drive a push or a pull. Today it holds only the ports that orchestrator
-// consumes — [Blobs] and [Manifests] for the registry end of a transfer,
-// [Source] and [Sink] for the file end.
+// The package holds the transfer orchestrator — [Push] and [Pull], with the
+// worker scheduling and verification bookkeeping that drive them — together
+// with the ports it consumes: [Blobs] and [Manifests] for the registry end of
+// a transfer, [Source] and [Sink] for the file end.
+//
+// Retries, resume, and progress accounting are not here yet. A failure
+// surfaces to the caller instead of being retried, and a pull fetches every
+// part even when an earlier attempt left some of them on disk.
 //
 // # The port model
 //

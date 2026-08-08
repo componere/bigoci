@@ -37,6 +37,11 @@ const (
 // implementation of the format.
 const escapedTitle = `a&b<c>.bin`
 
+// emptyConfigDigest is the digest of the OCI empty config blob, copied from
+// the format reference so the value the code returns is checked against the
+// documented one rather than against itself.
+const emptyConfigDigest = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+
 // goldenManifest is the exact encoding of the artifact in TestEncodeGolden. It
 // is written out in full so any drift in the canonical encoding — field order,
 // annotation order, whitespace, escaping — fails loudly instead of quietly
@@ -220,6 +225,32 @@ func TestEncodeRejectsArtifactsThatBreakTheFormat(t *testing.T) {
 			assert.Nil(t, encoded)
 		})
 	}
+}
+
+func TestEmptyConfig(t *testing.T) {
+	t.Run("the descriptor addresses the content it comes with", func(t *testing.T) {
+		descriptor, content := manifest.EmptyConfig()
+
+		assert.Equal(t, digest.FromBytes(content), descriptor.Digest)
+		assert.Equal(t, int64(len(content)), descriptor.Size)
+	})
+
+	t.Run("the descriptor is the one the format pins", func(t *testing.T) {
+		descriptor, content := manifest.EmptyConfig()
+
+		assert.Equal(t, ocispec.MediaTypeEmptyJSON, descriptor.MediaType)
+		assert.Equal(t, emptyConfigDigest, descriptor.Digest.String())
+		assert.Equal(t, "{}", string(content))
+		assert.Nil(t, descriptor.Data, "inline data would marshal into a member the format does not have")
+	})
+
+	t.Run("the content is a fresh copy on every call", func(t *testing.T) {
+		_, first := manifest.EmptyConfig()
+		first[0] = 'X'
+
+		_, second := manifest.EmptyConfig()
+		assert.Equal(t, "{}", string(second))
+	})
 }
 
 // fixtureArtifact builds a valid artifact for a file of fileSize bytes split at
