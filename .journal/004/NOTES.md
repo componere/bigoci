@@ -409,3 +409,17 @@ commits (stays open per policy until the first release is cut).
 Phase 4 (resume) is next per PLAN.md; its seams are already in place
 (Sink.ReadAt/Size/Discard, Blobs.Get offset + Content-Range verification).
 Session stays open pending user review / close request.
+
+## 2026-08-08 13:46 — Close
+Phase 3 shipped whole: PRs #21 (classification + internal/retry, cb02877),
+#22 (cli tap de-flake, 34e56ce), #23 (per-part retry + ErrPartTooLarge +
+exit 7 + all D6 docs, 4dca285), #24 (toxiproxy e2e, fdbfc03) — all
+squash-merged, local master fast-forwarded to fdbfc03, all session worktrees
+removed. All four PLAN.md phase-3 criteria checked with dated evidence; the
+three manual gates' full evidence is in the 13:09 entry. Governing design
+preserved as .journal/004/DESIGN.md. SUMMARY.md written; INDEX row set to
+complete; TECH_NOTES gained the retry-classification contract, the
+ctx-not-error-shape rule, the never-retry-the-disk mechanics, the per-test
+transport rule, and the fault-injection e2e discipline, and its seams line
+now points at phase 4. Handoff: phase 4 (resume) starts clean from master
+fdbfc03; release PR #11 stays open per policy.
