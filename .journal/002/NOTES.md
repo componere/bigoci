@@ -165,3 +165,31 @@ CI: e2e verified actually running on GH Actions (9.3s root pkg incl. zot).
 Phase 1 success criteria: both automated gates checked off in PLAN.md.
 Manual proof deferred to phase 2 (reference CLI) per plan. Phase 2 not
 started — awaiting user go-ahead.
+
+## 2026-08-07 20:04 — Precision audit merged (#18, master 0ce9ecc)
+User asked for a dedicated exactly-what-we-need audit before phase 2.
+Three read-only auditors (scope/Opus, redundancy/Opus, mechanical/Sonnet)
+swept master. Verdict: tree is tight — no dead subsystems, deps all
+load-bearing, deadcode/staticcheck clean, zero TODOs. 20 findings; I
+accepted 18 (net -69 lines), the notable ones:
+- transfer.Pull → error-only (descriptor had no consumer; design's
+  public API is error-only).
+- Split-rule validation single-gated through plan.New everywhere
+  (extends the PR-1 decision); shared validateRegistryPorts helper.
+- Not-found chain said "not found" 3x → StatusError.Is(ErrNotFound),
+  no second wrapping layer. Phase 3 classification builds on this.
+- Sink.Discard() owns partial removal; Client composes clientSettings.
+- Unreachable guards cut (negative offset/size, dead rangeStart
+  disjunct); Plan.PartSize() accessor cut; template leftovers in
+  .moon/ deleted.
+- GOOS=windows cross-build added to moon check/CI so the !unix branch
+  cannot rot (chose CI-pin over declaring the library unix-only — a
+  scope call the user hasn't made).
+- plan.ErrTooManyParts kept + documented as held for the public error
+  contract (phase 7).
+DECLINED (recorded): cutting the public WithHTTPClient nil guard —
+auditors disagreed with each other; the guard implements the documented
+nil-is-ignored contract at the public boundary (observable with
+nil-after-real option ordering). Both layers keep their guard.
+scaffold/ at repo root is session-protocol machinery (journal templates
++ skills), not template debt — correctly unflagged.
