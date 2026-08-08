@@ -67,7 +67,7 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, ocispec.Descriptor{}, notFoundError(resp)
+		return nil, ocispec.Descriptor{}, statusError(resp)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, ocispec.Descriptor{}, statusError(resp)

@@ -300,32 +300,39 @@ func TestPushStopsWhenTheContextIsCancelled(t *testing.T) {
 func TestPushRefusesAnIncompleteSpec(t *testing.T) {
 	tests := []struct {
 		name    string
-		spoil   func(spec *transfer.PushSpec)
+		spoil   func(t *testing.T, spec *transfer.PushSpec)
 		wantErr string
 	}{
 		{
 			name:    "a spec without a source is refused",
-			spoil:   func(spec *transfer.PushSpec) { spec.Source = nil },
+			spoil:   func(_ *testing.T, spec *transfer.PushSpec) { spec.Source = nil },
 			wantErr: "no source",
 		},
 		{
 			name:    "a spec without a blobs port is refused",
-			spoil:   func(spec *transfer.PushSpec) { spec.Blobs = nil },
+			spoil:   func(_ *testing.T, spec *transfer.PushSpec) { spec.Blobs = nil },
 			wantErr: "no blobs port",
 		},
 		{
 			name:    "a spec without a manifests port is refused",
-			spoil:   func(spec *transfer.PushSpec) { spec.Manifests = nil },
+			spoil:   func(_ *testing.T, spec *transfer.PushSpec) { spec.Manifests = nil },
 			wantErr: "no manifests port",
 		},
 		{
-			name:    "a spec without a part size is refused",
-			spoil:   func(spec *transfer.PushSpec) { spec.PartSize = 0 },
+			// The plan is the split rule's single gate, so the source's
+			// recorded size is read on the way to the rejection — but no
+			// port is ever touched.
+			name: "a spec without a part size is refused by the plan",
+			spoil: func(t *testing.T, spec *transfer.PushSpec) {
+				t.Helper()
+				spec.PartSize = 0
+				spec.Source = mockSource(t, nil)
+			},
 			wantErr: "part size must be positive",
 		},
 		{
 			name:    "a spec without workers is refused",
-			spoil:   func(spec *transfer.PushSpec) { spec.Workers = 0 },
+			spoil:   func(_ *testing.T, spec *transfer.PushSpec) { spec.Workers = 0 },
 			wantErr: "worker count must be positive",
 		},
 	}
@@ -343,7 +350,7 @@ func TestPushRefusesAnIncompleteSpec(t *testing.T) {
 				Workers:   2,
 				Title:     "model.bin",
 			}
-			tt.spoil(&spec)
+			tt.spoil(t, &spec)
 
 			descriptor, err := transfer.Push(t.Context(), spec)
 			require.ErrorContains(t, err, tt.wantErr)

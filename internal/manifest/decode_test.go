@@ -264,8 +264,10 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 			wantErr: `part 0 digest "sha256:nothex"`,
 		},
 		{
-			name:    "file digest from another algorithm",
-			corrupt: func(m map[string]any) { annotationsOf(m)[manifest.AnnotationFileDigest] = otherDigest(t) },
+			name: "file digest from another algorithm",
+			corrupt: func(m map[string]any) {
+				annotationsOf(m)[manifest.AnnotationFileDigest] = otherAlgorithmDigest(t).String()
+			},
 			wantErr: `file digest algorithm is "sha512"`,
 		},
 	}
@@ -403,11 +405,4 @@ func layersOf(m map[string]any) []map[string]any {
 	}
 
 	return layers
-}
-
-// otherDigest returns a well-formed digest string that does not use sha256.
-func otherDigest(t *testing.T) string {
-	t.Helper()
-
-	return otherAlgorithmDigest(t).String()
 }

@@ -54,7 +54,7 @@ func TestPullAssemblesTheFile(t *testing.T) {
 			sink := mockSink(t, file)
 			sink.EXPECT().Commit().RunAndReturn(file.commit).Once()
 
-			got, err := transfer.Pull(t.Context(), transfer.PullSpec{
+			err := transfer.Pull(t.Context(), transfer.PullSpec{
 				Sink:      sink,
 				Blobs:     mockBlobsServing(t, store),
 				Manifests: manifests,
@@ -62,7 +62,6 @@ func TestPullAssemblesTheFile(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			assert.Equal(t, descriptor, got)
 			assert.Equal(t, content, file.bytes())
 			assert.Equal(t, 1, file.commitCount())
 			sink.AssertCalled(t, "Truncate", tt.fileSize)
@@ -90,7 +89,7 @@ func TestPullRefusesAPartThatDoesNotMatchItsDigest(t *testing.T) {
 	file := &memFile{}
 	sink := mockSink(t, file)
 
-	_, err := transfer.Pull(t.Context(), transfer.PullSpec{
+	err := transfer.Pull(t.Context(), transfer.PullSpec{
 		Sink:      sink,
 		Blobs:     mockBlobsServing(t, store),
 		Manifests: manifests,
@@ -139,7 +138,7 @@ func TestPullRefusesAPartOfTheWrongLength(t *testing.T) {
 			file := &memFile{}
 			sink := mockSink(t, file)
 
-			_, err := transfer.Pull(t.Context(), transfer.PullSpec{
+			err := transfer.Pull(t.Context(), transfer.PullSpec{
 				Sink:      sink,
 				Blobs:     mockBlobsServing(t, store),
 				Manifests: manifests,
@@ -169,7 +168,7 @@ func TestPullRefusesAManifestThatIsNotABigociArtifact(t *testing.T) {
 	blobs := ocimocks.NewMockBlobs(t)
 	sink := filemocks.NewMockSink(t)
 
-	_, err := transfer.Pull(t.Context(), transfer.PullSpec{
+	err := transfer.Pull(t.Context(), transfer.PullSpec{
 		Sink:      sink,
 		Blobs:     blobs,
 		Manifests: manifests,
@@ -243,7 +242,7 @@ func TestPullReportsAFailureFromEachPort(t *testing.T) {
 			sink := filemocks.NewMockSink(t)
 			tt.wire(manifests, blobs, sink)
 
-			_, err := transfer.Pull(t.Context(), transfer.PullSpec{
+			err := transfer.Pull(t.Context(), transfer.PullSpec{
 				Sink:      sink,
 				Blobs:     blobs,
 				Manifests: manifests,
@@ -282,7 +281,7 @@ func TestPullStopsWhenTheContextIsCancelled(t *testing.T) {
 
 	// Pull returns only after every worker it started has returned, so
 	// reaching the assertions at all is the proof that none was left running.
-	_, err := transfer.Pull(ctx, transfer.PullSpec{
+	err := transfer.Pull(ctx, transfer.PullSpec{
 		Sink:      sink,
 		Blobs:     blobs,
 		Manifests: manifests,
@@ -338,9 +337,8 @@ func TestPullRefusesAnIncompleteSpec(t *testing.T) {
 			}
 			tt.spoil(&spec)
 
-			descriptor, err := transfer.Pull(t.Context(), spec)
+			err := transfer.Pull(t.Context(), spec)
 			require.ErrorContains(t, err, tt.wantErr)
-			assert.Equal(t, ocispec.Descriptor{}, descriptor)
 		})
 	}
 }

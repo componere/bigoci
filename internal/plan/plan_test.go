@@ -109,7 +109,6 @@ func TestNewCountsParts(t *testing.T) {
 
 			assert.Equal(t, tt.want, p.NumParts())
 			assert.Equal(t, tt.fileSize, p.FileSize())
-			assert.Equal(t, tt.partSize, p.PartSize())
 		})
 	}
 }
@@ -430,7 +429,6 @@ func TestZeroPlanHasNoParts(t *testing.T) {
 
 	assert.Zero(t, p.NumParts())
 	assert.Zero(t, p.FileSize())
-	assert.Zero(t, p.PartSize())
 	assert.Empty(t, slices.Collect(p.Parts()))
 }
 

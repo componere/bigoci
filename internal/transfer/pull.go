@@ -9,7 +9,6 @@ import (
 	"io"
 
 	digest "github.com/opencontainers/go-digest"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/componere/bigoci/internal/manifest"
@@ -32,8 +31,7 @@ type PullSpec struct {
 	Workers int
 }
 
-// Pull downloads the artifact the manifests port is bound to into the sink
-// and returns the descriptor of the manifest it pulled.
+// Pull downloads the artifact the manifests port is bound to into the sink.
 //
 // The manifest comes first, because it says how large the file is and which
 // blobs make it up. Sizing the sink to that length up front turns the
@@ -49,52 +47,45 @@ type PullSpec struct {
 //
 // Pull does not retry, and it does not resume: every part is fetched, even
 // one an earlier attempt already wrote.
-func Pull(ctx context.Context, spec PullSpec) (ocispec.Descriptor, error) {
+func Pull(ctx context.Context, spec PullSpec) error {
 	if err := spec.validate(); err != nil {
-		return ocispec.Descriptor{}, err
+		return err
 	}
 
-	body, descriptor, err := spec.Manifests.Get(ctx)
+	body, _, err := spec.Manifests.Get(ctx)
 	if err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("fetch the manifest: %w", err)
+		return fmt.Errorf("fetch the manifest: %w", err)
 	}
 
 	artifact, err := manifest.Decode(body)
 	if err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("decode the manifest: %w", err)
+		return fmt.Errorf("decode the manifest: %w", err)
 	}
 
 	if err := spec.Sink.Truncate(artifact.FileSize); err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("size the destination to %d bytes: %w", artifact.FileSize, err)
+		return fmt.Errorf("size the destination to %d bytes: %w", artifact.FileSize, err)
 	}
 
 	if err := fetchParts(ctx, spec, artifact); err != nil {
-		return ocispec.Descriptor{}, err
+		return err
 	}
 
 	if err := spec.Sink.Commit(); err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("commit the destination: %w", err)
+		return fmt.Errorf("commit the destination: %w", err)
 	}
 
-	return descriptor, nil
+	return nil
 }
 
 // validate checks the spec before the pull touches anything. A missing port
 // or a nonsensical knob is a programming error, and catching it here means no
 // request is made and no file is created on the way to reporting it.
 func (s PullSpec) validate() error {
-	switch {
-	case s.Sink == nil:
+	if s.Sink == nil {
 		return errors.New("pull spec has no sink")
-	case s.Blobs == nil:
-		return errors.New("pull spec has no blobs port")
-	case s.Manifests == nil:
-		return errors.New("pull spec has no manifests port")
-	case s.Workers <= 0:
-		return fmt.Errorf("worker count must be positive, got %d", s.Workers)
 	}
 
-	return nil
+	return validateRegistryPorts(s.Blobs, s.Manifests, s.Workers)
 }
 
 // fetchParts downloads and verifies every part of the artifact into the sink.

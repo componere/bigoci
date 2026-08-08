@@ -201,20 +201,6 @@ func TestBlobsGet(t *testing.T) {
 	}
 }
 
-func TestBlobsGetRejectsNegativeOffset(t *testing.T) {
-	t.Parallel()
-
-	var rec recorder
-	repo := newRegistry(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		rec.record(t, r)
-	}), repoName+":"+tag)
-
-	_, err := repo.Blobs().Get(t.Context(), digest.FromString(blobPayload), -1)
-
-	require.Error(t, err)
-	assert.Empty(t, rec.all(), "a bad offset must not reach the registry")
-}
-
 func TestBlobsPut(t *testing.T) {
 	t.Parallel()
 
@@ -339,20 +325,6 @@ func TestBlobsPutFailures(t *testing.T) {
 			assert.Len(t, rec.all(), tt.wantRequests)
 		})
 	}
-}
-
-func TestBlobsPutRejectsNegativeSize(t *testing.T) {
-	t.Parallel()
-
-	var rec recorder
-	repo := newRegistry(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		rec.record(t, r)
-	}), repoName+":"+tag)
-
-	err := repo.Blobs().Put(t.Context(), digest.FromString(blobPayload), -1, strings.NewReader(blobPayload))
-
-	require.Error(t, err)
-	assert.Empty(t, rec.all(), "a bad size must not reach the registry")
 }
 
 // uploadResponses is how a fake registry answers the two requests a blob

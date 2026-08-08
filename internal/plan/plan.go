@@ -20,6 +20,10 @@ type PartSize int64
 // ErrTooManyParts reports that a file and part size would split into more
 // than [MaxParts] parts. Callers recover by retrying with a larger part size;
 // the wrapped message names the smallest one that fits.
+//
+// No production code branches on it yet: it is held for the public error
+// contract, where "this file needs a larger part size" is a case a caller
+// fixes differently than any transport failure.
 var ErrTooManyParts = errors.New("too many parts")
 
 // Part is one fixed-size piece of a file: the bytes in the half-open range
@@ -82,12 +86,6 @@ func New(fileSize int64, partSize PartSize) (Plan, error) {
 // FileSize returns the total length of the planned file in bytes.
 func (p Plan) FileSize() int64 {
 	return p.fileSize
-}
-
-// PartSize returns the part size the plan was computed with. Only the last
-// part may be shorter than this.
-func (p Plan) PartSize() PartSize {
-	return p.partSize
 }
 
 // NumParts returns how many parts the file splits into. It is at least one

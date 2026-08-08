@@ -28,14 +28,6 @@
 // ordinary unit testing. And an adapter can be replaced, by a caller or by
 // bigoci itself, without the core noticing.
 //
-// # References stay outside the core
-//
-// [Manifests] is bound to one reference — a tag or a digest — when its
-// adapter is constructed, instead of taking a reference on every call. The
-// core therefore never parses, validates, or renders the
-// registry/repository:tag@digest grammar; the adapter that has to speak it is
-// the only code that knows it exists.
-//
 // The design is documented at
 // https://componere.github.io/bigoci/explanation/design/.
 package transfer

@@ -3,8 +3,6 @@ package bigoci
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"os"
 	"path/filepath"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -39,11 +37,9 @@ type Reference string
 // [New] builds one; the zero value is usable and behaves as if built with no
 // options.
 type Client struct {
-	// httpClient sends every registry request. It is nil when the caller
-	// named none, which leaves the oci adapter's default in place.
-	httpClient *http.Client
-	// plainHTTP talks http:// to the registry instead of https://.
-	plainHTTP bool
+	// settings are the transport settings the options collected; the fields
+	// are documented on clientSettings, their one home.
+	settings clientSettings
 }
 
 // New returns a client configured by opts.
@@ -58,7 +54,7 @@ func New(opts ...Option) (*Client, error) {
 		opt(&applied)
 	}
 
-	return &Client{httpClient: applied.httpClient, plainHTTP: applied.plainHTTP}, nil
+	return &Client{settings: applied}, nil
 }
 
 // Push uploads the file src names to ref and returns the descriptor of the
@@ -204,13 +200,13 @@ func (c *Client) pull(ctx context.Context, ref Reference, dest FileDest, opts []
 	// successful one published — and leaves the partial behind either way.
 	defer func() { _ = sink.Close() }()
 
-	if _, err := transfer.Pull(ctx, transfer.PullSpec{
+	if err := transfer.Pull(ctx, transfer.PullSpec{
 		Sink:      sink,
 		Blobs:     repo.Blobs(),
 		Manifests: repo.Manifests(),
 		Workers:   settings.workers,
 	}); err != nil {
-		discardEmptyPartial(sink, dest.path)
+		discardEmptyPartial(sink)
 
 		return fmt.Errorf("pull %s to %s: %w", ref, dest.path, err)
 	}
@@ -223,22 +219,21 @@ func (c *Client) pull(ctx context.Context, ref Reference, dest FileDest, opts []
 // that is not one, should not litter the destination directory on its way to
 // an error. A partial with any content stays where it is — those bytes are
 // what a later pull resumes from.
-func discardEmptyPartial(sink *file.Sink, dest string) {
+func discardEmptyPartial(sink *file.Sink) {
 	size, err := sink.Size()
 	if err != nil || size != 0 {
 		return
 	}
 
-	_ = sink.Close()
-	_ = os.Remove(dest + file.PartialSuffix)
+	_ = sink.Discard()
 }
 
 // repository builds the registry adapters for ref under the client's
 // transport settings. Reference grammar lives in the adapter, so this is
 // where a malformed reference is reported.
 func (c *Client) repository(ref Reference) (*oci.Repository, error) {
-	options := []oci.Option{oci.WithHTTPClient(c.httpClient)}
-	if c.plainHTTP {
+	options := []oci.Option{oci.WithHTTPClient(c.settings.httpClient)}
+	if c.settings.plainHTTP {
 		options = append(options, oci.WithPlainHTTP())
 	}
 

@@ -61,6 +61,18 @@ tasks:
     options:
       cache: false
 
+  # Cross-compile for the one non-unix platform the file adapter carries a
+  # build branch for, so the branch cannot rot uncompiled: CI never runs
+  # Windows, but it must at least keep building it.
+  build-windows:
+    command: 'go build ./...'
+    env:
+      GOOS: 'windows'
+    inputs:
+      - '@group(goSources)'
+    options:
+      cache: false
+
   test:
     # -race is load bearing: the adapters promise concurrent-safe ReadAt and
     # WriteAt over shared file handles, and only the race detector proves it.
@@ -87,6 +99,7 @@ tasks:
       - 'root:format'
       - 'root:lint'
       - 'root:build'
+      - 'root:build-windows'
       - 'root:test'
       - 'docs:build'
     inputs:

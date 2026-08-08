@@ -132,13 +132,13 @@ func TestPullSurfacesACommitFailure(t *testing.T) {
 	artifact, body := artifactFor(t, content, "commit.bin")
 
 	manifests := ocimocks.NewMockManifests(t)
-	manifests.EXPECT().Get(mock.Anything).Return(body, descriptorFor(body), nil)
+	manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil)
 
 	assembled := &memFile{}
 	sink := mockSink(t, assembled)
 	sink.EXPECT().Commit().Return(commitFailed)
 
-	_, err := transfer.Pull(t.Context(), transfer.PullSpec{
+	err := transfer.Pull(t.Context(), transfer.PullSpec{
 		Sink:      sink,
 		Blobs:     mockBlobsServing(t, newBlobStore(artifact.Parts, content)),
 		Manifests: manifests,
@@ -158,7 +158,7 @@ func TestPullReportsABrokenBlobReadAsAFetchFailure(t *testing.T) {
 	_, body := artifactFor(t, content, "broken.bin")
 
 	manifests := ocimocks.NewMockManifests(t)
-	manifests.EXPECT().Get(mock.Anything).Return(body, descriptorFor(body), nil)
+	manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil)
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
@@ -167,7 +167,7 @@ func TestPullReportsABrokenBlobReadAsAFetchFailure(t *testing.T) {
 		},
 	)
 
-	_, err := transfer.Pull(t.Context(), transfer.PullSpec{
+	err := transfer.Pull(t.Context(), transfer.PullSpec{
 		Sink:      mockSink(t, &memFile{}),
 		Blobs:     blobs,
 		Manifests: manifests,
@@ -204,16 +204,6 @@ func readAt(held []byte, p []byte, off int64) (int, error) {
 	}
 
 	return n, nil
-}
-
-// descriptorFor returns the descriptor a manifests port would hand back for
-// body.
-func descriptorFor(body []byte) ocispec.Descriptor {
-	return ocispec.Descriptor{
-		MediaType: ocispec.MediaTypeImageManifest,
-		Digest:    digest.FromBytes(body),
-		Size:      int64(len(body)),
-	}
 }
 
 // brokenBody is a blob body whose read fails partway: one byte arrives, then
