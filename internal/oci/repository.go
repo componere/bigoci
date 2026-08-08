@@ -36,7 +36,8 @@ const errorBodyLimit = 4096
 // ErrNotFound reports that the registry does not hold what a request named: a
 // manifest, or a blob [Blobs.Get] tried to read. [Blobs.Exists] never returns
 // it, because "the registry does not hold this blob" is the answer that call
-// asks for rather than a failure.
+// asks for rather than a failure. A 404's [StatusError] matches it through
+// [errors.Is]; nothing wraps the sentinel in a second layer.
 var ErrNotFound = errors.New("not found")
 
 // Option configures a [Repository] as it is built. The set is deliberately
@@ -55,11 +56,9 @@ type settings struct {
 }
 
 // WithHTTPClient sends the repository's requests with client instead of the
-// default one.
-//
-// This is the seam for timeouts, proxies, connection pool tuning, and — once
-// bigoci grows authentication — an authenticating [net/http.RoundTripper]. A
-// nil client is ignored, so a caller may pass one through unconditionally.
+// default one. A nil client is ignored, so a caller may pass one through
+// unconditionally. The public package's option of the same name carries the
+// rationale.
 func WithHTTPClient(client *http.Client) Option {
 	return func(s *settings) {
 		if client != nil {
@@ -68,10 +67,8 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-// WithPlainHTTP talks http:// to the registry instead of https://.
-//
-// Local registries — zot or CNCF Distribution in a container, the end-to-end
-// test fixtures — serve plain HTTP. Nothing else should.
+// WithPlainHTTP talks http:// to the registry instead of https://, for local
+// registries and test fixtures. Nothing else should use it.
 func WithPlainHTTP() Option {
 	return func(s *settings) {
 		s.scheme = schemeHTTP
@@ -255,6 +252,14 @@ func (e *StatusError) Error() string {
 	return summary
 }
 
+// Is makes a 404 match [ErrNotFound] under [errors.Is] without a second
+// wrapping layer, so a not-found failure says "not found" once — in the
+// status text the message already carries — instead of stacking the phrase at
+// every boundary.
+func (e *StatusError) Is(target error) bool {
+	return target == ErrNotFound && e.Status == http.StatusNotFound
+}
+
 // statusError reports a response whose status the adapter did not expect. It
 // reads the body for the error detail, which also drains it for the close
 // that follows.
@@ -265,14 +270,6 @@ func statusError(resp *http.Response) error {
 		Status: resp.StatusCode,
 		Detail: errorDetail(resp.Body),
 	}
-}
-
-// notFoundError reports a 404. It wraps [ErrNotFound] so a caller can tell
-// "the registry does not have this" apart from "the request failed" with
-// [errors.Is], and it wraps the [StatusError] too so the status stays
-// inspectable.
-func notFoundError(resp *http.Response) error {
-	return fmt.Errorf("%w: %w", ErrNotFound, statusError(resp))
 }
 
 // errorDetail reads the first errorBodyLimit bytes of a failed response body

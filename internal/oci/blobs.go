@@ -80,10 +80,6 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 //
 // A blob the registry does not hold is an error wrapping [ErrNotFound].
 func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error) {
-	if offset < 0 {
-		return nil, fmt.Errorf("blob offset must not be negative, got %d", offset)
-	}
-
 	req, err := b.repo.newRequest(ctx, http.MethodGet, b.repo.endpoint(blobPath(dgst)), nil)
 	if err != nil {
 		return nil, err
@@ -122,10 +118,6 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, offset int64) (io.R
 // [io.SectionReader] a push streams a part from — which some registries
 // reject.
 func (b *Blobs) Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader) error {
-	if size < 0 {
-		return fmt.Errorf("blob size must not be negative, got %d", size)
-	}
-
 	session, err := b.openUpload(ctx)
 	if err != nil {
 		return err
@@ -184,8 +176,6 @@ func (b *Blobs) completeUpload(
 		return err
 	}
 
-	// The body is opaque to net/http, which leaves the length unknown and the
-	// encoding chunked unless the length is declared here.
 	req.ContentLength = size
 	req.Header.Set("Content-Type", mediaTypeBlob)
 
@@ -248,7 +238,7 @@ func withDigest(session *url.URL, dgst digest.Digest) *url.URL {
 // for.
 func checkBlobRead(resp *http.Response, offset int64) error {
 	if resp.StatusCode == http.StatusNotFound {
-		return notFoundError(resp)
+		return statusError(resp)
 	}
 
 	if offset == 0 {
@@ -311,7 +301,7 @@ func rangeStart(value string) (int64, bool) {
 	}
 
 	n, err := strconv.ParseInt(first, 10, 64)
-	if err != nil || n < 0 {
+	if err != nil {
 		return 0, false
 	}
 

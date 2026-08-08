@@ -134,6 +134,21 @@ func TestSinkIsSpentAfterCommit(t *testing.T) {
 	assert.NoError(t, sink.Close(), "Close stays a no-op however often it is called")
 }
 
+func TestSinkDiscardRemovesThePartial(t *testing.T) {
+	t.Parallel()
+
+	dest, partial := newSinkPaths(t)
+
+	sink := newSink(t, dest)
+	_, err := sink.WriteAt([]byte(pulledContent[:partLen]), 0)
+	require.NoError(t, err)
+
+	require.NoError(t, sink.Discard())
+
+	requireAbsent(t, partial, "Discard removes the partial a pull decided not to keep")
+	requireAbsent(t, dest, "Discard never touches the destination")
+}
+
 func TestCreateSinkRefusesAPlantedSymlink(t *testing.T) {
 	t.Parallel()
 

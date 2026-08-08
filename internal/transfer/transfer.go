@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"errors"
+	"fmt"
 
 	digest "github.com/opencontainers/go-digest"
 
@@ -33,4 +34,21 @@ type partJob struct {
 	// dgst is the digest of the range's bytes: what a push uploads the part
 	// under, and what a pull verifies the part against.
 	dgst digest.Digest
+}
+
+// validateRegistryPorts checks the spec fields a push and a pull share: the
+// two registry ports and the worker count. The worker check is load bearing,
+// not ceremony — zero workers would start no goroutines, drain nothing, and
+// let a transfer report success over work that never happened.
+func validateRegistryPorts(blobs Blobs, manifests Manifests, workers int) error {
+	switch {
+	case blobs == nil:
+		return errors.New("transfer spec has no blobs port")
+	case manifests == nil:
+		return errors.New("transfer spec has no manifests port")
+	case workers <= 0:
+		return fmt.Errorf("worker count must be positive, got %d", workers)
+	}
+
+	return nil
 }

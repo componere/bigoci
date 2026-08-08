@@ -140,11 +140,13 @@ func Encode(a Artifact) ([]byte, error) {
 		annotations[ocispec.AnnotationTitle] = a.Title
 	}
 
+	config, _ := EmptyConfig()
+
 	return encodeCanonical(ocispec.Manifest{
 		Versioned:    specs.Versioned{SchemaVersion: schemaVersion},
 		MediaType:    ocispec.MediaTypeImageManifest,
 		ArtifactType: ArtifactType,
-		Config:       emptyConfig(),
+		Config:       config,
 		Layers:       layers,
 		Annotations:  annotations,
 	})
@@ -187,14 +189,6 @@ func EmptyConfig() (ocispec.Descriptor, []byte) {
 	descriptor.Data = nil
 
 	return descriptor, bytes.Clone(ocispec.DescriptorEmptyJSON.Data)
-}
-
-// emptyConfig returns the descriptor half of [EmptyConfig], which is all the
-// encoder needs.
-func emptyConfig() ocispec.Descriptor {
-	descriptor, _ := EmptyConfig()
-
-	return descriptor
 }
 
 // validate checks an artifact against the format contract. [Encode] and

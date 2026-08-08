@@ -1,25 +1,12 @@
-# Shared Moon workspace configuration for the repository template.
-# Keep the current projects explicit, then uncomment the discovery patterns
-# below as the template grows into apps, packages, services, or tools.
+# Moon workspace configuration for bigoci: the root Go library and the docs
+# site. The cli/ reference module arrives with its own project entry when it
+# is built.
 
 projects:
   globs: []
   sources:
     root: '.'
     docs: 'docs'
-
-  # Uncomment to auto-discover more projects as the repository grows.
-  # globs:
-  #   - 'apps/*'
-  #   - 'packages/*'
-  #   - 'services/*'
-  #   - 'tools/*'
-  #   - 'crates/*'
-  #   - 'cmd/*'
-  #   - 'sdk/*'
-  #
-  # Uncomment if glob-discovered IDs are likely to collide.
-  # globFormat: 'source-path'
 
 defaultProject: 'root'
 
@@ -29,15 +16,3 @@ vcs:
 
 pipeline:
   installDependencies: false
-
-# Uncomment when you want Moon to aggregate project owners into CODEOWNERS.
-# codeowners:
-#   sync: true
-
-# Uncomment after you start tagging and layering projects and want
-# Moon to enforce project boundaries.
-# constraints:
-#   enforceLayerRelationships: true
-#   tagRelationships:
-#     frontend: ['shared-ui', 'typescript']
-#     backend: ['data', 'shared-kernel']

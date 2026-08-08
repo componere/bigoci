@@ -174,7 +174,7 @@ func (s *Sink) Commit() error {
 // Close releases the file handle and leaves the partial file on disk. That is
 // deliberate: the bytes an abandoned pull already fetched are what the next
 // pull resumes from, so nothing here deletes them. A caller that wants the
-// partial gone removes it.
+// partial gone uses [Sink.Discard].
 //
 // Close is idempotent, and it returns nil after [Sink.Commit], which already
 // closed the handle.
@@ -185,4 +185,14 @@ func (s *Sink) Close() error {
 	s.closed = true
 
 	return s.file.Close()
+}
+
+// Discard closes the handle and removes the partial file, for a pull that
+// decided its partial holds nothing worth resuming from. The destination is
+// never touched. Discarding after [Sink.Commit] would remove nothing, because
+// the rename already moved the partial away.
+func (s *Sink) Discard() error {
+	_ = s.Close()
+
+	return os.Remove(s.partial)
 }

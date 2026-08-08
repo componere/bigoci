@@ -120,22 +120,15 @@ func Push(ctx context.Context, spec PushSpec) (ocispec.Descriptor, error) {
 
 // validate checks the spec before the push touches anything. A missing port
 // or a nonsensical knob is a programming error, and catching it here means no
-// request is made and no file is read on the way to reporting it.
+// request is made and no file is read on the way to reporting it. The part
+// size is not checked here: plan.New is the split rule's single gate and
+// rejects a non-positive one before anything else happens.
 func (s PushSpec) validate() error {
-	switch {
-	case s.Source == nil:
+	if s.Source == nil {
 		return errors.New("push spec has no source")
-	case s.Blobs == nil:
-		return errors.New("push spec has no blobs port")
-	case s.Manifests == nil:
-		return errors.New("push spec has no manifests port")
-	case s.PartSize <= 0:
-		return fmt.Errorf("part size must be positive, got %d", s.PartSize)
-	case s.Workers <= 0:
-		return fmt.Errorf("worker count must be positive, got %d", s.Workers)
 	}
 
-	return nil
+	return validateRegistryPorts(s.Blobs, s.Manifests, s.Workers)
 }
 
 // hashParts makes the push's single sequential pass over the source. It fills
