@@ -80,3 +80,35 @@ documented; refuse-Range pinned at integration level, not e2e.
 PR shape: 3 PRs — feat(oci) inert port change (call site guards start!=0,
 provable inertness), feat(transfer) resume + all docs, test(e2e) kill
 coverage. Next: implement PR 1.
+
+## 2026-08-08 15:35 — PR 1 merged (#25, master 2b06ecf)
+feat(oci): report the offset a blob read starts at. Opus implementer +
+3-lens review panel (wf_f57be27f-35c): all clean at fatal/major/minor, with
+8-mutation kill checks, independent byte-identical mock regen, and a 9-case
+contract probe ("could not construct an input where the adapter reports a
+start the port forbids"). Lead applied the panel's polish: guard message
+blames the blob port not the registry (an operator would otherwise chase a
+registry bug that lives in an adapter), port godoc gains the failed-call-
+reports-zero clause + negative-off precondition + "served a range" wording,
+blobReadStart godoc explains the redundant-but-clarifying 404 arm, explicit
+wantTransient:false on the 416 row, new ranged-404 row pinning ErrNotFound.
+Commit made by lead under joshuagilman@gmail.com (verified+signed).
+Learned: (1) golangci-lint caches results pointing into deleted worktrees
+and then aborts its generated-file filter — mock-file lint noise after a
+worktree removal means "golangci-lint cache clean", not mock edits. (2) The
+IDE LSP diagnoses this multi-worktree repo against the WRONG worktree's
+packages (claimed old mock arity while build+tests pass in the worktree) —
+trust the compiler in the worktree, verify with grep before dismissing.
+PR-2 handoff (from panel, verified): widen the pull.go guard to {0, done}
+and update its one "asks for zero" clause; invert the two assert.Zero
+offset guards (fixtures_test.go:322, retry_fixtures_test.go:372);
+wholeBlob (fixtures_test.go:331) is the seam for nonzero starts; four
+inline MockBlobs doubles in hardening_test/pull_test accept any offset and
+need a sweep when the guards invert; a 206 honoring the start may legally
+truncate the range (CDNs cap open-ended ranges) so stream's declared-length
+check is the only thing catching a short 206; blobBody mid-read transient
+tagging is proven only for the whole-blob shape — PR 2 needs a ranged-body
+break row; resumeOffset=5 fixture in blobs_test is the ready honored-range
+case. The DESIGN.md cap rule (done==part.Size → restart at 0) is what keeps
+the orchestrator from ever sending an unsatisfiable range, so 416-terminal
+stays safe for the complete-partial case (cold verify never fetches).
