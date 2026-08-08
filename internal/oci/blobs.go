@@ -64,8 +64,8 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 	}
 }
 
-// Get streams the blob dgst names, starting at offset. An offset of zero
-// reads the whole blob.
+// Get streams the blob dgst names from off, and reports the offset the stream
+// it returns actually starts at. An off of zero reads the whole blob.
 //
 // The returned reader is the response body itself, unread: no blob content
 // passes through a buffer on the way to the caller, who owns the reader and
@@ -73,35 +73,37 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 // connection that breaks part way through a blob is reported as worth another
 // attempt even though Get itself has long since returned.
 //
-// A non-zero offset asks for the remainder of the blob with a Range request.
-// The distribution spec does not require registries to honor one, so a
-// registry that answers 200 with the whole blob instead of 206 with the
-// requested range is an error rather than a silent restart from byte zero;
-// the fallback that re-fetches such a part from the beginning belongs to the
-// transfer orchestrator and arrives with resume support.
+// A nonzero off asks for the remainder of the blob with a Range request. The
+// distribution spec does not require registries to honor one, so a registry
+// that answers 200 with the whole blob instead of 206 with the requested range
+// is reported rather than refused: the reported offset is zero, the body is a
+// blob read like any other, and what to do about starting over belongs to the
+// orchestrator that asked. A 206 whose range starts at some third byte is
+// still an error — that is an answer to a question nobody asked.
 //
 // A blob the registry does not hold is an error wrapping [ErrNotFound].
-func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error) {
+func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.ReadCloser, int64, error) {
 	req, err := b.repo.newRequest(ctx, http.MethodGet, b.repo.endpoint(blobPath(dgst)), nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	if offset > 0 {
-		req.Header.Set("Range", rangeFrom(offset))
+	if off > 0 {
+		req.Header.Set("Range", rangeFrom(off))
 	}
 
 	resp, err := b.repo.do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	if err := checkBlobRead(resp, offset); err != nil {
+	start, err := blobReadStart(resp, off)
+	if err != nil {
 		_ = resp.Body.Close()
 
-		return nil, err
+		return nil, 0, err
 	}
 
-	return &blobBody{rc: resp.Body}, nil
+	return &blobBody{rc: resp.Body}, start, nil
 }
 
 // Put uploads size bytes read from r as the blob dgst names.
@@ -236,31 +238,46 @@ func withDigest(session *url.URL, dgst digest.Digest) *url.URL {
 	return &complete
 }
 
-// checkBlobRead checks a blob read's response against what the request asked
-// for.
-func checkBlobRead(resp *http.Response, offset int64) error {
+// blobReadStart checks a blob read's response against what the request asked
+// for and reports the byte the body starts at.
+//
+// A read from byte zero has one acceptable answer, a 200 carrying the whole
+// blob. A range request has two: a 206 whose range begins where the request
+// said, which starts at off, and a 200 from a registry that ignored the header
+// and is sending the blob from its first byte, which starts at 0. The second
+// is reported rather than refused because its body is a perfectly good blob
+// read, and only the caller knows whether reading it from the beginning is
+// cheaper than giving up. Every other status is a failure, 416 included: a
+// registry that refuses the range outright has answered nothing usable, and
+// asking again would only be refused again.
+//
+// The 404 is called out first only so the not-found chain is obvious at a
+// glance; either arm below would route it to the same [statusError], whose
+// status is what [ErrNotFound] matches on.
+func blobReadStart(resp *http.Response, off int64) (int64, error) {
 	if resp.StatusCode == http.StatusNotFound {
-		return statusError(resp)
+		return 0, statusError(resp)
 	}
 
-	if offset == 0 {
+	if off == 0 {
 		if resp.StatusCode != http.StatusOK {
-			return statusError(resp)
+			return 0, statusError(resp)
 		}
 
-		return nil
+		return 0, nil
 	}
 
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
-		return checkRangeStart(resp, offset)
+		if err := checkRangeStart(resp, off); err != nil {
+			return 0, err
+		}
+
+		return off, nil
 	case http.StatusOK:
-		return fmt.Errorf(
-			"%s %s: registry ignored %q and returned the whole blob with status %s",
-			resp.Request.Method, resp.Request.URL.Path, rangeFrom(offset), resp.Status,
-		)
+		return 0, nil
 	default:
-		return statusError(resp)
+		return 0, statusError(resp)
 	}
 }
 

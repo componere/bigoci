@@ -163,6 +163,54 @@ func TestPullRefusesAPartOfTheWrongLength(t *testing.T) {
 	}
 }
 
+// TestPullRefusesAStreamThatStartsSomewhereElse is what makes this phase's
+// whole-part fetching provable rather than merely intended: every fetch asks
+// to begin at byte zero, so a port reporting any other start has handed back a
+// stream the attempt cannot place, and the pull says so instead of writing it
+// into the wrong bytes of the file.
+func TestPullRefusesAStreamThatStartsSomewhereElse(t *testing.T) {
+	content := fileContent(singlePartSize)
+	artifact, body := artifactFor(t, content, "model.bin")
+
+	manifests := ocimocks.NewMockManifests(t)
+	manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil).Once()
+
+	store := newBlobStore(artifact.Parts, content)
+
+	blobs := ocimocks.NewMockBlobs(t)
+	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
+		func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, int64, error) {
+			part, err := store.serve(dgst)
+
+			return part, 1, err
+		},
+	)
+
+	policy, sleeps := testPolicy(t)
+
+	file := &memFile{}
+	sink := mockSink(t, file)
+
+	err := transfer.Pull(t.Context(), transfer.PullSpec{
+		Sink:      sink,
+		Blobs:     blobs,
+		Manifests: manifests,
+		Workers:   1,
+		Retry:     policy,
+	})
+	require.ErrorContains(t, err, "starts at byte 1")
+	require.ErrorContains(t, err, "fetch part 0")
+
+	assert.Empty(t, sleeps.waits(), "a stream at a byte nobody asked for is not worth another attempt")
+
+	served, closed := store.counts()
+	assert.Equal(t, served, closed, "a refused stream's body must still be closed")
+
+	sink.AssertNotCalled(t, "Commit")
+	assert.Zero(t, file.commitCount())
+	assert.Equal(t, make([]byte, singlePartSize), file.bytes(), "nothing is written from a stream that was refused")
+}
+
 func TestPullRefusesAManifestThatIsNotABigociArtifact(t *testing.T) {
 	body := []byte(otherArtifactManifest)
 
@@ -219,7 +267,7 @@ func TestPullReportsAFailureFromEachPort(t *testing.T) {
 			wire: func(manifests *ocimocks.MockManifests, blobs *ocimocks.MockBlobs, sink *filemocks.MockSink) {
 				manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil).Once()
 				sink.EXPECT().Truncate(mock.Anything).Return(nil).Once()
-				blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).Return(nil, unreachable)
+				blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).Return(nil, 0, unreachable)
 			},
 			wantErr: unreachable,
 		},
@@ -232,8 +280,8 @@ func TestPullReportsAFailureFromEachPort(t *testing.T) {
 
 				store := newBlobStore(artifact.Parts, content)
 				blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-					func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, error) {
-						return store.serve(dgst)
+					func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, int64, error) {
+						return wholeBlob(store.serve(dgst))
 					},
 				)
 			},
@@ -275,10 +323,10 @@ func TestPullStopsWhenTheContextIsCancelled(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, error) {
+		func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, int64, error) {
 			cancel()
 
-			return store.serve(dgst)
+			return wholeBlob(store.serve(dgst))
 		},
 	).Maybe()
 

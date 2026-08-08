@@ -244,16 +244,33 @@ func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
 // byte range, so a fresh Get also re-resolves whatever redirect the registry
 // points at, and no expired presigned URL is ever reused.
 //
+// The port reports where the stream it hands back really begins, and the
+// attempt writes nothing until that offset is one it can place. A stream
+// starting anywhere else would be copied into bytes of the file it does not
+// belong to, so it ends the attempt terminally instead of being worked around.
+//
 // The reader is closed on every path out, including the ones where the part
 // is rejected: a pull that gives up still has to hand the connection back,
 // and an attempt that held its body open would keep every earlier attempt's
 // body open with it.
 func (f *partFetcher) attempt(ctx context.Context, job partJob) error {
-	content, err := f.blobs.Get(ctx, job.dgst, 0)
+	content, start, err := f.blobs.Get(ctx, job.dgst, 0)
 	if err != nil {
 		return fmt.Errorf("fetch part %d (%s): %w", job.part.Index, job.dgst, err)
 	}
 	defer content.Close()
+
+	// The port contracts a start of either the offset asked for or zero, and
+	// this attempt asks for zero, so the two coincide and only zero is
+	// placeable. A port that reports anything else has broken its contract,
+	// which is why the error names the port and not the registry: a conformant
+	// adapter has already refused any answer that starts elsewhere.
+	if start != 0 {
+		return fmt.Errorf(
+			"fetch part %d (%s): the blob port's stream starts at byte %d, which this attempt cannot write from",
+			job.part.Index, job.dgst, start,
+		)
+	}
 
 	f.hasher.Reset()
 

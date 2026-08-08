@@ -162,8 +162,8 @@ func TestPullReportsABrokenBlobReadAsAFetchFailure(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, _ digest.Digest, _ int64) (io.ReadCloser, error) {
-			return &brokenBody{fail: readFailed}, nil
+		func(_ context.Context, _ digest.Digest, _ int64) (io.ReadCloser, int64, error) {
+			return &brokenBody{fail: readFailed}, 0, nil
 		},
 	)
 

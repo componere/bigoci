@@ -368,24 +368,24 @@ func fetchingBlobs(
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error) {
+		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, int64, error) {
 			assert.Zero(t, offset, "this phase fetches whole parts and never asks for a byte range")
 
 			answers, scripted := script[dgst]
 			if !scripted {
 				calls.get(dgst)
 
-				return store.serve(dgst)
+				return wholeBlob(store.serve(dgst))
 			}
 
 			answer := answers[nth(calls.get(dgst), len(answers))]
 			switch {
 			case answer.err != nil:
-				return nil, answer.err
+				return nil, 0, answer.err
 			case answer.breaks == nil:
-				return store.serve(dgst)
+				return wholeBlob(store.serve(dgst))
 			default:
-				return store.serveFlaky(answer.prefix, answer.breaks), nil
+				return store.serveFlaky(answer.prefix, answer.breaks), 0, nil
 			}
 		},
 	).Maybe()

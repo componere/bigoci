@@ -106,31 +106,37 @@ func (_c *MockBlobs_Exists_Call) RunAndReturn(run func(ctx context.Context, dgst
 }
 
 // Get provides a mock function for the type MockBlobs
-func (_mock *MockBlobs) Get(ctx context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error) {
-	ret := _mock.Called(ctx, dgst, offset)
+func (_mock *MockBlobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.ReadCloser, int64, error) {
+	ret := _mock.Called(ctx, dgst, off)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Get")
 	}
 
 	var r0 io.ReadCloser
-	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, digest.Digest, int64) (io.ReadCloser, error)); ok {
-		return returnFunc(ctx, dgst, offset)
+	var r1 int64
+	var r2 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, digest.Digest, int64) (io.ReadCloser, int64, error)); ok {
+		return returnFunc(ctx, dgst, off)
 	}
 	if returnFunc, ok := ret.Get(0).(func(context.Context, digest.Digest, int64) io.ReadCloser); ok {
-		r0 = returnFunc(ctx, dgst, offset)
+		r0 = returnFunc(ctx, dgst, off)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(io.ReadCloser)
 		}
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, digest.Digest, int64) error); ok {
-		r1 = returnFunc(ctx, dgst, offset)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, digest.Digest, int64) int64); ok {
+		r1 = returnFunc(ctx, dgst, off)
 	} else {
-		r1 = ret.Error(1)
+		r1 = ret.Get(1).(int64)
 	}
-	return r0, r1
+	if returnFunc, ok := ret.Get(2).(func(context.Context, digest.Digest, int64) error); ok {
+		r2 = returnFunc(ctx, dgst, off)
+	} else {
+		r2 = ret.Error(2)
+	}
+	return r0, r1, r2
 }
 
 // MockBlobs_Get_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Get'
@@ -141,12 +147,12 @@ type MockBlobs_Get_Call struct {
 // Get is a helper method to define mock.On call
 //   - ctx context.Context
 //   - dgst digest.Digest
-//   - offset int64
-func (_e *MockBlobs_Expecter) Get(ctx any, dgst any, offset any) *MockBlobs_Get_Call {
-	return &MockBlobs_Get_Call{Call: _e.mock.On("Get", ctx, dgst, offset)}
+//   - off int64
+func (_e *MockBlobs_Expecter) Get(ctx any, dgst any, off any) *MockBlobs_Get_Call {
+	return &MockBlobs_Get_Call{Call: _e.mock.On("Get", ctx, dgst, off)}
 }
 
-func (_c *MockBlobs_Get_Call) Run(run func(ctx context.Context, dgst digest.Digest, offset int64)) *MockBlobs_Get_Call {
+func (_c *MockBlobs_Get_Call) Run(run func(ctx context.Context, dgst digest.Digest, off int64)) *MockBlobs_Get_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -169,12 +175,12 @@ func (_c *MockBlobs_Get_Call) Run(run func(ctx context.Context, dgst digest.Dige
 	return _c
 }
 
-func (_c *MockBlobs_Get_Call) Return(readCloser io.ReadCloser, err error) *MockBlobs_Get_Call {
-	_c.Call.Return(readCloser, err)
+func (_c *MockBlobs_Get_Call) Return(readCloser io.ReadCloser, n int64, err error) *MockBlobs_Get_Call {
+	_c.Call.Return(readCloser, n, err)
 	return _c
 }
 
-func (_c *MockBlobs_Get_Call) RunAndReturn(run func(ctx context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error)) *MockBlobs_Get_Call {
+func (_c *MockBlobs_Get_Call) RunAndReturn(run func(ctx context.Context, dgst digest.Digest, off int64) (io.ReadCloser, int64, error)) *MockBlobs_Get_Call {
 	_c.Call.Return(run)
 	return _c
 }
