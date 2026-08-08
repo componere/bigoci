@@ -145,7 +145,7 @@ func TestRequestsHonorContextCancellation(t *testing.T) {
 		{
 			name: "blob read",
 			call: func(ctx context.Context, repo *oci.Repository) error {
-				_, err := repo.Blobs().Get(ctx, digest.FromString(blobPayload), 0)
+				_, _, err := repo.Blobs().Get(ctx, digest.FromString(blobPayload), 0)
 
 				return err
 			},

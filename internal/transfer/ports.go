@@ -42,17 +42,29 @@ type Blobs interface {
 	// and makes an interrupted push resume without extra bookkeeping.
 	Exists(ctx context.Context, dgst digest.Digest) (bool, error)
 
-	// Get opens the blob with digest dgst for reading, starting offset bytes
-	// into it. An offset of 0 reads the whole blob.
+	// Get opens the blob dgst names for reading and reports the offset the
+	// stream it returns actually starts at.
 	//
-	// A nonzero offset is a resume: the caller already holds the bytes before
-	// it and wants only the remainder. Serving a byte range is optional in
-	// the distribution spec, so an implementation that asks for one must
-	// confirm it got one and return an error when the registry answered with
-	// the whole blob instead. Handing back a stream that starts at 0 for a
-	// nonzero offset would silently corrupt the file the caller is
-	// assembling, so a registry that will not honor the range has to be
-	// reported rather than worked around.
+	// off is where the caller wants to begin: zero for the whole blob, a
+	// positive value for a resume, where the caller already holds every byte
+	// before it. It is never negative — the caller computes it from bytes it
+	// already holds, so a negative off is a bug above this port, not a case an
+	// implementation handles.
+	//
+	// Serving a byte range is optional in the distribution spec, so what a
+	// caller gets back is data rather than a promise. The reported offset is
+	// either off, meaning the range was honored, or 0, meaning the far end
+	// ignored it and is serving the whole blob from its first byte. No other
+	// value is ever reported: an implementation served a range that starts
+	// somewhere else fails the call, because a stream at a position nobody
+	// asked for would silently corrupt the file the caller is assembling. A
+	// call that fails reports no reader and a zero offset.
+	//
+	// Reporting the offset rather than refusing a whole-blob answer is what
+	// makes the fallback free. The body of such an answer is a perfectly good
+	// blob read; a caller that wanted a range writes the part again from its
+	// first byte instead, over the bytes it already holds, at the cost of no
+	// extra request and no extra attempt.
 	//
 	// The caller owns the returned reader and must close it. Get returns an
 	// error when the blob does not exist; ask with [Blobs.Exists] instead
@@ -68,7 +80,7 @@ type Blobs interface {
 	// arriving over a connection — tags those read failures too, since by the
 	// time they surface the caller holds nothing but an [io.Reader] and cannot
 	// tell a broken connection from a finished one.
-	Get(ctx context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error)
+	Get(ctx context.Context, dgst digest.Digest, off int64) (io.ReadCloser, int64, error)
 
 	// Put uploads the blob with digest dgst, size bytes long, reading its
 	// content from r.

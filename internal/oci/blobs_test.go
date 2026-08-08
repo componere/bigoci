@@ -96,15 +96,17 @@ func TestBlobsGet(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		offset       int64
-		status       int
-		send         string
-		contentRange string
-		wantRange    string
-		wantBody     string
-		wantErrIs    error
-		wantErr      bool
+		name          string
+		offset        int64
+		status        int
+		send          string
+		contentRange  string
+		wantRange     string
+		wantStart     int64
+		wantBody      string
+		wantErrIs     error
+		wantErr       bool
+		wantTransient bool
 	}{
 		{
 			name:     "an offset of zero reads the whole blob",
@@ -120,15 +122,20 @@ func TestBlobsGet(t *testing.T) {
 			send:         blobPayload[resumeOffset:],
 			contentRange: "bytes 5-18/19",
 			wantRange:    "bytes=5-",
+			wantStart:    resumeOffset,
 			wantBody:     blobPayload[resumeOffset:],
 		},
 		{
-			name:      "a registry that ignores the range is an error",
+			// The range was optional and the registry declined it. The body is
+			// still a blob, read from its first byte, and saying so is what
+			// lets the caller fall back without a second request.
+			name:      "a registry that ignores the range serves the whole blob from byte zero",
 			offset:    resumeOffset,
 			status:    http.StatusOK,
 			send:      blobPayload,
 			wantRange: "bytes=5-",
-			wantErr:   true,
+			wantStart: 0,
+			wantBody:  blobPayload,
 		},
 		{
 			name:         "a range that starts at the wrong byte is an error",
@@ -148,16 +155,32 @@ func TestBlobsGet(t *testing.T) {
 			wantErr:   true,
 		},
 		{
+			name:          "a range the registry refuses outright is a terminal error",
+			offset:        resumeOffset,
+			status:        http.StatusRequestedRangeNotSatisfiable,
+			wantRange:     "bytes=5-",
+			wantErr:       true,
+			wantTransient: false,
+		},
+		{
 			name:      "a blob the registry does not hold is not found",
 			offset:    0,
 			status:    http.StatusNotFound,
 			wantErrIs: oci.ErrNotFound,
 		},
 		{
-			name:    "a server failure is an error",
-			offset:  0,
-			status:  http.StatusInternalServerError,
-			wantErr: true,
+			name:      "a ranged read of a blob the registry does not hold is not found",
+			offset:    resumeOffset,
+			status:    http.StatusNotFound,
+			wantRange: "bytes=5-",
+			wantErrIs: oci.ErrNotFound,
+		},
+		{
+			name:          "a server failure is an error",
+			offset:        0,
+			status:        http.StatusInternalServerError,
+			wantErr:       true,
+			wantTransient: true,
 		},
 	}
 
@@ -176,7 +199,7 @@ func TestBlobsGet(t *testing.T) {
 			}), repoName+":"+tag)
 
 			dgst := digest.FromString(blobPayload)
-			body, err := repo.Blobs().Get(t.Context(), dgst, tt.offset)
+			body, start, err := repo.Blobs().Get(t.Context(), dgst, tt.offset)
 
 			request := rec.only(t)
 			assert.Equal(t, http.MethodGet, request.method)
@@ -185,15 +208,21 @@ func TestBlobsGet(t *testing.T) {
 
 			if tt.wantErr || tt.wantErrIs != nil {
 				require.Error(t, err)
+				assert.Zero(t, start, "a read that failed opened no stream to report a start for")
 				if tt.wantErrIs != nil {
 					require.ErrorIs(t, err, tt.wantErrIs)
 				}
+
+				_, transient := retry.IsTransient(err)
+				assert.Equal(t, tt.wantTransient, transient, "whether the failure is worth another attempt")
 
 				return
 			}
 
 			require.NoError(t, err)
 			defer body.Close()
+
+			assert.Equal(t, tt.wantStart, start, "the byte the stream actually begins at")
 
 			got, err := io.ReadAll(body)
 			require.NoError(t, err)
@@ -340,7 +369,7 @@ func TestBlobsGetSendsAFreshRequestEveryTime(t *testing.T) {
 	dgst := digest.FromString(blobPayload)
 
 	for range 2 {
-		body, err := repo.Blobs().Get(t.Context(), dgst, 0)
+		body, _, err := repo.Blobs().Get(t.Context(), dgst, 0)
 		require.NoError(t, err)
 
 		got, err := io.ReadAll(body)
@@ -366,7 +395,7 @@ func TestBlobsGetTagsABodyThatBreaksMidRead(t *testing.T) {
 		resetConnection(t, w)
 	}), repoName+":"+tag)
 
-	body, err := repo.Blobs().Get(t.Context(), digest.FromString(blobPayload), 0)
+	body, _, err := repo.Blobs().Get(t.Context(), digest.FromString(blobPayload), 0)
 	require.NoError(t, err, "the request succeeded; only the body dies")
 
 	defer body.Close()

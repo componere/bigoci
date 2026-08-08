@@ -318,14 +318,21 @@ func mockBlobsServing(t *testing.T, store *blobStore) *ocimocks.MockBlobs {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error) {
+		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, int64, error) {
 			assert.Zero(t, offset, "this phase fetches whole parts and never asks for a byte range")
 
-			return store.serve(dgst)
+			return wholeBlob(store.serve(dgst))
 		},
 	).Maybe()
 
 	return blobs
+}
+
+// wholeBlob turns a body a [blobStore] handed out into the answer a mocked
+// Blobs.Get gives: a stream starting at the blob's first byte, which is the
+// only start this phase ever asks for or accepts.
+func wholeBlob(body io.ReadCloser, err error) (io.ReadCloser, int64, error) {
+	return body, 0, err
 }
 
 // memFile is the destination a mocked [transfer.Sink] assembles a pull into.
