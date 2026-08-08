@@ -6,3 +6,4 @@
 | 002 | 2026-08-07 | Phase 1 — walking skeleton implemented | complete | Wrote the seven-phase plan and shipped phase 1 (PRs #15–#18): push/pull works end to end against zot with the manifest verified over raw HTTP, plus a precision audit that cut 69 lines. |
 | 003 | 2026-08-08 | Phase 2 — reference CLI shipped and gates proven | complete | Shipped the reference CLI (PRs #19–#20) via an ultracode design/implement/review pipeline and passed all five phase-2 manual gates against zot, closing phases 1 and 2 in PLAN.md. |
 | 004 | 2026-08-08 | Phase 3 — retries shipped and gated | complete | Shipped per-part retries end to end (PRs #21–#24: classification, orchestrator wiring, ErrPartTooLarge/exit 7, toxiproxy e2e) and passed all phase-3 manual and automated gates with journaled evidence. |
+| 005 | 2026-08-08 | Phase 4 — resume | in-progress | Continue the seven-phase plan with phase 4: resumable transfers built on the seams left in phase 3. |
