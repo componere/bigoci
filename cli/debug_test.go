@@ -68,6 +68,26 @@ func splitLog(t *testing.T, raw string) logLines {
 	return log
 }
 
+// isolatedTransport returns a transport private to one test.
+//
+// The tap tests drive real requests, and the default transport is shared
+// process-wide: [net/http/httptest.Server.Close] closes the default
+// transport's idle connections as a courtesy to tests that used it, so
+// parallel tests sharing it can break each other's requests mid-flight —
+// a HEAD through the tap failing with "CloseIdleConnections called" when a
+// sibling test's server shut down. A per-test transport takes these tests
+// out of that race in both directions. The nil-means-default fallback in
+// newTap stays covered by every run-driven -debug test, which builds its
+// tap the way the real CLI does.
+func isolatedTransport(t *testing.T) *http.Transport {
+	t.Helper()
+
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+
+	return transport
+}
+
 // loopbackTransport dials the loopback interface whatever hostname it was given.
 //
 // That is what lets a test redirect across a hostname boundary — which is what
@@ -130,7 +150,7 @@ func TestTapLogsOneRequestAsTwoLines(t *testing.T) {
 	defer srv.Close()
 
 	var buf bytes.Buffer
-	probe := newTap(&buf, nil)
+	probe := newTap(&buf, isolatedTransport(t))
 	get(t, &http.Client{Transport: probe}, http.MethodGet, srv.URL+"/v2/team/m/blobs/sha256:ab", nil)
 
 	log := splitLog(t, buf.String())
@@ -168,7 +188,7 @@ func TestTapLogsRanges(t *testing.T) {
 	defer srv.Close()
 
 	var buf bytes.Buffer
-	probe := newTap(&buf, nil)
+	probe := newTap(&buf, isolatedTransport(t))
 	header := http.Header{"Range": []string{"bytes=0-4"}}
 	get(t, &http.Client{Transport: probe}, http.MethodGet, srv.URL+"/v2/team/m/blobs/sha256:ab", header)
 
@@ -190,7 +210,7 @@ func TestTapLogsATransportFailureAsOneLine(t *testing.T) {
 	srv.Close()
 
 	var buf bytes.Buffer
-	probe := newTap(&buf, nil)
+	probe := newTap(&buf, isolatedTransport(t))
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
 	require.NoError(t, err)
 
@@ -268,7 +288,7 @@ func TestTapSummary(t *testing.T) {
 	defer srv.Close()
 
 	var buf bytes.Buffer
-	probe := newTap(&buf, nil)
+	probe := newTap(&buf, isolatedTransport(t))
 	client := &http.Client{Transport: probe}
 
 	get(t, client, http.MethodHead, srv.URL+"/v2/team/m/blobs/sha256:missing", nil)
@@ -340,7 +360,7 @@ func TestTapUnderConcurrency(t *testing.T) {
 	defer srv.Close()
 
 	var buf bytes.Buffer
-	probe := newTap(&buf, nil)
+	probe := newTap(&buf, isolatedTransport(t))
 	client := &http.Client{Transport: probe}
 
 	failures := make([]error, workers)
