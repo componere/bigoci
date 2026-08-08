@@ -14,8 +14,14 @@
 // operation, so the decision is made in the core while the knowledge behind
 // it stays in the adapter that owns the connection.
 //
-// Resume and progress accounting are not here yet: a pull fetches every part
-// even when an earlier attempt left some of them on disk.
+// A pull resumes. It hashes the part ranges of a partial file an earlier run
+// left behind and fetches only the ones that do not match, and a part whose
+// stream broke part way through is continued from the byte it reached. None of
+// that is recorded anywhere: the bytes on disk are the whole of the state, and
+// a range nothing ever wrote reads back as zeros and fails its check.
+//
+// Progress accounting is not here yet: a transfer says nothing about how far
+// along it is while it runs.
 //
 // # The port model
 //

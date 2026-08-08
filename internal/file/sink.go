@@ -55,8 +55,9 @@ type Sink struct {
 //
 // CreateSink never touches path itself. An existing partial file is opened as
 // it stands and deliberately not truncated: an interrupted pull left those
-// bytes, and a later phase hashes the part ranges to decide which of them
-// still need fetching. The directory holding path must already exist.
+// bytes, and the pull that resumes into it hashes the part ranges to decide
+// which of them still need fetching. The directory holding path must already
+// exist.
 //
 // A partial path that exists but is not a regular file — a symbolic link
 // planted there, a directory, a device — is refused. The partial name is

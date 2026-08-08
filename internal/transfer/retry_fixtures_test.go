@@ -333,30 +333,41 @@ func scriptedBlobs(t *testing.T, script blobScript) (*ocimocks.MockBlobs, *blobC
 	return blobs, calls
 }
 
-// fetchAnswer is one answer to a part fetch: a failure instead of a body, or
-// a body that stops after a prefix. The zero value serves the part whole from
-// the store.
+// fetchAnswer is one answer to a part fetch: a failure instead of a body, a
+// body that stops after a prefix, or the whole blob from a registry that threw
+// the byte range away. The zero value serves the rest of the part from the
+// store, starting where the fetch asked.
 type fetchAnswer struct {
 	// err is the failure the fetch reports instead of opening a body.
 	err error
-	// prefix is what a body serves before it breaks. The rows that use it
-	// pass bytes that are deliberately not the part's own, so a retry that
-	// wrote at the wrong offset leaves garbage a byte comparison catches
-	// instead of a digest mismatch that says nothing about why.
+	// prefix is what a body serves before it breaks. A row that means the next
+	// attempt to carry on from the break passes the part's own bytes, because
+	// that is what a registry serves and what the continued digest has to come
+	// out of; a row about an attempt that starts the part over passes bytes
+	// that are deliberately not the part's, so the overwrite is a byte
+	// comparison rather than a digest that says nothing about why.
 	prefix []byte
 	// breaks is what that body raises once the prefix runs out. [io.EOF] is a
 	// body that simply ended before the manifest said it would.
 	breaks error
+	// ignoreRange makes the answer the whole blob reported as starting at byte
+	// zero, whatever offset was asked for: the registry that will not serve a
+	// range and sends everything instead.
+	ignoreRange bool
 }
 
 // fetchScript is what a scripted [transfer.Blobs.Get] answers with, per
 // digest and per call, under the same rule [blobScript] follows: the nth call
 // takes the nth entry, the last entry repeats, and a digest the script does
-// not name is served whole from the store.
+// not name is served from the store.
 type fetchScript map[digest.Digest][]fetchAnswer
 
 // fetchingBlobs returns a [transfer.Blobs] double whose Get answers from
 // script and otherwise from store, and the record of what it was asked for.
+//
+// Unless a row says otherwise the double is a registry that honors byte
+// ranges: it serves the blob from the offset it was given and reports that
+// offset back, so a test reads a continuation off the offsets in [blobCalls].
 func fetchingBlobs(
 	t *testing.T,
 	store *blobStore,
@@ -369,23 +380,25 @@ func fetchingBlobs(
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
 		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, int64, error) {
-			assert.Zero(t, offset, "this phase fetches whole parts and never asks for a byte range")
-
 			answers, scripted := script[dgst]
 			if !scripted {
-				calls.get(dgst)
+				calls.get(dgst, offset)
 
-				return wholeBlob(store.serve(dgst))
+				return store.serve(dgst, offset)
 			}
 
-			answer := answers[nth(calls.get(dgst), len(answers))]
+			answer := answers[nth(calls.get(dgst, offset), len(answers))]
 			switch {
 			case answer.err != nil:
 				return nil, 0, answer.err
+			case answer.ignoreRange:
+				// The whole blob from its first byte, reported as starting
+				// there however far into the part the fetch asked to begin.
+				return store.serve(dgst, 0)
 			case answer.breaks == nil:
-				return wholeBlob(store.serve(dgst))
+				return store.serve(dgst, offset)
 			default:
-				return store.serveFlaky(answer.prefix, answer.breaks), 0, nil
+				return store.serveFlaky(answer.prefix, answer.breaks), offset, nil
 			}
 		},
 	).Maybe()
@@ -412,6 +425,10 @@ type blobCalls struct {
 	uploaded map[digest.Digest]int
 	// fetched counts the fetches each digest got.
 	fetched map[digest.Digest]int
+	// starts holds the offset each fetch of a digest asked to begin at, in the
+	// order the fetches were made. It is what a continuation is read off: the
+	// second entry of a part that broke is the byte the first attempt reached.
+	starts map[digest.Digest][]int64
 	// blobs holds what arrived under each digest.
 	blobs map[digest.Digest]upload
 }
@@ -422,6 +439,7 @@ func newBlobCalls() *blobCalls {
 		checked:  make(map[digest.Digest]int),
 		uploaded: make(map[digest.Digest]int),
 		fetched:  make(map[digest.Digest]int),
+		starts:   make(map[digest.Digest][]int64),
 		blobs:    make(map[digest.Digest]upload),
 	}
 }
@@ -448,12 +466,14 @@ func (c *blobCalls) put(dgst digest.Digest, size int64, content []byte) int {
 	return c.uploaded[dgst]
 }
 
-// get records one fetch and returns how many dgst has now had.
-func (c *blobCalls) get(dgst digest.Digest) int {
+// get records one fetch of dgst beginning at off and returns how many fetches
+// that digest has now had.
+func (c *blobCalls) get(dgst digest.Digest, off int64) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.fetched[dgst]++
+	c.starts[dgst] = append(c.starts[dgst], off)
 
 	return c.fetched[dgst]
 }
@@ -480,6 +500,14 @@ func (c *blobCalls) gets(dgst digest.Digest) int {
 	defer c.mu.Unlock()
 
 	return c.fetched[dgst]
+}
+
+// offsets returns the byte each fetch of dgst asked to start at, in order.
+func (c *blobCalls) offsets(dgst digest.Digest) []int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return slices.Clone(c.starts[dgst])
 }
 
 // blob returns what arrived under dgst, and the zero upload when nothing did.

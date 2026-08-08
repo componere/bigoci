@@ -14,10 +14,12 @@ per-registry layer size caps.
 Push and pull work end to end: a file splits into parts, uploads in parallel,
 comes back verified against the manifest, and rides through transient
 failures — a dropped connection, a 429, or a 5xx costs a bounded number of
-retries, not the transfer. Registry access is anonymous, and a pull always
-fetches every part.
+retries, not the transfer. Transfers resume: an interrupted pull re-run
+fetches only the parts the partial file does not already hold, a broken
+stream is continued from the byte it reached, and a re-push skips every part
+the registry already has. Registry access is anonymous.
 
-Resume and authentication are next, in that order. The
+Authentication is next. The
 [design document](https://componere.github.io/bigoci/explanation/design/) and
 the [artifact format contract](https://componere.github.io/bigoci/reference/format/)
 are settled.

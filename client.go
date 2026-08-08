@@ -113,15 +113,25 @@ func (c *Client) Push(
 //
 // The destination is therefore never observed half written: a pull that
 // fails, is cancelled, or is killed leaves the destination absent or holding
-// its previous content, and leaves the partial file beside it. Those bytes
-// are what a later phase will resume from; this phase always fetches every
-// part.
+// its previous content, and leaves the partial file beside it.
+//
+// Those bytes are what the next pull resumes from. When the partial file is
+// already the length the manifest declares, Pull hashes each part out of it
+// and asks the registry only for the parts that do not match — a rerun after
+// an interrupted pull moves what is missing and
+// nothing else, and one that finds everything intact moves no blob bytes at
+// all. Nothing is recorded between runs: a range no run ever wrote reads back
+// as zeros and fails its check, and a partial file of any other length belongs
+// to some other artifact and is refilled from the start.
 //
 // A part whose fetch breaks in a way worth repeating — a 429, a 5xx, a
 // connection that dropped mid-part — is fetched again, up to four times, with
 // an exponentially growing jittered wait that never falls short of a
-// Retry-After the registry sent. A part that arrives whole and hashes wrong
-// is not: that is the registry serving content the artifact does not
+// Retry-After the registry sent. Those attempts carry on from the byte the
+// broken one reached, unless the registry will not serve a byte range, in
+// which case it answers with the whole blob and the part is simply written
+// again from its first byte. A part that arrives whole and hashes wrong is not
+// retried: that is the registry serving content the artifact does not
 // describe, and asking again gives the same answer.
 //
 // Verification rests on the manifest digest, exactly as pulling a container

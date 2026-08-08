@@ -201,21 +201,57 @@ cache could skip the re-hash; it is deferred until profiling shows the need.
 
 1. bigoci resolves the reference, fetches the manifest, checks the
    `artifactType`, and reads the annotations.
-2. It creates `<dest>.bigoci-partial`, sized to the full file with
-   `Truncate`. When a partial file already exists at the right size, the pull
-   is a resume: bigoci hashes every part range (bytes never written are zeros
-   and fail their check) and fetches only the parts that do not match their
-   digest.
+2. It opens `<dest>.bigoci-partial` and measures what is already there, then
+   sizes the file to the full length with `Truncate`. The measurement has to
+   come first, because the truncate is what destroys the evidence. A partial
+   already at the right length makes the pull a resume: bigoci hashes every
+   part range (bytes never written are zeros and fail their check) and fetches
+   only the parts that do not match their digest. A partial of any other
+   length belongs to some other artifact, so it is cut or grown to fit and
+   every part is fetched.
 3. Workers `GET` parts concurrently. Each streams into its own byte range via
    `WriteAt`, hashing as it writes. A part whose hash does not match its
    descriptor digest fails the pull: the registry served content the manifest
    does not describe, and asking for it again returns the same bytes. A part
-   whose transfer breaks part way through is fetched again from its first
-   byte, and the second attempt writes over what the first left in the range.
-   Resuming from the failed byte offset with a `Range` request, where the
-   registry honors one, arrives with resume in phase 4.
+   whose transfer breaks part way through is asked for again from the byte it
+   reached, with a `Range` request, and the hash of the part carries on across
+   the attempts — so a stream that died near the end of a part costs the bytes
+   that never arrived and no more. Serving a range is optional in the spec, so
+   a registry may answer with the whole blob instead; the blob port reports
+   that the stream starts at byte zero, and the same attempt consumes it as a
+   fetch from the beginning, writing over what it already held. That costs no
+   extra request and no extra attempt.
 4. When every part verifies, bigoci renames the partial file onto `<dest>`.
    The destination only ever exists as a complete, verified file.
+
+### What a resume proves
+
+Resume rests on hashing the bytes on disk, never on a memory of what an
+earlier run did. There is no progress file, no journal, and no saved hash
+state. That is what makes it safe to interrupt a pull at any instant.
+
+Take the worst interruption, a `SIGKILL`, and walk the windows it can land in.
+Before the truncate: a zero-length partial, so everything is fetched. Between
+the truncate and the first write: a full-length file of zeros, so every range
+fails its check and everything is fetched. In the middle of a write: a write
+that completed cannot tear, and one that did not leaves that range failing its
+check. After the last write but before the rename: every range verifies, and
+the rerun commits without a single blob request. Between the rename and the
+directory flush: the destination is complete and the partial is gone, so a
+rerun starts over — wasteful, correct.
+
+Two facts underneath that are worth naming. A killed process does not lose its
+dirty pages: the kernel still owns them and writes them out, which is why the
+partial file needs no per-part flush and the sink flushes once, at commit. A
+machine that loses power is different — the partial may then hold ranges that
+are half old and half new — and the resume catches those too, because it
+hashes the ranges rather than counting them.
+
+The cost is a full hash pass over whatever is on disk before the first byte
+moves, at the pull's own worker count, overlapping the fetches of the parts
+that failed. A pull that died at the first part therefore pays a read of a
+file that holds nothing. Any way of avoiding that is a record of what an
+earlier run did, which is exactly what resume is built not to need.
 
 ### Verification
 
@@ -255,7 +291,12 @@ The table gives the numbers. Four things it cannot say:
   its upload are attempted together, so an upload whose bytes landed and whose
   answer was lost costs the next attempt one `HEAD` instead of the whole part.
   A pull's unit is a part's `GET`, the copy into place, and the digest check.
-  The empty config blob and each manifest call get budgets of their own.
+  A part continued after a break shares that one budget: the attempts are the
+  part's, not each stream's, so a link that drops every few hundred bytes runs
+  out of them rather than retrying forever. Hashing a part out of an existing
+  partial file sits outside the budget entirely — it makes no request, and a
+  local disk that will not read is terminal. The empty config blob and each
+  manifest call get budgets of their own.
 - **`Retry-After` is a floor, not a replacement.** A registry that names a
   wait is waited for at least that long, and never less than the growing
   jittered backoff would have taken anyway — a hint must not send every
@@ -270,10 +311,17 @@ The table gives the numbers. Four things it cannot say:
   bigoci does not guess that a failure nobody classified might be temporary,
   because repeating it turns an immediate answer into a slow one without
   making it better.
-- **A broken part is re-done whole.** This phase asks for no byte range, so
-  a stream that died after 100 MiB is fetched again from zero and written over
-  the same range. Mid-part resume needs a `Range` the spec does not require
-  registries to serve; it arrives with resume.
+- **A broken part is continued, not re-done, where the registry allows it.** A
+  stream that died after 100 MiB is asked for again from byte 100 MiB, and the
+  part's hash carries on across the attempts. Serving a byte range is optional
+  in the spec, so a registry may send the whole blob instead — that answer is
+  consumed as a fetch from zero inside the same attempt, over the bytes
+  already in place, at the cost of no extra request. The consequence to accept:
+  against a registry that will not serve ranges, a part on a flaky link can
+  spend its whole budget having moved more bytes than a clean fetch would
+  have. An intermediary that caps how much of an open-ended range it returns
+  has the same arithmetic — every capped answer ends cleanly short and costs
+  an attempt, so a very large part behind one can run out of budget mid-tail.
 
 ## Architecture
 
@@ -291,7 +339,12 @@ so backoff tests run without a clock.
 // Blobs is the distribution-spec blob surface of one repository.
 type Blobs interface {
     Exists(ctx context.Context, dgst Digest) (bool, error)
-    Get(ctx context.Context, dgst Digest, offset int64) (io.ReadCloser, error)
+    // Get also reports the byte the returned stream starts at: either the
+    // offset asked for, or 0 when the registry ignored the range and is
+    // sending the whole blob. Reporting it instead of refusing that answer is
+    // what lets the caller fall back to a fetch from the beginning without a
+    // second request.
+    Get(ctx context.Context, dgst Digest, offset int64) (io.ReadCloser, int64, error)
     Put(ctx context.Context, dgst Digest, size int64, r io.Reader) error
 }
 

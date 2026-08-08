@@ -10,8 +10,9 @@ bigoci is a Go library that uploads and downloads large files to and from OCI
 registries. Large means 5 GB and up, into the tens of GB. That is the whole
 library.
 
-Push and pull work end to end and retry transient failures. Resume and
-authentication are next.
+Push and pull work end to end, retry transient failures, and resume: a pull
+that was interrupted picks up where it stopped, and a re-push skips the parts
+the registry already holds. Authentication is next.
 
 - [Push and pull a file](how-to/push-and-pull.md) — move a file to a
   registry and back with the library.
