@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/componere/bigoci/internal/oci"
+	"github.com/componere/bigoci/internal/retry"
 )
 
 // blobPayload is the content the blob fixtures move. The bytes are
@@ -325,6 +326,138 @@ func TestBlobsPutFailures(t *testing.T) {
 			assert.Len(t, rec.all(), tt.wantRequests)
 		})
 	}
+}
+
+func TestBlobsGetSendsAFreshRequestEveryTime(t *testing.T) {
+	t.Parallel()
+
+	var rec recorder
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(t, r)
+		_, _ = io.WriteString(w, blobPayload)
+	}), repoName+":"+tag)
+
+	dgst := digest.FromString(blobPayload)
+
+	for range 2 {
+		body, err := repo.Blobs().Get(t.Context(), dgst, 0)
+		require.NoError(t, err)
+
+		got, err := io.ReadAll(body)
+		require.NoError(t, err)
+		require.NoError(t, body.Close())
+		assert.Equal(t, blobPayload, string(got))
+	}
+
+	assert.Len(t, rec.all(), 2, "a read carries no state from the one before it, so a retry re-resolves everything")
+}
+
+func TestBlobsGetTagsABodyThatBreaksMidRead(t *testing.T) {
+	t.Parallel()
+
+	// The registry promises a body far longer than it sends, so the read
+	// fails part way through rather than ending early and cleanly.
+	const declared = 1 << 16
+
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(declared))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("a", declared/2))
+		resetConnection(t, w)
+	}), repoName+":"+tag)
+
+	body, err := repo.Blobs().Get(t.Context(), digest.FromString(blobPayload), 0)
+	require.NoError(t, err, "the request succeeded; only the body dies")
+
+	defer body.Close()
+
+	_, err = io.ReadAll(body)
+
+	require.Error(t, err)
+
+	_, transient := retry.IsTransient(err)
+	assert.True(t, transient, "a connection that broke mid-part is worth another attempt")
+}
+
+func TestBlobsPutTagsAConnectionResetMidUpload(t *testing.T) {
+	t.Parallel()
+
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Location", sessionPath+"?"+sessionQuery)
+			w.WriteHeader(http.StatusAccepted)
+
+			return
+		}
+
+		dropConnection(t, w)
+	}), repoName+":"+tag)
+
+	err := repo.Blobs().Put(
+		t.Context(),
+		digest.FromString(blobPayload),
+		int64(len(blobPayload)),
+		opaqueReader{r: strings.NewReader(blobPayload)},
+	)
+
+	require.Error(t, err)
+
+	_, transient := retry.IsTransient(err)
+	assert.True(t, transient, "an upload the connection cut short is worth another attempt")
+}
+
+func TestBlobsPutLeavesRetryingToItsCaller(t *testing.T) {
+	t.Parallel()
+
+	var rec recorder
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(t, r)
+
+		if r.Method == http.MethodPost {
+			w.Header().Set("Location", sessionPath+"?"+sessionQuery)
+			w.WriteHeader(http.StatusAccepted)
+
+			return
+		}
+
+		// The first completion fails and the second would succeed, so an
+		// adapter that retried underneath the orchestrator would report
+		// success here instead of a failure worth repeating.
+		if uploadsSoFar(rec.all()) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+	}), repoName+":"+tag)
+
+	err := repo.Blobs().Put(
+		t.Context(),
+		digest.FromString(blobPayload),
+		int64(len(blobPayload)),
+		opaqueReader{r: strings.NewReader(blobPayload)},
+	)
+
+	require.Error(t, err)
+
+	_, transient := retry.IsTransient(err)
+	assert.True(t, transient, "the verdict is all the adapter owes")
+	assert.Equal(t, 1, uploadsSoFar(rec.all()), "the attempt budget belongs to the orchestrator alone")
+}
+
+// uploadsSoFar counts the completing PUTs a fake registry has seen, which is
+// how many upload attempts the adapter made.
+func uploadsSoFar(requests []recorded) int {
+	uploads := 0
+
+	for _, request := range requests {
+		if request.method == http.MethodPut {
+			uploads++
+		}
+	}
+
+	return uploads
 }
 
 // uploadResponses is how a fake registry answers the two requests a blob

@@ -2,6 +2,7 @@ package oci_test
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -46,6 +47,82 @@ func hostOf(t *testing.T, server *httptest.Server) string {
 	require.NoError(t, err)
 
 	return parsed.Host
+}
+
+// deadAddress returns the host and port of a listener that has been closed.
+// Nothing answers there, so a connection to it is refused at once instead of
+// hanging, which is the transport failure a test can produce without a
+// network.
+func deadAddress(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+
+	return address
+}
+
+// resetConnection sends whatever the handler has already written and then
+// tears its connection down without a FIN handshake, cutting a response short
+// part way through the body it declared a length for.
+//
+// A body cut short is the case that matters most: the request has already
+// succeeded by then, so the failure surfaces from a Read long after anything
+// could have wrapped it, and only the adapter's own body wrapper can name it.
+func resetConnection(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+
+	// The handler runs on the server's goroutine, where a require call's
+	// FailNow is not allowed, so a failure is reported rather than fatal.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		t.Error("the fake registry's response writer cannot flush")
+
+		return
+	}
+	flusher.Flush()
+
+	tearDownConnection(t, w)
+}
+
+// dropConnection tears the handler's connection down before it has answered
+// anything at all, which is what a registry behind a load balancer that went
+// away looks like from the client: the request went out and nothing came
+// back.
+func dropConnection(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+
+	tearDownConnection(t, w)
+}
+
+// tearDownConnection takes the handler's connection over and closes it with a
+// reset rather than a graceful shutdown, so the client sees the connection
+// die mid-exchange instead of ending tidily.
+func tearDownConnection(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		t.Error("the fake registry's response writer cannot be hijacked")
+
+		return
+	}
+
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		t.Errorf("the fake registry could not take over its connection: %v", err)
+
+		return
+	}
+
+	// Lingering for no time at all is what turns the close into a reset.
+	if tcp, isTCP := conn.(*net.TCPConn); isTCP {
+		_ = tcp.SetLinger(0)
+	}
+	_ = conn.Close()
 }
 
 // recorded is one request a fake registry received, captured before the

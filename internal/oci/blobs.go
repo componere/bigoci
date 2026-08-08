@@ -69,7 +69,9 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 //
 // The returned reader is the response body itself, unread: no blob content
 // passes through a buffer on the way to the caller, who owns the reader and
-// closes it.
+// closes it. The body is wrapped only to classify its failures, so a
+// connection that breaks part way through a blob is reported as worth another
+// attempt even though Get itself has long since returned.
 //
 // A non-zero offset asks for the remainder of the blob with a Range request.
 // The distribution spec does not require registries to honor one, so a
@@ -99,7 +101,7 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, offset int64) (io.R
 		return nil, err
 	}
 
-	return resp.Body, nil
+	return &blobBody{rc: resp.Body}, nil
 }
 
 // Put uploads size bytes read from r as the blob dgst names.

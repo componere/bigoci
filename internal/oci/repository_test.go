@@ -2,6 +2,7 @@ package oci_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/componere/bigoci/internal/oci"
+	"github.com/componere/bigoci/internal/retry"
 )
 
 // registry is the host the references that never leave the process are
@@ -190,6 +192,181 @@ func TestRequestsHonorContextCancellation(t *testing.T) {
 	}
 }
 
+func TestStatusErrorMatchesTheSentinelItsStatusStandsFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		target error
+		want   bool
+	}{
+		{
+			name:   "a missing manifest is not found",
+			status: http.StatusNotFound,
+			target: oci.ErrNotFound,
+			want:   true,
+		},
+		{
+			name:   "a missing manifest is not too large",
+			status: http.StatusNotFound,
+			target: oci.ErrTooLarge,
+		},
+		{
+			name:   "a part the registry refuses is too large",
+			status: http.StatusRequestEntityTooLarge,
+			target: oci.ErrTooLarge,
+			want:   true,
+		},
+		{
+			name:   "a part the registry refuses is not missing",
+			status: http.StatusRequestEntityTooLarge,
+			target: oci.ErrNotFound,
+		},
+		{
+			name:   "a server failure is neither",
+			status: http.StatusServiceUnavailable,
+			target: oci.ErrNotFound,
+		},
+		{
+			name:   "a server failure is not too large either",
+			status: http.StatusServiceUnavailable,
+			target: oci.ErrTooLarge,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := &oci.StatusError{
+				Method: http.MethodPut,
+				Path:   "/v2/" + repoName + "/blobs/uploads/session-1",
+				Status: tt.status,
+			}
+
+			if tt.want {
+				assert.ErrorIs(t, err, tt.target)
+
+				return
+			}
+
+			assert.NotErrorIs(t, err, tt.target)
+		})
+	}
+}
+
+func TestUnexpectedStatusesAreClassifiedForTheRetryPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		status        int
+		wantTransient bool
+	}{
+		{name: "a rate limited request is worth repeating", status: http.StatusTooManyRequests, wantTransient: true},
+		{
+			name:          "an unavailable registry is worth repeating",
+			status:        http.StatusServiceUnavailable,
+			wantTransient: true,
+		},
+		{name: "a refused request is not", status: http.StatusUnauthorized},
+		{name: "a part the registry says is too large is not", status: http.StatusRequestEntityTooLarge},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+			}), repoName+":"+tag)
+
+			_, err := repo.Blobs().Exists(t.Context(), digest.FromString(blobPayload))
+
+			require.Error(t, err)
+
+			after, transient := retry.IsTransient(err)
+			assert.Equal(t, tt.wantTransient, transient)
+			assert.Zero(t, after, "no Retry-After header means no wait rides on the tag")
+
+			var statusErr *oci.StatusError
+
+			require.ErrorAs(t, err, &statusErr, "the status stays reachable through the tag")
+			assert.Equal(t, tt.status, statusErr.Status)
+		})
+	}
+}
+
+func TestStatusErrorReadsTheSameThroughTheTransientTag(t *testing.T) {
+	t.Parallel()
+
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "the registry is restarting")
+	}), repoName+":"+tag)
+
+	_, _, err := repo.Manifests().Get(t.Context())
+
+	require.Error(t, err)
+	assert.Equal(
+		t,
+		"GET /v2/"+repoName+"/manifests/"+tag+
+			": registry returned 503 Service Unavailable: the registry is restarting",
+		err.Error(),
+		"neither the tag nor the wait the registry asked for reaches the message a caller reads",
+	)
+
+	after, transient := retry.IsTransient(err)
+	assert.True(t, transient)
+	assert.Equal(t, 5*time.Second, after, "the wait rides on the tag, for the retry policy to bound")
+
+	var statusErr *oci.StatusError
+
+	require.ErrorAs(t, err, &statusErr)
+	assert.Equal(t, 5*time.Second, statusErr.RetryAfter, "the raw value the registry asked for")
+}
+
+func TestARefusedConnectionIsWorthRepeating(t *testing.T) {
+	t.Parallel()
+
+	repo, err := oci.NewRepository(deadAddress(t)+"/"+repoName+":"+tag, oci.WithPlainHTTP())
+	require.NoError(t, err)
+
+	dgst := digest.FromString(blobPayload)
+	_, err = repo.Blobs().Exists(t.Context(), dgst)
+
+	require.Error(t, err)
+
+	_, transient := retry.IsTransient(err)
+	assert.True(t, transient, "a connection nobody answered is worth one more attempt")
+	assert.Contains(
+		t,
+		err.Error(),
+		"HEAD /v2/"+repoName+"/blobs/"+dgst.String()+": ",
+		"the tag leaves the message the adapter has always reported",
+	)
+}
+
+func TestACancelledRequestIsNotWorthRepeating(t *testing.T) {
+	t.Parallel()
+
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), repoName+":"+tag)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := repo.Blobs().Exists(ctx, digest.FromString(blobPayload))
+
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, transient := retry.IsTransient(err)
+	assert.False(t, transient, "the transfer ended; the network did not fail")
+}
+
 // sha512Digest returns a well-formed sha512 digest string, for the reference
 // checks that insist on the algorithm the format pins.
 func sha512Digest() string {
@@ -228,6 +405,12 @@ func TestWithHTTPClient(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
+
+				// The caller's context is alive, so the client's own timeout is
+				// a transport failure like any other and stays worth repeating —
+				// each new attempt gets a fresh timeout window.
+				_, transient := retry.IsTransient(err)
+				assert.True(t, transient, "a client timeout with a live transfer context is retryable")
 
 				return
 			}
