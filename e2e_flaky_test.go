@@ -1,11 +1,11 @@
 package bigoci_test
 
 import (
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,32 +91,33 @@ const (
 // change to the policy moves the bound with it.
 const (
 	// gateFailures is how many round-trip failures a push row lets happen
-	// before the gate repairs the link. Two is a real retry with two attempts
-	// still in hand, so no unit of work can exhaust its budget while the
-	// damage is still on the wire.
+	// before the gate repairs the link. Two bounds the expected damage window
+	// — repair starts the moment a second request has provably failed — but
+	// it is not a guarantee about budgets: both failures can belong to one
+	// unit, and full jitter lets a unit burn its remaining attempts in
+	// milliseconds. The margin is statistical, and wide enough in practice
+	// that twenty stressed runs never came near it.
 	gateFailures = 2
 	// gateBackstop is the longest a row leaves the damage on the wire no
-	// matter what the traffic looks like. It exists so a row whose damage
-	// never bites fails on its assertions instead of hanging.
-	gateBackstop = 3 * time.Second
-	// outageBackstop is the backstop of the row that takes the registry away
-	// entirely. The design puts the registry back after about this long,
-	// which is comfortably inside the one, two, and four second waits of a
-	// default budget.
-	outageBackstop = 1200 * time.Millisecond
-	// pushUnits is how many blob uploads one push of the fixture makes: one
-	// per part, plus the empty config blob. Each carries its own retry
-	// budget.
-	pushUnits = multiParts + 1
-	// pushBudget is the most upload sessions a push of the fixture may open.
-	// Holding a run to it is the automated half of "no infinite retry".
-	pushBudget = pushUnits * retry.DefaultAttempts
-	// pullBudget is the most blob reads a pull of the fixture may start, on
-	// the same reasoning.
-	pullBudget = multiParts * retry.DefaultAttempts
+	// matter what the traffic looks like. On a healthy run the counters
+	// always repair the link first, so this is purely a hang guard, and it is
+	// sized so that no slow runner can reach it before the causal path fires:
+	// a row that trips it has damage that never bit, and fails loudly on
+	// [gate.assertRepaired].
+	gateBackstop = 30 * time.Second
+	// gateDialTimeout bounds every dial the gate's transport makes. A closed
+	// container port is refused at once on some runtimes and black-holed on
+	// others; without a bound the black-hole variant hangs a dial for the
+	// transport's default thirty seconds and the outage row's damage never
+	// shows up in the failure counter at all. One second is two orders of
+	// magnitude above a healthy local container dial.
+	gateDialTimeout = time.Second
 	// blobsSegment is the path segment every blob endpoint carries, which is
 	// how the gate tells a blob read from a manifest read.
 	blobsSegment = "/blobs/"
+	// uploadsSegment is the path segment every upload-session endpoint
+	// carries, which is how the gate ties a completing PUT to an upload.
+	uploadsSegment = "/blobs/uploads/"
 	// stampLength is how many characters of a row's own repository name are
 	// written into each part of its fixture. Eight is far more than enough to
 	// keep two rows' parts apart.
@@ -139,7 +140,18 @@ func TestE2ETransfersRideThroughABrokenNetwork(t *testing.T) {
 
 		repair := reg.breakWith(t, toxicLimitData, streamUpstream, toxiproxy.Attributes{"bytes": limitDataBytes})
 
-		pushRidesThrough(t, reg, "flaky/cut-upload", gateBackstop, repair)
+		seen := pushRidesThrough(t, reg, "flaky/cut-upload", gateBackstop, repair)
+
+		// This is the row where the damage provably lands inside a part body:
+		// the checks are smaller than the cut and pass, so the failures are
+		// PUTs dying mid-stream, and a session count above the part count is
+		// an upload that really ran twice. The reset and outage rows cannot
+		// claim this — their failures land on the checks, before any session
+		// opens.
+		assert.Greater(
+			t, seen.uploads, int64(multiParts),
+			"an upload must have been retried through the cut, not merely checked",
+		)
 	})
 
 	t.Run("a push rides through connections the peer resets", func(t *testing.T) {
@@ -155,7 +167,7 @@ func TestE2ETransfersRideThroughABrokenNetwork(t *testing.T) {
 
 		require.NoError(t, reg.proxy.Disable(), "take the registry away")
 
-		pushRidesThrough(t, reg, "flaky/outage", outageBackstop, reg.proxy.Enable)
+		pushRidesThrough(t, reg, "flaky/outage", gateBackstop, reg.proxy.Enable)
 	})
 
 	t.Run("a pull rides through bodies that die mid-part", func(t *testing.T) {
@@ -174,7 +186,7 @@ func TestE2ETransfersRideThroughABrokenNetwork(t *testing.T) {
 		require.NoError(t, err, "the fixture is pushed over the address nothing is breaking")
 
 		repair := reg.breakWith(t, toxicLimitData, streamDownstream, toxiproxy.Attributes{"bytes": limitDataBytes})
-		watched := newGate(t, gateBackstop, hurtByRefetch(int64(multiParts)), repair)
+		watched := newGate(t, gateBackstop, hurtByRefetch(), repair)
 
 		require.NoError(t, newClient(t, bigoci.WithPlainHTTP(), bigoci.WithHTTPClient(watched.client())).Pull(
 			t.Context(), reg.through.taggedRef(repo, tag), bigoci.ToFile(dest),
@@ -184,11 +196,14 @@ func TestE2ETransfersRideThroughABrokenNetwork(t *testing.T) {
 
 		seen := watched.counts()
 		t.Logf("the pull started %d blob reads and saw %d round trips fail", seen.blobGets, seen.failures)
-		assert.Greater(
-			t, seen.blobGets, int64(multiParts),
-			"a part must have been read twice, or the damage never cost the pull anything",
+		assert.GreaterOrEqual(
+			t, seen.blobRepeat, int64(2),
+			"some part must have been read twice, or the damage never cost the pull anything",
 		)
-		assert.LessOrEqual(t, seen.blobGets, int64(pullBudget), "a pull must not read a part past its retry budget")
+		assert.LessOrEqual(
+			t, seen.blobRepeat, int64(retry.DefaultAttempts),
+			"no single part may be read past its own attempt budget",
+		)
 
 		assert.Equal(t, want, fileDigest(t, dest), "the pulled file must be byte-identical to the pushed one")
 		assert.NoFileExists(t, dest+file.PartialSuffix, "a pull that committed leaves no partial file")
@@ -196,15 +211,16 @@ func TestE2ETransfersRideThroughABrokenNetwork(t *testing.T) {
 }
 
 // pushRidesThrough pushes the fixture to repo through the proxy while the link
-// is already broken, and checks that the artifact that landed is the file that
-// was pushed.
+// is already broken, checks that the artifact that landed is the file that was
+// pushed, and returns what the gate saw so a row can assert the evidence only
+// its own damage can produce.
 //
 // The caller breaks the link and hands over repair, which the gate calls as
 // soon as the push has provably been hurt, or after backstop at the latest.
 // Verification pulls back over the direct address: a row proves the bytes
 // survived the damage, and a check that ran through the damage would be
 // proving something else.
-func pushRidesThrough(t *testing.T, reg flaky, repo string, backstop time.Duration, repair func() error) {
+func pushRidesThrough(t *testing.T, reg flaky, repo string, backstop time.Duration, repair func() error) counts {
 	t.Helper()
 
 	source := newRowFile(t, repo)
@@ -226,16 +242,23 @@ func pushRidesThrough(t *testing.T, reg flaky, repo string, backstop time.Durati
 		t, seen.failures, int64(gateFailures),
 		"the push must have been hurt, or the damage never reached it",
 	)
+	// At least one session per part guards the per-row stamping: parts a
+	// sibling row already pushed would be found by their checks and never
+	// open a session at all. Under reset_peer and a full outage this is all
+	// the sessions prove — the first failures land on the existence checks,
+	// so the uploads themselves run after the repair.
 	assert.GreaterOrEqual(
 		t, seen.uploads, int64(multiParts),
-		"every part must have been uploaded through the broken link, not found already there",
+		"every part must have opened an upload session of its own",
 	)
 	assert.LessOrEqual(
-		t, seen.uploads, int64(pushBudget),
-		"a push must not open upload sessions past its retry budget",
+		t, seen.digestUploads, int64(retry.DefaultAttempts),
+		"no single part may be uploaded past its own attempt budget",
 	)
 
 	assertRestored(t, reg.direct, repo, want, dest)
+
+	return seen
 }
 
 // newRowFile writes the fixture one row moves: the usual size and split, with
@@ -373,6 +396,16 @@ type counts struct {
 	blobGets int64
 	// uploads is how many blob upload sessions were opened.
 	uploads int64
+	// blobRepeat is the most times any single blob has been read. Two means
+	// some part was provably fetched again, which is the pull rows' evidence
+	// that a retry happened — a total could be inflated by a request pattern
+	// change and go green while proving nothing.
+	blobRepeat int64
+	// digestUploads is the most completing uploads any single digest has
+	// seen. It is the per-unit half of "no infinite retry": a unit that
+	// stopped honoring its budget pushes this past the attempt count, where
+	// an aggregate total never could fail.
+	digestUploads int64
 }
 
 // gate is the [http.RoundTripper] every row hands its client, and the reason
@@ -393,27 +426,34 @@ type counts struct {
 // hanging.
 type gate struct {
 	// next is where the round trips actually go: a clone of
-	// [http.DefaultTransport], so a row never mutates the process-wide one.
+	// [http.DefaultTransport] with a bounded dial, so a row never mutates the
+	// process-wide one and a black-holed port surfaces as a failure instead
+	// of a silent thirty-second hang.
 	next *http.Transport
 	// hurt reports whether the counters so far prove the transfer needed a
 	// retry. It is consulted every time a counter moves.
 	hurt func(counts) bool
 	// repair takes the damage off the link. It runs at most once.
 	repair func() error
+	// mu guards every counter and the repair bookkeeping: the traffic is a
+	// handful of requests, so one lock beats reasoning about atomics racing
+	// the maps.
+	mu sync.Mutex
 	// failures counts round trips that came back with an error. A push row
 	// rides on this: a connection killed while a body is being written makes
 	// the round trip itself fail, so the gate sees it directly.
-	failures atomic.Int64
-	// blobGets counts blob reads that were started. A pull row rides on this
-	// instead: a body that dies mid-read has already returned a successful
-	// round trip, so the failure is invisible here and the retry has to be
-	// recognised as a second read of the same blob.
-	blobGets atomic.Int64
-	// uploads counts blob upload sessions that were opened, which is one per
-	// upload attempt: the number a push row holds the retry budget to.
-	uploads atomic.Int64
-	// mu guards the repair bookkeeping below.
-	mu sync.Mutex
+	failures int64
+	// blobReads counts reads per blob path. A pull row rides on a repeat
+	// here instead of on the failure counter: a body that dies mid-read has
+	// already returned a successful round trip, so the failure is invisible
+	// and the retry has to be recognised as a second read of the same blob.
+	blobReads map[string]int64
+	// uploads counts blob upload sessions that were opened, one per upload
+	// attempt with something to send.
+	uploads int64
+	// completions counts completing PUTs per digest, which is what holds
+	// each unit of work to its own attempt budget.
+	completions map[string]int64
 	// repaired reports whether repair has run.
 	repaired bool
 	// backstopped reports whether it was the timer that ran it, which means
@@ -432,11 +472,20 @@ func newGate(t *testing.T, backstop time.Duration, hurt func(counts) bool, repai
 	shared, ok := http.DefaultTransport.(*http.Transport)
 	require.True(t, ok, "the default transport must be an *http.Transport to clone")
 
-	g := &gate{next: shared.Clone(), hurt: hurt, repair: repair}
+	next := shared.Clone()
+	next.DialContext = (&net.Dialer{Timeout: gateDialTimeout}).DialContext
+
+	g := &gate{
+		next:        next,
+		hurt:        hurt,
+		repair:      repair,
+		blobReads:   make(map[string]int64),
+		completions: make(map[string]int64),
+	}
 
 	timer := time.AfterFunc(backstop, func() { g.release(true) })
 	t.Cleanup(func() { timer.Stop() })
-	t.Cleanup(g.next.CloseIdleConnections)
+	t.Cleanup(next.CloseIdleConnections)
 
 	return g
 }
@@ -445,21 +494,29 @@ func newGate(t *testing.T, backstop time.Duration, hurt func(counts) bool, repai
 // needs on the way in and on the way out.
 //
 // A blob read is counted before the request goes out, on purpose: a row that
-// rides on read counts has to repair the link in time for the retry it just
+// rides on read repeats has to repair the link in time for the retry it just
 // saw start to be the one that lands.
 func (g *gate) RoundTrip(req *http.Request) (*http.Response, error) {
+	g.mu.Lock()
 	if isBlobRead(req) {
-		g.blobGets.Add(1)
-		g.check()
+		g.blobReads[req.URL.Path]++
 	}
 
 	if isUploadOpen(req) {
-		g.uploads.Add(1)
+		g.uploads++
 	}
+
+	if isUploadComplete(req) {
+		g.completions[req.URL.Query().Get("digest")]++
+	}
+	g.mu.Unlock()
+	g.check()
 
 	resp, err := g.next.RoundTrip(req)
 	if err != nil {
-		g.failures.Add(1)
+		g.mu.Lock()
+		g.failures++
+		g.mu.Unlock()
 		g.check()
 	}
 
@@ -474,11 +531,20 @@ func (g *gate) client() *http.Client {
 
 // counts returns a snapshot of what the gate has seen.
 func (g *gate) counts() counts {
-	return counts{
-		failures: g.failures.Load(),
-		blobGets: g.blobGets.Load(),
-		uploads:  g.uploads.Load(),
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	seen := counts{failures: g.failures, uploads: g.uploads}
+	for _, reads := range g.blobReads {
+		seen.blobGets += reads
+		seen.blobRepeat = max(seen.blobRepeat, reads)
 	}
+
+	for _, opened := range g.completions {
+		seen.digestUploads = max(seen.digestUploads, opened)
+	}
+
+	return seen
 }
 
 // assertRepaired checks that the gate really did repair the link, and that it
@@ -529,11 +595,14 @@ func hurtByFailures(n int64) func(counts) bool {
 	return func(seen counts) bool { return seen.failures >= n }
 }
 
-// hurtByRefetch returns the gate condition a pull row rides on: with parts
-// parts to read, a read past the parts-th one can only be a part being read
-// again, which is a retry.
-func hurtByRefetch(parts int64) func(counts) bool {
-	return func(seen counts) bool { return seen.blobGets > parts }
+// hurtByRefetch returns the gate condition a pull row rides on: some single
+// blob has been read twice, which can only be a retry. Gating on a repeat
+// rather than on the total read count keeps the row honest if the request
+// pattern of a clean pull ever grows another blob read — an inflated total
+// would repair the link before any body was cut and pass while proving
+// nothing.
+func hurtByRefetch() func(counts) bool {
+	return func(seen counts) bool { return seen.blobRepeat >= 2 }
 }
 
 // isBlobRead reports whether req reads a blob, which is the request a pull
@@ -546,4 +615,11 @@ func isBlobRead(req *http.Request) bool {
 // first request of every upload attempt that has something to upload.
 func isUploadOpen(req *http.Request) bool {
 	return req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, uploadsPath)
+}
+
+// isUploadComplete reports whether req is the PUT that streams a blob into an
+// upload session. The digest it completes into rides in the query, which is
+// what lets the gate hold each unit of work to its own attempt budget.
+func isUploadComplete(req *http.Request) bool {
+	return req.Method == http.MethodPut && strings.Contains(req.URL.Path, uploadsSegment)
 }
