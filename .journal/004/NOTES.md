@@ -316,3 +316,48 @@ branched from the now-squashed PR2 branch), then the three manual gates with
 journaled evidence, then PLAN.md checkboxes + session close. Deliberately
 waiting for the implementer to finish before heavy docker use so its e2e
 timing runs stay clean.
+
+## 2026-08-08 13:09 — ALL THREE PHASE-3 MANUAL GATES PASSED
+Instrument: CLI built from master 4dca285 (go version -m: vcs.revision=
+4dca285…, vcs.modified=false — provenance cross-check per TECH_NOTES). Fresh
+zot v2.1.20 + toxiproxy 2.12.0 containers on a private docker network
+(published on 127.0.0.1:15000 direct / :18666 proxied / :18474 control).
+
+GATE 1 — ride-through (README recipe verbatim: limit_data upstream,
+bytes=2000000, toxicity 0.3, 64 MiB at 16 MiB parts, -debug):
+- First attempt vs an ALREADY-PUSHED repo produced failed=0 in 0.12s — two
+  gate lessons: connection pooling means toxicity 0.3 has a ~10% fully-clean
+  chance per run (rerun with fresh content is the procedure, now noted), and
+  a repeat push HEAD-skips everything so each attempt needs new bytes.
+- Fresh-content attempt 1: exit=0 in 1.08s, http! = 2. Evidence (7 items):
+  (1) exit 0; (2) stdout digest sha256:331de8a4…; (3) 2 http! lines (one
+  "write: connection reset by peer", one "EOF", both mid-PUT with
+  clen=16777216); (4) uniq -d found TWO duplicated blob-write digests
+  (a6a549…, c8934a…); (5) a6a549…'s lines: PUT seq 0012 fails at +0.054s →
+  HEAD seq 0016 at +0.841s (0.787s jittered backoff) → fresh session PUT seq
+  0018 at +0.848s — new seq, new session URL, same digest, exactly the
+  README's promised shape; (6) summary "requests=20 failed=2 blob-check=7
+  (1 hit, 6 miss) blob-write=6 upload-open=6 …" — the 1 HIT is the
+  idempotency win LIVE: c8934a…'s reset PUT actually landed and the retry's
+  HEAD skipped the re-upload; (7) pull via clean port byte-identical
+  (b7d46361… == b7d46361…).
+
+GATE 2 — zot restarted mid-push (1 GiB at 128 MiB parts, direct port;
+docker restart -t 0 fired at +0.7s, took 0.54s):
+- exit=0; total 2.17s vs 1.46s clean baseline — the restart cost one
+  backoff, not a storm. http! = 1 (PUT dies "EOF" at +0.990s as zot goes
+  down). The failed digest's full story in the log: fresh HEAD after a
+  0.805s backoff (largest inter-stamp gap 0.805s << 7s budget), 404, fresh
+  upload session, 201. Pull back byte-identical (a8138f0f… ×2).
+
+GATE 3 — dead port (README recipe: push to 127.0.0.1:5999, -debug, NO
+-timeout, 64 MiB at 16 MiB parts):
+- exit=1 in 2.49s (<10s); second line exactly "bigoci: no sentinel matched
+  (exit 1)"; first failure line "…after 4 attempts: check whether part 0
+  (sha256:f5fa72…) exists: HEAD …: connect: connection refused"; per-digest
+  http! = 4/3/3/3, total 13 ≤ 16 — EXACTLY the amended expectation (only
+  the first-exhausted digest reaches 4; peers cancelled mid-backoff); zero
+  "context deadline exceeded" anywhere — the library bounded itself.
+
+Gate logs kept in scratchpad/gates/ (gate1-final.log, gate2.log, gate3.log)
+until session close. Containers torn down.
