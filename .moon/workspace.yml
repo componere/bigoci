@@ -1,12 +1,12 @@
-# Moon workspace configuration for bigoci: the root Go library and the docs
-# site. The cli/ reference module arrives with its own project entry when it
-# is built.
+# Moon workspace configuration for bigoci: the root Go library, the docs
+# site, and the cli/ reference module.
 
 projects:
   globs: []
   sources:
     root: '.'
     docs: 'docs'
+    cli: 'cli'
 
 defaultProject: 'root'
 

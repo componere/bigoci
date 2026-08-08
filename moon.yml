@@ -102,6 +102,7 @@ tasks:
       - 'root:build-windows'
       - 'root:test'
       - 'docs:build'
+      - 'cli:check'
     inputs:
       - '@group(goSources)'
       - '@group(lintConfig)'
