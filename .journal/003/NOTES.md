@@ -182,3 +182,11 @@ refused the second runner ("parallel golangci-lint is running") — passed
 locally only by scheduling luck. Fixed with --allow-parallel-runners on both
 lint tasks (fmt has no such flag and did not collide). Re-run in flight;
 merge + PLAN.md checkbox updates when green.
+
+## 2026-08-08 09:20 — Phase 2 complete
+PR #20 merged as 796d477 after the --allow-parallel-runners fix; the merged
+`ci` check runs 15 tasks including cli:check. PLAN.md updated: phase 2's five
+criteria checked with annotations, and phase 1's deferred manual-proof box
+closed — phases 1 AND 2 are now both fully proven. Phase 3 (retries) is next;
+its instrument (the CLI with -debug and -timeout, dead-port fail-fast
+observed today) is ready for it.

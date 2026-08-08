@@ -78,9 +78,11 @@ else is built on them.
       generated only; no file over 1,000 lines; core packages import no I/O.
       *(2026-08-07: verified per-PR by stabilizer agents and my own review;
       largest file 656 lines; transfer imports no adapter or I/O package.)*
-- [ ] Manual functional proof of the skeleton is deferred to phase 2, which
+- [x] Manual functional proof of the skeleton is deferred to phase 2, which
       exists to make it possible; phase 1 is not considered *proven* until
       phase 2's manual criteria pass.
+      *(2026-08-08: phase 2's manual criteria all passed — see phase 2 and
+      session 003 NOTES.md; phase 1 is proven.)*
 
 ---
 
@@ -122,23 +124,32 @@ every subsequent phase has its vehicle before it needs it.
 
 **Success criteria** (these double as phase 1's manual proof):
 
-- [ ] Manual: `bigoci push` a ~100 MiB file to a locally running zot;
+- [x] Manual: `bigoci push` a ~100 MiB file to a locally running zot;
       `curl` the manifest and confirm by eye it matches `format.md`
       (artifactType, empty config, ordered part layers, all four
       annotations, sizes sum to file size).
-- [ ] Manual: pull the artifact back into a different directory;
+      *(2026-08-08: 100 MiB at 64 MiB parts against zot v2.1.20; manifest
+      fetched by digest; every clause verified — session 003 NOTES.md.)*
+- [x] Manual: pull the artifact back into a different directory;
       `sha256sum` of pulled file equals the original **and** equals the
       `io.bigoci.file.digest` annotation.
-- [ ] Manual: push the same file twice; second push visibly skips every part
+      *(2026-08-08: three-way sha256 equality observed.)*
+- [x] Manual: push the same file twice; second push visibly skips every part
       (debug output shows HEAD-hits, near-instant completion), and the
       manifest digest is identical both times (determinism observed, not
       just unit-tested).
-- [ ] Manual: a file smaller than the part size produces a single part whose
+      *(2026-08-08: summary line read blob-check=3 (3 hit, 0 miss)
+      blob-write=0; identical digest; 100 ms.)*
+- [x] Manual: a file smaller than the part size produces a single part whose
       digest equals the file digest (verify with `sha256sum` against the
       layer descriptor).
-- [ ] Structure audit: `go mod graph` on the core module shows zero
+      *(2026-08-08: one layer; layer digest == file annotation == sha256sum.)*
+- [x] Structure audit: `go mod graph` on the core module shows zero
       CLI-originated dependencies; CLI module builds and runs from a clean
       checkout; nothing publishes it.
+      *(2026-08-08: core graph has zero cli-module edges; fresh GitHub clone
+      builds and runs; local replace blocks go install, release-please
+      excludes cli/ (PR #20), no other publishing path exists.)*
 
 ---
 
