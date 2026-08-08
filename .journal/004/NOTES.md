@@ -180,3 +180,41 @@ package) checked and dismissed — files all declare package retry.
 Review panel wf_4823b998-7b2 running: correctness/contracts/tests lenses
 (opus xhigh) + acceptance full-gate rerun (sonnet). I verify findings myself
 before applying any fix.
+
+## 2026-08-08 11:26 — Panel caught a real blocker; fixed; PR #21 open
+Panel results (9 findings; acceptance full-gate PASS):
+
+THE BLOCKER (found independently by correctness AND contracts lenses; I
+reproduced it myself on Go 1.26.4 before touching anything): net and
+net/http deliberately render dial/header/client timeouts as errors matching
+context.DeadlineExceeded (net.errTimeout and http's timeoutError both define
+Is(target)==context.DeadlineExceeded). Do's errors.Is context guard therefore
+treated the most common transient failure class — a hung or blackholed
+registry — as a cancellation and returned on attempt 1 with the budget
+unspent. Fix: the guard reads ctx itself (`if ctx.Err() != nil { return err }`);
+only the loop's own context says whether the transfer is over. My repro also
+showed req.Context().Err() stays nil under http.Client.Timeout (net/http
+forks the request before setRequestCancel), which BOTH kills the implementer's
+earlier open-question claim and resolves it favorably: caller-supplied client
+timeouts are tagged transient and retried with a fresh window per attempt.
+PR2 must document that in WithHTTPClient's godoc. DESIGN-phase3.md §1
+amendment 1 rewritten accordingly.
+
+LESSON (promote to TECH_NOTES at close): never guard retry logic with
+errors.Is(err, context.DeadlineExceeded) — Go's transport timeouts match it
+by design while the caller's context is alive; gate on ctx.Err() instead.
+
+Other findings, all fixed: loop-top ctx check now wraps the failure in hand
+via interrupted() (was dropping the op error and contradicting the godoc);
+oci/doc.go carve-out for cancelled requests; TestDefaultSleep hardened
+(elapsed >= wait; new cut-short-mid-wait test — the old test passed a
+mutation that never waited); new mixed-kind escalation row (hint mid-run
+neither resets the count nor the escalation); date-window slack widened to
+5s for CI stalls; no-header→after==0 pinned; WithHTTPClient timeout row now
+asserts the timeout stays retryable; two new semantics pins (timeout-shaped
+tagged error retried; Canceled-resembling tagged error with live ctx
+retried).
+
+Commits (both signed G, joshuagilman@gmail.com): fd98e93 feat(oci) classify,
+bf81069 fix(retry) ctx-not-shape guard + test hardening. root:check green
+after fixes. PR #21 open (3-PR plan documented in body); CI monitor armed.
