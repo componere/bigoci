@@ -10,6 +10,7 @@
   "packages": {
     ".": {
       "package-name": "bigoci",
+      "exclude-paths": ["cli"],
       "changelog-path": "CHANGELOG.md"
     }
   },

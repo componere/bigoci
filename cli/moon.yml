@@ -1,0 +1,102 @@
+language: 'go'
+layer: 'application'
+stack: 'backend'
+
+project:
+  title: 'bigoci reference CLI'
+  description: 'Reference CLI that demonstrates the bigoci library. Never published, never released.'
+  owner: 'componere'
+  maintainers:
+    - 'jmgilman'
+
+# Every task runs against `system` binaries that mise puts on PATH, exactly as
+# the root project does; moon manages no language toolchain itself.
+toolchains:
+  default: 'system'
+
+workspace:
+  inheritedTasks:
+    include: []
+
+fileGroups:
+  goSources:
+    - '*.go'
+    - 'go.mod'
+    - 'go.sum'
+    # Workspace-relative: the local `replace` in go.mod points at the core
+    # module, so editing the library must invalidate the CLI's tasks too.
+    - '/*.go'
+    - '/internal/**/*.go'
+    - '/go.mod'
+    - '/go.sum'
+    # Tool/version pins, for the same reason the root project lists them:
+    # under the `system` toolchain moon does not hash tool versions itself.
+    - '/mise.toml'
+    - '/mise.lock'
+  lintConfig:
+    - '/.golangci.yml'
+    - '/mise.toml'
+    - '/mise.lock'
+
+tasks:
+  format:
+    command: 'golangci-lint fmt --config ../.golangci.yml --diff'
+    inputs:
+      - '@group(goSources)'
+      - '@group(lintConfig)'
+    options:
+      cache: false
+
+  lint:
+    # gomoddirectives is disabled here and only here: this module's go.mod
+    # carries a mandatory local replace to the core library, and disabling the
+    # linter per-invocation keeps the guard armed for the core module, where a
+    # stray local replace is exactly what it exists to catch.
+    # --allow-parallel-runners: moon runs this and root:lint concurrently, and
+    # golangci-lint otherwise refuses to start while another instance runs.
+    command: 'golangci-lint run --config ../.golangci.yml --disable gomoddirectives ./... --show-stats=false --allow-parallel-runners'
+    inputs:
+      - '@group(goSources)'
+      - '@group(lintConfig)'
+    options:
+      cache: false
+
+  build:
+    # A named output path: bare `go build ./...` drops an untracked `cli`
+    # binary into the package directory, and bin/ is already gitignored.
+    command: 'go build -o bin/bigoci .'
+    inputs:
+      - '@group(goSources)'
+    options:
+      cache: false
+
+  test:
+    command: 'go test -race ./...'
+    inputs:
+      - '@group(goSources)'
+    options:
+      cache: false
+
+  # Hand-run: it rewrites go.mod/go.sum, which CI must not do behind a
+  # contributor's back. Run it whenever the core's dependencies change — the
+  # local replace puts the core's full requirement list in this module's graph.
+  tidy:
+    command: 'go mod tidy'
+    inputs:
+      - '@group(goSources)'
+    options:
+      cache: false
+      runInCI: false
+
+  check:
+    deps:
+      - 'cli:format'
+      - 'cli:lint'
+      - 'cli:build'
+      - 'cli:test'
+    inputs:
+      - '@group(goSources)'
+      - '@group(lintConfig)'
+    options:
+      cache: false
+      runInCI: true
