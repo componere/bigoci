@@ -104,3 +104,38 @@ Where they DISAGREE (boundaries lens breaks the tie, then I decide):
 3. PR order: oci-classification-first (user-visible ErrPartTooLarge lands
    alone, then transfer flips behavior) — vs — transfer-inert-first, oci
    flips. Both 3-PR splits keep e2e+deps last.
+
+## 2026-08-08 10:37 — Design finalized (DESIGN-phase3.md in scratchpad)
+Boundaries rerun landed a decisive design and CHANGED my provisional call on
+the seam. Final synthesis (scratchpad/DESIGN-phase3.md is the governing doc):
+
+- Seam: ONE new package internal/retry holding both the vocabulary — a
+  transparent tag `retry.Transient(err, after)` + `retry.IsTransient(err)`,
+  untagged = terminal — and the policy (Policy/Default/Do, Sleep+Rand func
+  types, zero-value = default). Killer arguments: duck-typed interfaces
+  can't classify *url.Error values bigoci doesn't own (a wrapper is needed
+  anyway); a Kind enum's "core decides" is ceremony (the per-status table
+  lives in the adapter's kindOf regardless) at the cost of a second package
+  and methods on three error types. oci imports retry (adapter → core leaf,
+  legal); oci still never imports transfer; root never imports retry.
+- blobBody wrapper in oci.Blobs.Get tags mid-stream read failures — and
+  structurally fixes the tail-probe false-terminal AND composes with
+  readError untouched. readManifest's ReadAll gets the same tag.
+- My amendments vs the boundaries proposal: context-first guard kept in
+  Do (defense in depth); Retry-After = FLOOR clamped by the one 30s Cap in
+  the CORE (not override-as-sent + 2min adapter constant); errors.Join
+  replaced by single-line %w wrap (Join is multi-line → would break the
+  CLI's one-line failure contract); single-attempt failures unwrapped.
+- Push unit = Exists+Put (idempotency win), claim outside loop; pull unit =
+  whole part, fresh OffsetWriter+hasher per attempt; manifest ops + empty
+  config own budgets; digest mismatch/long body/disk/unclassified terminal.
+- PRs: (1) feat(oci): classify registry failures for retry [retry pkg +
+  oci tagging, INERT], (2) feat(transfer): per-part retry with backoff
+  [behavior flip + ErrPartTooLarge + CLI exit 7 + ALL docs], (3) test(e2e):
+  toxiproxy ride-through suite [only PR adding deps].
+- Verified myself: Retry-After already on CLI redactor allow-list; Shopify
+  toxiproxy client stdlib-only (2 go.sum lines); design.md pull-path prose
+  contradiction confirmed (doc edit + review flag).
+Next: implementation worktree from fetched master; Opus implementer builds
+PR1; I review line-by-line, commit myself (verified-signature rule), then
+review panel.
