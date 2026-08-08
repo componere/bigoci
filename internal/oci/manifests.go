@@ -15,6 +15,8 @@ import (
 
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/componere/bigoci/internal/retry"
 )
 
 // maxManifestSize is the largest manifest body this adapter reads. Registries
@@ -149,10 +151,18 @@ func manifestPath(target string) string {
 // readManifest reads a manifest body under maxManifestSize. It reads one byte
 // past the limit so an oversized body is reported as the error it is instead
 // of being silently truncated into unparseable JSON.
+//
+// A body that dies part way through is a connection failing, not a manifest
+// being wrong, so it is marked worth another attempt — the same verdict the
+// blob path reaches through its wrapped reader. A body that arrives whole and
+// is simply too large is not: asking again produces the same oversized
+// document.
 func readManifest(resp *http.Response) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: read manifest: %w", resp.Request.Method, resp.Request.URL.Path, err)
+		return nil, retry.Transient(
+			fmt.Errorf("%s %s: read manifest: %w", resp.Request.Method, resp.Request.URL.Path, err), 0,
+		)
 	}
 
 	if len(body) > maxManifestSize {

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/componere/bigoci/internal/oci"
+	"github.com/componere/bigoci/internal/retry"
 )
 
 // manifestBody stands in for an encoded bigoci manifest. What it says does
@@ -142,6 +143,30 @@ func TestManifestsGetSizeLimit(t *testing.T) {
 			assert.Len(t, body, tt.size)
 		})
 	}
+}
+
+func TestManifestsGetTagsABodyThatBreaksMidRead(t *testing.T) {
+	t.Parallel()
+
+	// The registry promises a body far longer than it sends, so the read
+	// fails part way through rather than ending early and cleanly.
+	const declared = 1 << 16
+
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+		w.Header().Set("Content-Length", strconv.Itoa(declared))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("a", declared/2))
+		resetConnection(t, w)
+	}), repoName+":"+tag)
+
+	_, _, err := repo.Manifests().Get(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read manifest:", "the message the adapter has always reported")
+
+	_, transient := retry.IsTransient(err)
+	assert.True(t, transient, "a manifest whose connection broke mid-read is worth another attempt")
 }
 
 func TestManifestsGetVerifiesBoundDigest(t *testing.T) {

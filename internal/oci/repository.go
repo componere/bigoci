@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
+
+	"github.com/componere/bigoci/internal/retry"
 )
 
 // The URL schemes a repository talks. Registries are https; plain HTTP is
@@ -39,6 +42,22 @@ const errorBodyLimit = 4096
 // asks for rather than a failure. A 404's [StatusError] matches it through
 // [errors.Is]; nothing wraps the sentinel in a second layer.
 var ErrNotFound = errors.New("not found")
+
+// ErrTooLarge reports that the registry refused a request as larger than it
+// accepts. A 413's [StatusError] matches it through [errors.Is], the same way
+// a 404 matches [ErrNotFound].
+//
+// A 413 is how a registry states its layer cap. bigoci ships no table of
+// vendor limits — the caps differ per registry, they move, and a stale table
+// is worse than none — so the limit is discovered by being told about it,
+// once, by the registry that enforces it.
+//
+// The mapping is the status and nothing else, which means a 413 answering a
+// manifest write would match too. That is admitted rather than guarded
+// against: a bigoci manifest is a few hundred kilobytes at the format's own
+// part cap, no registry rejects one as too large, and sniffing the body to
+// tell the two apart would be the vendor table again in a different shape.
+var ErrTooLarge = errors.New("too large")
 
 // Option configures a [Repository] as it is built. The set is deliberately
 // small: everything else about a repository comes from the reference it is
@@ -192,10 +211,23 @@ func (r *Repository) newRequest(
 // do sends req and reports a transport failure against the method and path it
 // happened on. The response body comes back open: the caller either closes it
 // or hands it to the caller of the port.
+//
+// A transport failure is transient. The adapter does not sort network
+// failures by species — connection refused, DNS, TLS handshake, reset,
+// timeout — because every one of them is worth one more attempt and none of
+// them is cheaper to diagnose than to repeat. The exception is a request the
+// caller ended: that is the transfer stopping, not the network failing, and
+// the check belongs here because this is the last place the two are still
+// distinguishable.
 func (r *Repository) do(req *http.Request) (*http.Response, error) {
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, err)
+		failure := fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, err)
+		if req.Context().Err() != nil {
+			return nil, failure
+		}
+
+		return nil, retry.Transient(failure, 0)
 	}
 
 	return resp, nil
@@ -237,12 +269,21 @@ type StatusError struct {
 	Path string
 	// Status is the HTTP status code the registry answered with.
 	Status int
+	// RetryAfter is how long the registry asked the caller to wait before
+	// trying again, read raw from the Retry-After header a 429 or a 503
+	// carries. It is zero when the response sent no header or sent one that
+	// cannot be read. Nothing is trimmed or dropped here: this field is what
+	// the registry said, and deciding how much of it to obey belongs to the
+	// retry policy, which bounds every wait by its own cap.
+	RetryAfter time.Duration
 	// Detail is the start of the response body, when it carried one.
 	Detail string
 }
 
 // Error renders the method, the path, the status, and whatever detail the
-// registry's body offered.
+// registry's body offered. A wait the registry asked for is left out: it is
+// bookkeeping for the retry loop, not something a person reading a failure
+// needs.
 func (e *StatusError) Error() string {
 	summary := fmt.Sprintf("%s %s: registry returned %d %s", e.Method, e.Path, e.Status, http.StatusText(e.Status))
 	if e.Detail != "" {
@@ -252,24 +293,45 @@ func (e *StatusError) Error() string {
 	return summary
 }
 
-// Is makes a 404 match [ErrNotFound] under [errors.Is] without a second
-// wrapping layer, so a not-found failure says "not found" once — in the
-// status text the message already carries — instead of stacking the phrase at
-// every boundary.
+// Is makes a 404 match [ErrNotFound] and a 413 match [ErrTooLarge] under
+// [errors.Is] without a second wrapping layer, so a not-found failure says
+// "not found" once — in the status text the message already carries —
+// instead of stacking the phrase at every boundary.
 func (e *StatusError) Is(target error) bool {
-	return target == ErrNotFound && e.Status == http.StatusNotFound
+	switch target {
+	case ErrNotFound:
+		return e.Status == http.StatusNotFound
+	case ErrTooLarge:
+		return e.Status == http.StatusRequestEntityTooLarge
+	default:
+		return false
+	}
 }
 
-// statusError reports a response whose status the adapter did not expect. It
-// reads the body for the error detail, which also drains it for the close
-// that follows.
+// statusError reports a response whose status the adapter did not expect,
+// classified for the retry policy on the way out. It reads the body for the
+// error detail, which also drains it for the close that follows.
+//
+// The classification lives here because this is the one place every
+// unexpected status passes through, which is what keeps the
+// transient-or-terminal split a single table instead of a decision repeated
+// at every endpoint. A transient status still gets its detail read, so a
+// 503's body reaches the message and the connection still goes back in the
+// pool.
 func statusError(resp *http.Response) error {
-	return &StatusError{
-		Method: resp.Request.Method,
-		Path:   resp.Request.URL.Path,
-		Status: resp.StatusCode,
-		Detail: errorDetail(resp.Body),
+	err := &StatusError{
+		Method:     resp.Request.Method,
+		Path:       resp.Request.URL.Path,
+		Status:     resp.StatusCode,
+		RetryAfter: retryAfter(resp),
+		Detail:     errorDetail(resp.Body),
 	}
+
+	if transientStatus(err.Status) {
+		return retry.Transient(err, err.RetryAfter)
+	}
+
+	return err
 }
 
 // errorDetail reads the first errorBodyLimit bytes of a failed response body
