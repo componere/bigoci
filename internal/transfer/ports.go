@@ -17,9 +17,18 @@ import (
 // Blobs.
 //
 // Errors report what happened and leave what to do about it to the caller.
-// An implementation may retry a request it knows is safe to repeat, but a
-// failure it gives up on has to surface: the orchestrator owns the retry
-// policy and the accounting that goes with it.
+// An implementation must not retry: the orchestrator attempts every operation
+// under one policy, and an adapter that retried underneath it would multiply
+// the attempt count and the waits between attempts out of anyone's sight.
+//
+// What an implementation does owe is a verdict. A failure that repeating the
+// request could fix is returned tagged with
+// [github.com/componere/bigoci/internal/retry.Transient], carrying whatever
+// wait the far end asked for; everything else is returned untagged and ends
+// the transfer at once. The tag is what lets the orchestrator decide without
+// knowing how the implementation talks to a registry, so an implementation is
+// the only thing that can supply it — nothing above this port can tell a
+// dropped connection from a refused request.
 type Blobs interface {
 	// Exists reports whether the repository holds the blob with digest dgst.
 	//
@@ -48,6 +57,17 @@ type Blobs interface {
 	// The caller owns the returned reader and must close it. Get returns an
 	// error when the blob does not exist; ask with [Blobs.Exists] instead
 	// when absence is an expected answer.
+	//
+	// Every call is a fresh request that resolves the blob again, so a caller
+	// fetching a part a second time never rides on whatever a previous call
+	// followed — a redirect to object storage expires, and a stale one would
+	// fail a retry for a reason that has nothing to do with the first failure.
+	//
+	// The reader's failures are classified the same way its opening was: an
+	// implementation whose stream can break part way through — because it is
+	// arriving over a connection — tags those read failures too, since by the
+	// time they surface the caller holds nothing but an [io.Reader] and cannot
+	// tell a broken connection from a finished one.
 	Get(ctx context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, error)
 
 	// Put uploads the blob with digest dgst, size bytes long, reading its
@@ -66,7 +86,8 @@ type Blobs interface {
 	// digest the registry computes differently from dgst.
 	//
 	// Retrying is the caller's job, because only the caller can produce a
-	// fresh reader over the same bytes.
+	// fresh reader over the same bytes. An implementation that receives a
+	// spent reader has been handed a bug, not a retry.
 	Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader) error
 }
 
@@ -81,6 +102,12 @@ type Blobs interface {
 // A transfer reads or writes the manifest once, at the very start of a pull
 // or the very end of a push, so an implementation need not be fast — but it
 // must be safe for concurrent use, like every other port here.
+//
+// Failures are classified exactly as [Blobs] describes: transient ones
+// tagged, everything else not. Both methods are also safe to repeat — a Get
+// is a read, and a Put of identical bytes at the same reference reaches the
+// same state — so the orchestrator retries a manifest operation under the
+// same policy it retries a part under.
 type Manifests interface {
 	// Get fetches the manifest the bound reference resolves to and returns
 	// its raw bytes together with a descriptor for them.
@@ -125,6 +152,10 @@ type Manifests interface {
 // life of a Source: an implementation reads it once when it opens the file.
 // A file that changes underneath a running push is a caller error, not a
 // case this port handles.
+//
+// A Source never classifies its failures. A local read that fails is not a
+// thing repeating fixes, so it is always terminal and ends the transfer at
+// once: the orchestrator retries the registry, never the disk.
 type Source interface {
 	// ReaderAt reads one byte range of the file. Workers call it
 	// concurrently, at unrelated offsets.
@@ -150,6 +181,11 @@ type Source interface {
 //
 // Every method must be safe for concurrent use except [Sink.Commit], which
 // the pull calls once, alone, after the last write.
+//
+// A Sink never classifies its failures either. A write the destination
+// refuses is terminal, whatever was happening on the registry side of the
+// same copy: a full or unwritable filesystem is not a peer having a bad
+// minute, and hammering it three more times only delays the report.
 type Sink interface {
 	// ReaderAt reads one byte range back, so a resume can hash the ranges an
 	// earlier attempt already wrote.

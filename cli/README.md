@@ -178,7 +178,9 @@ has to be seekable.
 ### -timeout
 
 `-timeout` bounds the whole transfer. Leaving it unset adds no deadline at all,
-rather than a very long one.
+rather than a very long one. It bounds the library's retries and the waits
+between them too: a deadline that expires while a worker is backing off ends
+that wait immediately rather than after it.
 
 An explicit `-timeout 0` means the same thing: no limit. A negative duration is
 a usage error, exit 2, because someone who typed a sign by mistake should hear
@@ -238,13 +240,13 @@ it arrives, will arrive as whole lines.
 | 4 | `errors.Is(err, bigoci.ErrNotBigociArtifact)` |
 | 5 | `errors.Is(err, bigoci.ErrDigestMismatch)` |
 | 6 | reserved: unauthorized |
-| 7 | reserved: part too large |
+| 7 | `errors.Is(err, bigoci.ErrPartTooLarge)` |
 | 130 | interrupted by SIGINT |
 | 143 | terminated by SIGTERM |
 
-Codes 6 and 7 are reserved and unused. Neither failure can happen in the
-library's current phase; reserving the numbers now means the phases that raise
-them add rows without renumbering anything a script already depends on.
+Code 6 is reserved and unused. That failure cannot happen until the library
+authenticates; reserving the number now means the phase that raises it adds a
+row without renumbering anything a script already depends on.
 
 A failure always prints two lines:
 
@@ -557,16 +559,74 @@ blobs at all.
 echo "exit=$?"
 ```
 
-At least one `http!` line, each with `err="dial tcp …: connect: connection
-refused"` — one for every request that was in flight when the failure hit. The
-library stops at the first failure and does not start new work, so with four
-parts and four workers that is up to four lines, and fewer if one connection
-refused before the others were sent. Then `failed=` matching that count, then
+Every request that goes out gets an `http!` line with `err="dial tcp …:
+connect: connection refused"`. A refused connection is worth another attempt,
+so the digest whose worker runs out of attempts first shows exactly four
+`http!` lines. The other digests show fewer — between one and four — because
+that first exhaustion cancels the peers mid-backoff, which is itself the
+behavior worth seeing: nobody waits out a schedule for a transfer that is
+already over. The total is at most four per worker (sixteen here), eight to
+thirteen on a typical run. Then `failed=` matching whatever was sent, then
 exit 1 with `no sentinel matched`.
+
+The first failure line says how many attempts it took:
+
+```
+bigoci: push /tmp/model.bin to 127.0.0.1:5999/team/model:v1: after 4 attempts: check
+whether part 0 (sha256:…) exists: HEAD /v2/team/model/blobs/sha256:…: dial tcp
+127.0.0.1:5999: connect: connection refused
+```
+
+It arrives in well under ten seconds: the whole backoff budget for one unit of
+work is under seven, and a refused connection on loopback comes back at once.
+No `-timeout` is needed to bound the run, and leaving it off is the point —
+the library is what stops, not the deadline.
 
 The failed requests here are blob checks, so they are counted under
 `blob-check=` and under `failed=`, with `(0 hit, 0 miss)`: a request that never
 got an answer is neither.
+
+### A broken connection is retried, and you can see it
+
+Put something between the client and the registry that breaks connections, and
+read the log for the same digest twice. toxiproxy is what the library's own
+end-to-end tests use:
+
+```
+docker network create bigoci-gate
+docker run -d --rm --network bigoci-gate --name zot ghcr.io/project-zot/zot:v2.1.20
+docker run -d --rm --network bigoci-gate --name toxi -p 8474:8474 -p 8666:8666 \
+  ghcr.io/shopify/toxiproxy:2.12.0 -host=0.0.0.0
+curl -s -XPOST localhost:8474/proxies \
+  -d '{"name":"zot","listen":"0.0.0.0:8666","upstream":"zot:5000"}'
+curl -s -XPOST localhost:8474/proxies/zot/toxics \
+  -d '{"name":"cut","type":"limit_data","stream":"upstream","toxicity":0.3,"attributes":{"bytes":2000000}}'
+
+./bin/bigoci push -plain-http -part-size 16MiB -debug /tmp/model.bin \
+  127.0.0.1:8666/gate/model:v1 2>push.log
+echo "exit=$?"
+```
+
+A retried request is a fresh request: it gets a new `http>` line with a **new**
+`seq` and the same URL, never a second line under the old one. So the evidence
+is a digest that shows up more than once:
+
+```
+# part digests that were uploaded more than once
+grep 'http> .*class=blob-write' push.log \
+  | grep -o 'digest=sha256:[0-9a-f]\{64\}' | sort | uniq -d
+
+# part digests that were checked more than once
+grep 'http> .*class=blob-check' push.log \
+  | grep -o 'blobs/sha256:[0-9a-f]\{64\}' | sort | uniq -d
+```
+
+Take the `http>` lines for one duplicated digest and read the `<t>` column:
+the gap between them is the wait the library took. The waits are drawn from a
+window that doubles with each attempt — one second, then two, then four — so
+they grow as a part runs out of attempts, though any single one may be short.
+`grep -c '^http!' push.log` counts the failures that caused them, the summary
+line's `failed=` agrees with that count, and the push still exits 0.
 
 ### Nothing named is nothing found
 
@@ -596,10 +656,6 @@ an empty log.
 
 ### Forward pointers
 
-- **Retries (phase 3).** A retried request is a fresh request: it gets a new
-  `http>` line with a **new** `seq` and the same URL, never a second line under
-  the old one. Group the `http>` lines by URL, and the widening gaps in the `<t>`
-  column between them are the backoff schedule.
 - **Resume (phase 4).** Interrupt a pull with Ctrl-C, confirm exit 130 and a
   `.bigoci-partial` file left beside the destination, then pull again and watch
   which parts are fetched.
@@ -647,8 +703,8 @@ which build ran, not as proof of which source it was built from.
 
 ## Limits
 
-- No authentication, no retries, no resume, and no progress output. Each
-  arrives with the library phase that implements it.
+- No authentication, no resume, and no progress output. Each arrives with the
+  library phase that implements it.
 - No environment variables, no configuration file, no shell completions. Flags
   are the whole interface.
 - No `-` operands for standard input or standard output, and there cannot be.

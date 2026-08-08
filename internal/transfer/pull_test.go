@@ -138,11 +138,17 @@ func TestPullRefusesAPartOfTheWrongLength(t *testing.T) {
 			file := &memFile{}
 			sink := mockSink(t, file)
 
+			// One attempt, because this is about what a wrong length says and
+			// not about how often it is asked for again. A part that ends
+			// early is the one failure the orchestrator itself marks worth
+			// repeating, and the budget it gets has its own rows in
+			// retry_pull_test.go.
 			err := transfer.Pull(t.Context(), transfer.PullSpec{
 				Sink:      sink,
 				Blobs:     mockBlobsServing(t, store),
 				Manifests: manifests,
 				Workers:   2,
+				Retry:     noRetry(),
 			})
 			require.ErrorContains(t, err, tt.wantErr)
 			require.ErrorContains(t, err, "part 1")

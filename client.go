@@ -78,9 +78,16 @@ func New(opts ...Option) (*Client, error) {
 // upload it. Nothing buffers a part in memory whatever the part size is. The
 // file must not change while the push runs.
 //
-// A cancelled ctx stops the workers and returns its error. Nothing is retried
-// in this phase, so the first failure ends the push and leaves whichever parts
-// had already landed in the repository, unreferenced.
+// A failure the registry or the network says is worth repeating — a 429, a
+// 5xx, a connection that dropped — is retried up to four times per part, with
+// an exponentially growing jittered wait that never falls short of a
+// Retry-After the registry sent. Everything else fails at once. A push that
+// gives up leaves whichever parts had already landed in the repository,
+// unreferenced, and a later push finds and skips them.
+//
+// A cancelled ctx stops the workers, cuts short any wait in progress, and
+// returns its error. The errors a caller branches on are [ErrNotFound] and
+// [ErrPartTooLarge].
 func (c *Client) Push(
 	ctx context.Context,
 	ref Reference,
@@ -110,14 +117,21 @@ func (c *Client) Push(
 // are what a later phase will resume from; this phase always fetches every
 // part.
 //
+// A part whose fetch breaks in a way worth repeating — a 429, a 5xx, a
+// connection that dropped mid-part — is fetched again, up to four times, with
+// an exponentially growing jittered wait that never falls short of a
+// Retry-After the registry sent. A part that arrives whole and hashes wrong
+// is not: that is the registry serving content the artifact does not
+// describe, and asking again gives the same answer.
+//
 // Verification rests on the manifest digest, exactly as pulling a container
 // image does. A caller who names a digest reference gets that chain checked
 // end to end: the manifest is verified against the digest it was asked for,
 // and every part against the manifest.
 //
-// A cancelled ctx stops the workers and returns its error. The errors a
-// caller branches on are [ErrNotFound], [ErrNotBigociArtifact], and
-// [ErrDigestMismatch].
+// A cancelled ctx stops the workers, cuts short any wait in progress, and
+// returns its error. The errors a caller branches on are [ErrNotFound],
+// [ErrNotBigociArtifact], and [ErrDigestMismatch].
 func (c *Client) Pull(ctx context.Context, ref Reference, dest FileDest, opts ...PullOption) error {
 	if err := c.pull(ctx, ref, dest, opts); err != nil {
 		return classify(err)

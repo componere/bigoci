@@ -35,22 +35,23 @@
 //
 // # Errors
 //
-// [ErrNotFound], [ErrNotBigociArtifact], and [ErrDigestMismatch] are the
-// failures a caller branches on. Both directions run every error they return
-// through the same check, so [errors.Is] answers for the whole chain no
-// matter how deep the failure started.
+// [ErrNotFound], [ErrNotBigociArtifact], [ErrDigestMismatch], and
+// [ErrPartTooLarge] are the failures a caller branches on. Both directions
+// run every error they return through the same check, so [errors.Is] answers
+// for the whole chain no matter how deep the failure started.
 //
-// The design names two more: a registry that refused the request, and a part
-// a registry rejected as too large, which is how a layer size cap surfaces.
-// Neither can happen in this phase, so both arrive with the authentication
-// and retry phases that raise them.
+// The design names one more: a registry that refused the request. It cannot
+// happen while every request is anonymous, so it arrives with the
+// authentication phase that raises it.
 //
 // # This phase
 //
-// Push and pull move a file end to end. What they do not do yet: a failed
-// request surfaces instead of being retried, a pull fetches every part rather
-// than resuming into a partial file it finds, and every request is anonymous.
-// Retries, resume, and authentication arrive in later phases, in that order.
+// Push and pull move a file end to end and retry transient failures: a
+// dropped connection, a 429, a 5xx, or a part whose body ends early costs a
+// bounded number of attempts with growing jittered waits, never the
+// transfer. What they do not do yet: a pull fetches every part rather than
+// resuming into a partial file it finds, and every request is anonymous.
+// Resume and authentication arrive in later phases, in that order.
 //
 // bigoci is dual-licensed under Apache-2.0 and MIT, at your option.
 package bigoci

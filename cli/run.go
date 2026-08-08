@@ -34,6 +34,9 @@ const (
 	// exitDigestMismatch reports a failure that matched
 	// bigoci.ErrDigestMismatch.
 	exitDigestMismatch = 5
+	// exitPartTooLarge reports a failure that matched
+	// bigoci.ErrPartTooLarge.
+	exitPartTooLarge = 7
 	// exitInterrupted reports a transfer stopped by SIGINT, by the shell
 	// convention of 128 plus the signal number.
 	exitInterrupted = 130
@@ -192,16 +195,17 @@ func reportError(e env, err error, sig *interrupts) int {
 // with [errors.Is] in order, first match winning.
 //
 // It is built here rather than declared once because the package keeps no
-// global state. Two more codes are reserved and absent on purpose: 6 for a
-// registry that refused the request, and 7 for a part a registry rejected as
-// too large. Neither failure can happen in this phase of the library, and
-// reserving the numbers now means the phases that raise them add rows without
-// renumbering the codes a script already depends on.
+// global state. One more code is reserved and absent on purpose: 6, for a
+// registry that refused the request. That failure cannot happen until the
+// library authenticates, and reserving the number now means the phase that
+// raises it adds a row without renumbering the codes a script already depends
+// on.
 func sentinelExits() []sentinelExit {
 	return []sentinelExit{
 		{err: bigoci.ErrNotFound, code: exitNotFound, name: "bigoci.ErrNotFound"},
 		{err: bigoci.ErrNotBigociArtifact, code: exitNotBigociArtifact, name: "bigoci.ErrNotBigociArtifact"},
 		{err: bigoci.ErrDigestMismatch, code: exitDigestMismatch, name: "bigoci.ErrDigestMismatch"},
+		{err: bigoci.ErrPartTooLarge, code: exitPartTooLarge, name: "bigoci.ErrPartTooLarge"},
 	}
 }
 

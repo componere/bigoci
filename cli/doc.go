@@ -44,12 +44,12 @@
 //	4    errors.Is(err, bigoci.ErrNotBigociArtifact)
 //	5    errors.Is(err, bigoci.ErrDigestMismatch)
 //	6    reserved: unauthorized
-//	7    reserved: part too large
+//	7    errors.Is(err, bigoci.ErrPartTooLarge)
 //	130  interrupted by SIGINT
 //	143  terminated by SIGTERM
 //
-// Codes 6 and 7 are reserved now so the phases that raise those failures add
-// rows without renumbering the ones a script already depends on.
+// Code 6 is reserved now so the phase that raises that failure adds a row
+// without renumbering the ones a script already depends on.
 //
 // A failure always prints two lines. The first is the library's error verbatim,
 // never re-wrapped and never re-phrased. The second is unconditional, because

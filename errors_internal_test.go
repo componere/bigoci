@@ -26,6 +26,11 @@ func TestClassifyKeepsTheWholeChain(t *testing.T) {
 			want:     ErrNotFound,
 		},
 		{
+			name:     "a part the registry refused maps to the public too-large sentinel",
+			internal: oci.ErrTooLarge,
+			want:     ErrPartTooLarge,
+		},
+		{
 			name:     "an alien artifact maps to the public not-bigoci sentinel",
 			internal: manifest.ErrNotBigociArtifact,
 			want:     ErrNotBigociArtifact,

@@ -208,9 +208,12 @@ cache could skip the re-hash; it is deferred until profiling shows the need.
    digest.
 3. Workers `GET` parts concurrently. Each streams into its own byte range via
    `WriteAt`, hashing as it writes. A part whose hash does not match its
-   descriptor digest is fetched again. A transfer error resumes from the
-   failed byte offset with a `Range` request when the registry honors it, and
-   re-fetches the part when it does not.
+   descriptor digest fails the pull: the registry served content the manifest
+   does not describe, and asking for it again returns the same bytes. A part
+   whose transfer breaks part way through is fetched again from its first
+   byte, and the second attempt writes over what the first left in the range.
+   Resuming from the failed byte offset with a `Range` request, where the
+   registry honors one, arrives with resume in phase 4.
 4. When every part verifies, bigoci renames the partial file onto `<dest>`.
    The destination only ever exists as a complete, verified file.
 
@@ -243,6 +246,34 @@ v1.
 
 Part size and worker count are per-push and per-pull options. Part size is
 recorded in the manifest, so pull never guesses it.
+
+### Retry policy
+
+The table gives the numbers. Four things it cannot say:
+
+- **The unit of work is not always a request.** A part's existence check and
+  its upload are attempted together, so an upload whose bytes landed and whose
+  answer was lost costs the next attempt one `HEAD` instead of the whole part.
+  A pull's unit is a part's `GET`, the copy into place, and the digest check.
+  The empty config blob and each manifest call get budgets of their own.
+- **`Retry-After` is a floor, not a replacement.** A registry that names a
+  wait is waited for at least that long, and never less than the growing
+  jittered backoff would have taken anyway — a hint must not send every
+  rate-limited worker back at the same instant. The 30 s cap bounds every
+  wait, one a registry asked for included, so a header naming an hour parks a
+  transfer for half a minute and no longer. Total time is bounded by the
+  caller's context, which is the only bound that knows what the caller is
+  willing to spend.
+- **What is terminal.** Every 4xx but 429, a part that arrives whole and
+  hashes wrong, a destination that will not take the bytes, a source that will
+  not read, and a context that ended. So is any failure no layer recognized:
+  bigoci does not guess that a failure nobody classified might be temporary,
+  because repeating it turns an immediate answer into a slow one without
+  making it better.
+- **A broken part is re-done whole.** This phase asks for no byte range, so
+  a stream that died after 100 MiB is fetched again from zero and written over
+  the same range. Mid-part resume needs a `Range` the spec does not require
+  registries to serve; it arrives with resume.
 
 ## Architecture
 
@@ -310,6 +341,7 @@ bigoci/              public API: Client, options, sentinel errors
 ├── internal/plan      split arithmetic
 ├── internal/manifest  format encode and decode
 ├── internal/transfer  orchestrator: workers, retries, progress
+├── internal/retry     what is worth another attempt, and how long to wait
 ├── internal/oci       net/http distribution client (Blobs, Manifests)
 ├── internal/auth      oras-go credentials adapter (Auth)
 └── internal/file      OS filesystem adapter (Source, Sink)

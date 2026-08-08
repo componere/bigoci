@@ -1,9 +1,12 @@
 package bigoci_test
 
 import (
+	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +17,12 @@ import (
 
 // absentTag is a tag no fixture ever writes.
 const absentTag = "absent"
+
+// deadPortCeiling bounds the dead-port push. It is a ceiling and not a
+// measurement: the retry budget's worst case is under seven seconds of
+// waiting and a refused connection on loopback comes back in microseconds, so
+// a run that reaches this deadline has hung rather than run slowly.
+const deadPortCeiling = 20 * time.Second
 
 func TestPullReportsAManifestTheRegistryDoesNotHold(t *testing.T) {
 	t.Parallel()
@@ -113,6 +122,49 @@ func TestPullReportsADestinationItCannotWrite(t *testing.T) {
 
 	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.NoFileExists(t, dest)
+}
+
+// TestPushAgainstADeadPortFailsWithinTheRetryBudget is the automated half of
+// the dead-port gate: a registry that is not there costs a bounded number of
+// attempts and then a failure that says how many it made. No hang, and no
+// retrying forever.
+//
+// This test really waits. It drives the library through its public API, which
+// names no policy, so the backoff is the shipped one — about three and a half
+// seconds on average, under seven at worst. That is deliberate: the whole
+// claim is about the real schedule, and a test that injected a fake one would
+// only be testing the fake.
+func TestPushAgainstADeadPortFailsWithinTheRetryBudget(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(t.Context(), deadPortCeiling)
+	defer cancel()
+
+	_, err := newClient(t, bigoci.WithPlainHTTP()).Push(
+		ctx,
+		bigoci.Reference(deadAddress(t)+"/"+repoName+":"+tag),
+		bigoci.FromFile(newFile(t, payload(shortFile))),
+	)
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.DeadlineExceeded, "the retry budget must end the push, not the test's ceiling")
+	require.ErrorContains(t, err, "after 4 attempts")
+}
+
+// deadAddress returns the address of a port nothing is listening on. A
+// listener picks a free one and is closed again, so a connection to it is
+// refused at once rather than waiting out the connect timeout a firewalled
+// port would.
+func deadAddress(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+
+	return address
 }
 
 func TestTransfersReportAReferenceTheyCannotParse(t *testing.T) {
