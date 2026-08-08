@@ -146,3 +146,44 @@ Lesson: mockery .NotBefore(call) pins cross-method ordering (Size before
 Truncate) — the TOCTOU-ish claims that mutation testing can't reach via
 behavior get pinned as mock-declared ordering instead.
 Next: PR 3 test(e2e) kill-and-resume.
+
+## 2026-08-08 15:58 — Phase-4 manual gates: all four PASSED
+Instrument: CLI built from master d789849 (provenance cross-checked with
+go version -m: vcs.revision=d789849, vcs.modified=false — built in the main
+checkout, not a worktree, dodging the wrong-commit stamp quirk). Registry:
+fresh zot v2.1.20 (gate-zot, host 5050) behind toxiproxy 2.12.0 (host 5051)
+with 25 MB/s-per-connection bandwidth toxics both ways — loopback moves
+2 GiB in ~2 s, far too fast to interrupt at 50%, and the toxic rate is PER
+CONNECTION (4 workers ≈ 4×), which the first attempt missed. Interrupts
+sent causally: poll the -debug log for the Nth request line, then kill -INT
+(equivalent to Ctrl-C for a single process). Fixture: 2 GiB urandom at
+128 MiB parts = 16 parts; fresh content per push scenario (zot dedupes
+globally — the first fixture's parts were already in storage from a
+throttle-calibration push and would have made gate 1 vacuous).
+Grammar gotcha: http>/http< debug lines carry NO "bigoci:" prefix and a
+sequence number before the verb — grep '^http> .*class=blob-write', not
+'http> PUT'.
+
+Gate 1 (push, .journal/002/PLAN.md:244): run 1 SIGINT after 8/16 part PUTs
+opened → exit 130, 4 parts landed (four 201s in g1r1.log). Run 2 summary:
+requests=42 blob-check=17 (5 hit, 12 miss) blob-write=12 upload-open=12
+manifest-write=1 — the 4 landed parts + shared empty config HEAD-skipped,
+only the 12 missing parts uploaded. Pull-back sha256 b48f4733…f92f ==
+source. PASS.
+Gate 2 (pull, PLAN:247): run 1 SIGINT after 8/16 part GETs opened → exit
+130, dest.bin.bigoci-partial 2 GiB mode 0600 present, dest.bin ABSENT.
+Run 2: requests=13 blob-read=12 manifest-read=1 → 4 parts came off disk;
+partial gone, dest appeared only at the end, sha256 == source. PASS.
+Gate 3 (corrupt byte, PLAN:250): complete partial, xxd-XOR flip at offset
+300000000 (0x28→0xd7; offset/134217728 = part 2). Resume: requests=2 —
+1 manifest read + 1 blob read of sha256:7b241f07…, verified equal to the
+manifest's layers[2] digest via raw curl. sha256 restored. PASS.
+Gate 4 (bonus from DESIGN): complete partial under the partial name →
+requests=1 blob-read=0 manifest-read=1, commits, sha256 correct — the
+cli/README "blob-read=0 manifest-read=1" recipe number is now a live
+capture, and the recipe's requests=3/blob-read=2 framed example shape
+matched run 2's arithmetic (requests = blob-read + manifest-read). PASS.
+Evidence files in session scratchpad gates/: g1r1.log g1r2.log/out
+g2r1.log g2r2.log g3.log g4.log model2.sha.
+PLAN.md boxes get checked after PR 3 merges (the automated-gate box needs
+kill/resume e2e green in CI).
