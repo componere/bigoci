@@ -193,3 +193,14 @@ nil-is-ignored contract at the public boundary (observable with
 nil-after-real option ordering). Both layers keep their guard.
 scaffold/ at repo root is session-protocol machinery (journal templates
 + skills), not template debt — correctly unflagged.
+
+## 2026-08-07 21:34 — Close
+User cut the session here; phase 2 (reference CLI) is saved for next time.
+Handoff state: all session PRs merged and squashed — #15 (plan+manifest),
+#16 (ports+adapters), #17 (orchestrator+API+e2e), #18 (precision audit) —
+master at 0ce9ecc, worktrees cleaned, no journal contamination, working
+tree clean. Release PR #11 reads 0.1.0 and stays open on purpose. SUMMARY.md
+written; TECH_NOTES.md updated with the sha256-linkage trap, canonical-
+encoding contract, registry-variance case files, deliberate phase seams,
+and mise/moon quirks. Next session: start at PLAN.md phase 2 — the `cli/`
+reference module — whose gate also carries phase 1's deferred manual proofs.
