@@ -50,7 +50,9 @@ err := client.Pull(ctx, "registry.example.com/team/models:v1",
 
 Every pulled byte is verified against the manifest before the destination
 appears. A pull that fails or is interrupted leaves the destination alone; a
-`.bigoci-partial` file next to it holds whatever arrived.
+`.bigoci-partial` file next to it holds whatever arrived, and the next pull
+carries on from there — see [Resume an interrupted
+pull](#resume-an-interrupted-pull).
 
 To pin the exact content instead of trusting a tag, pull by digest:
 
@@ -58,6 +60,39 @@ To pin the exact content instead of trusting a tag, pull by digest:
 err := client.Pull(ctx, bigoci.Reference("registry.example.com/team/models@"+desc.Digest.String()),
     bigoci.ToFile("/data/model.bin"))
 ```
+
+## Resume an interrupted pull
+
+Pull the same reference to the same destination again. There is nothing to
+turn on and no state to pass along:
+
+```go
+err := client.Pull(ctx, "registry.example.com/team/models:v1",
+    bigoci.ToFile("/data/model.bin"))
+```
+
+bigoci finds the `.bigoci-partial` file next to the destination, hashes each
+part of it, and asks the registry only for the parts that do not match the
+manifest. A rerun after a pull you stopped halfway downloads the second half.
+A rerun after a pull that had finished everything but the rename downloads
+nothing at all.
+
+Three things follow from hashing rather than bookkeeping:
+
+- It is safe to interrupt a pull at any moment, including with `SIGKILL`. A
+  range that was never written reads back as zeros and fails its check, so
+  there is nothing to corrupt and nothing to reconcile.
+- Moving or deleting the partial file is how you start over. Nothing else
+  remembers the earlier run.
+- A partial file left by a *different* artifact is not reused. If its length
+  does not match the manifest, bigoci resizes it and fetches everything.
+
+The cost is worth knowing. A pull that fails leaves a partial file the full
+size of the artifact, whatever it managed to download, so the disk space is
+committed from the first attempt. And every rerun hashes the whole partial
+before it fetches anything — the hashing runs across your workers and overlaps
+the downloads of the missing parts, but a pull that died at the very start
+still pays a read of a file that holds nothing useful.
 
 ## Choose a part size and worker count
 
@@ -82,9 +117,16 @@ workers that failed together do not come back together. Dropped connections,
 registry sends `Retry-After`, bigoci waits at least that long, up to 30
 seconds.
 
+A part whose stream breaks is asked for again from the byte it reached, so a
+retry near the end of a large part costs the tail and not the whole part. If
+the registry will not serve a byte range it sends the whole part instead, and
+bigoci writes it again from the start. A proxy or CDN that caps how much of a
+range it returns costs one retry per capped answer, so a very large part
+behind one can use up its retries before the tail arrives.
+
 Some failures are not worth repeating and end the transfer at once: a part the
-registry refuses, a pulled part that fails verification, and a destination
-that will not take the bytes.
+registry refuses, a pulled part that fails verification, and a local file that
+will not take the bytes or will not read back.
 
 Two things to know if you configure the transport:
 

@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	digest "github.com/opencontainers/go-digest"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -210,9 +209,11 @@ func mockBlobs(t *testing.T, held map[digest.Digest]bool) (*ocimocks.MockBlobs, 
 
 // blobStore serves part bodies to a mocked Blobs.Get. It counts the bodies it
 // handed out against the ones the puller closed, so a test can prove that no
-// blob body was left open, including on the paths where a part is rejected.
+// blob body was left open, including on the paths where a part is rejected,
+// and it counts the bytes it put into them, so a test can prove that a
+// continued part moved only the bytes it was missing.
 type blobStore struct {
-	// mu guards the three fields below.
+	// mu guards the four fields below.
 	mu sync.Mutex
 	// bodies is the content served for each digest. A test rewrites an entry
 	// before the pull starts to serve corrupt, short, or long content.
@@ -221,6 +222,8 @@ type blobStore struct {
 	served int
 	// closed counts the bodies the puller closed.
 	closed int
+	// handedOut totals the bytes the store put into the bodies it served.
+	handedOut int64
 }
 
 // newBlobStore returns a store serving each part's range of content.
@@ -236,19 +239,29 @@ func newBlobStore(parts []manifest.Part, content []byte) *blobStore {
 	return &blobStore{bodies: bodies}
 }
 
-// serve returns the body registered for dgst, which counts as open until the
-// caller closes it.
-func (s *blobStore) serve(dgst digest.Digest) (io.ReadCloser, error) {
+// serve answers a blob read of dgst from off the way a registry that honors
+// byte ranges answers one: the rest of the blob, and the byte the stream
+// starts at. The body counts as open until the caller closes it, and an off of
+// zero is the whole blob, which is also the only answer such a registry and a
+// range-ignoring one agree on.
+//
+// An off with no byte left to serve — at or past the end of a nonempty blob —
+// is refused, which is what a registry does with a range it cannot satisfy.
+// No pull should ever ask for one, so a fixture that does says so loudly
+// instead of serving nothing.
+func (s *blobStore) serve(dgst digest.Digest, off int64) (io.ReadCloser, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	body, ok := s.bodies[dgst]
 	if !ok {
-		return nil, fmt.Errorf("no blob %s in the store", dgst)
+		return nil, 0, fmt.Errorf("no blob %s in the store", dgst)
 	}
-	s.served++
+	if off < 0 || (off > 0 && off >= int64(len(body))) {
+		return nil, 0, fmt.Errorf("blob %s has no byte %d to start at", dgst, off)
+	}
 
-	return &blobBody{store: s, reader: bytes.NewReader(body)}, nil
+	return s.body(body[off:], nil), off, nil
 }
 
 // serveFlaky returns a body that serves prefix and then raises breaks,
@@ -258,9 +271,15 @@ func (s *blobStore) serveFlaky(prefix []byte, breaks error) io.ReadCloser {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.served++
+	return s.body(prefix, breaks)
+}
 
-	return &blobBody{store: s, reader: bytes.NewReader(prefix), fail: breaks}
+// body records one body of content and returns it. The caller holds the lock.
+func (s *blobStore) body(content []byte, fail error) io.ReadCloser {
+	s.served++
+	s.handedOut += int64(len(content))
+
+	return &blobBody{store: s, reader: bytes.NewReader(content), fail: fail}
 }
 
 // counts returns how many bodies were served and how many of those were
@@ -270,6 +289,15 @@ func (s *blobStore) counts() (int, int) {
 	defer s.mu.Unlock()
 
 	return s.served, s.closed
+}
+
+// bytesServed returns how many bytes the store put into the bodies it handed
+// out, which is what a whole-part refetch costs more of than a continuation.
+func (s *blobStore) bytesServed() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.handedOut
 }
 
 // close records that one served body was closed.
@@ -311,28 +339,20 @@ func (b *blobBody) Close() error {
 }
 
 // mockBlobsServing returns a [transfer.Blobs] double whose Get is answered
-// from store. The expectation is optional because a pull that stops at the
-// manifest fetches nothing.
+// from store by a registry that honors every byte range it is given. The
+// expectation is optional because a pull that stops at the manifest fetches
+// nothing.
 func mockBlobsServing(t *testing.T, store *blobStore) *ocimocks.MockBlobs {
 	t.Helper()
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
 		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, int64, error) {
-			assert.Zero(t, offset, "this phase fetches whole parts and never asks for a byte range")
-
-			return wholeBlob(store.serve(dgst))
+			return store.serve(dgst, offset)
 		},
 	).Maybe()
 
 	return blobs
-}
-
-// wholeBlob turns a body a [blobStore] handed out into the answer a mocked
-// Blobs.Get gives: a stream starting at the blob's first byte, which is the
-// only start this phase ever asks for or accepts.
-func wholeBlob(body io.ReadCloser, err error) (io.ReadCloser, int64, error) {
-	return body, 0, err
 }
 
 // memFile is the destination a mocked [transfer.Sink] assembles a pull into.
@@ -349,15 +369,47 @@ type memFile struct {
 	commits int
 }
 
+// newMemFile returns a file holding seed, which is the partial file a pull is
+// resuming into. A nil seed is the empty file a first pull starts from.
+func newMemFile(seed []byte) *memFile {
+	return &memFile{data: slices.Clone(seed)}
+}
+
+// size reports the file's current length, which is the only evidence a pull
+// has that an earlier run left something behind.
+func (f *memFile) size() (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return int64(len(f.data)), nil
+}
+
 // truncate sizes the file, which is what a pull does before it fetches
-// anything.
+// anything. It keeps whatever content still fits, the way a real truncate
+// does: a resume reads the bytes that survive it.
 func (f *memFile) truncate(size int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.data = make([]byte, size)
+	sized := make([]byte, size)
+	copy(sized, f.data)
+	f.data = sized
 
 	return nil
+}
+
+// readAt copies the file's content at off into p, with the os-like semantics a
+// resume's hash pass reads under: the bytes that exist come back with
+// [io.EOF] when there are not enough of them.
+func (f *memFile) readAt(p []byte, off int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if off < 0 {
+		return 0, fmt.Errorf("read at negative offset %d", off)
+	}
+
+	return readAt(f.data, p, off)
 }
 
 // writeAt copies p into the file at off, refusing a write that would fall
@@ -401,6 +453,10 @@ func (f *memFile) commitCount() int {
 
 // mockSink returns a [transfer.Sink] double backed by file.
 //
+// Size and ReadAt are wired because every pull measures the destination before
+// it sizes it, and a pull that finds a partial file of the right length reads
+// every part range back out of it.
+//
 // Commit is deliberately left unwired: a test that expects a pull to succeed
 // adds the expectation itself, and one that expects a failure leaves it off,
 // so a pull that publishes a file it should not have fails loudly.
@@ -408,6 +464,8 @@ func mockSink(t *testing.T, file *memFile) *filemocks.MockSink {
 	t.Helper()
 
 	sink := filemocks.NewMockSink(t)
+	sink.EXPECT().Size().RunAndReturn(file.size).Maybe()
+	sink.EXPECT().ReadAt(mock.Anything, mock.Anything).RunAndReturn(file.readAt).Maybe()
 	sink.EXPECT().Truncate(mock.Anything).RunAndReturn(file.truncate).Maybe()
 	sink.EXPECT().WriteAt(mock.Anything, mock.Anything).RunAndReturn(file.writeAt).Maybe()
 

@@ -27,13 +27,27 @@ import (
 // one are unaffected.
 const retriedPart = 1
 
-// brokenPrefix returns what a body that dies mid-part serves before it dies.
+// brokenPrefix returns what a body that dies mid-part serves before it dies:
+// the first half of the part every fetch row breaks, byte for byte as the
+// registry holds it in content.
 //
-// The bytes are deliberately not the part's own, so an attempt that wrote at
-// the wrong offset leaves them behind for a byte comparison to catch, instead
-// of surfacing as a digest mismatch that says nothing about why.
-func brokenPrefix() []byte {
-	return bytes.Repeat([]byte{0xAA}, int(fixturePartSize)/2)
+// The bytes have to be the part's own, because the attempt after the break
+// carries on from where the body stopped and hashes what arrives onto them. A
+// fixture serving anything else would be a registry that lied about the
+// content, not a connection that dropped. What catches an attempt that wrote
+// at the wrong offset is the byte comparison against the whole file each row
+// ends with.
+func brokenPrefix(content []byte) []byte {
+	return partBytes(content, 0, int64(fixturePartSize)/2)
+}
+
+// partBytes returns the bytes of [retriedPart] between from and to, counted
+// from that part's own first byte: what a body serves before it breaks, and
+// what the attempt after it has left to fetch.
+func partBytes(content []byte, from, to int64) []byte {
+	offset := int64(retriedPart) * int64(fixturePartSize)
+
+	return content[offset+from : offset+to]
 }
 
 func TestPullRetriesPartFetches(t *testing.T) {
@@ -59,10 +73,10 @@ func TestPullRetriesPartFetches(t *testing.T) {
 			wantWaits: []time.Duration{500 * time.Millisecond},
 		},
 		{
-			name: "a body that breaks mid-part is fetched again from its first byte",
+			name: "a body that breaks mid-part is continued from the byte it reached",
 			script: func(dgst digest.Digest) fetchScript {
 				return fetchScript{dgst: {
-					{prefix: brokenPrefix(), breaks: retry.Transient(errBroken, 0)},
+					{prefix: brokenPrefix(fileContent(multiPartSize)), breaks: retry.Transient(errBroken, 0)},
 					{},
 				}}
 			},
@@ -70,9 +84,9 @@ func TestPullRetriesPartFetches(t *testing.T) {
 			wantWaits: []time.Duration{500 * time.Millisecond},
 		},
 		{
-			name: "a body that ends before the manifest says is fetched again",
+			name: "a body that ends before the manifest says is continued",
 			script: func(dgst digest.Digest) fetchScript {
-				return fetchScript{dgst: {{prefix: brokenPrefix(), breaks: io.EOF}, {}}}
+				return fetchScript{dgst: {{prefix: brokenPrefix(fileContent(multiPartSize)), breaks: io.EOF}, {}}}
 			},
 			wantGets:  2,
 			wantWaits: []time.Duration{500 * time.Millisecond},
@@ -267,6 +281,7 @@ func TestPullDoesNotRetryADestinationItCannotWrite(t *testing.T) {
 	policy, sleeps := testPolicy(t)
 
 	sink := filemocks.NewMockSink(t)
+	sink.EXPECT().Size().Return(0, nil).Once()
 	sink.EXPECT().Truncate(mock.Anything).Return(nil).Once()
 	sink.EXPECT().WriteAt(mock.Anything, mock.Anything).Return(0, full)
 
@@ -285,7 +300,7 @@ func TestPullDoesNotRetryADestinationItCannotWrite(t *testing.T) {
 	sink.AssertNotCalled(t, "Commit")
 }
 
-func TestPullDoesNotRetryADestinationItCannotSize(t *testing.T) {
+func TestPullDoesNotRetryADestinationItCannotTruncate(t *testing.T) {
 	t.Parallel()
 
 	full := errors.New("the disk is full")
@@ -302,6 +317,7 @@ func TestPullDoesNotRetryADestinationItCannotSize(t *testing.T) {
 	policy, sleeps := testPolicy(t)
 
 	sink := filemocks.NewMockSink(t)
+	sink.EXPECT().Size().Return(0, nil).Once()
 	sink.EXPECT().Truncate(mock.Anything).Return(full).Once()
 
 	err := transfer.Pull(t.Context(), transfer.PullSpec{
@@ -352,8 +368,9 @@ func TestPullStopsWhenABackoffIsInterrupted(t *testing.T) {
 }
 
 // TestPullAssemblesTheFileThroughARetry is the byte-level claim behind
-// re-fetching a whole part: the parts around a retried one are written by
-// workers that never waited, and the file they assemble together is exact.
+// attempting a part again: the part that broke is stitched back together
+// across three attempts, the parts around it are written by workers that never
+// waited, and the file they assemble together is exact.
 func TestPullAssemblesTheFileThroughARetry(t *testing.T) {
 	t.Parallel()
 
@@ -366,7 +383,7 @@ func TestPullAssemblesTheFileThroughARetry(t *testing.T) {
 
 	blobs, calls := fetchingBlobs(t, newBlobStore(artifact.Parts, content), fetchScript{
 		target.Digest: {
-			{prefix: brokenPrefix(), breaks: retry.Transient(errBroken, 0)},
+			{prefix: brokenPrefix(content), breaks: retry.Transient(errBroken, 0)},
 			{err: retry.Transient(errBroken, 0)},
 			{},
 		},
@@ -389,5 +406,7 @@ func TestPullAssemblesTheFileThroughARetry(t *testing.T) {
 	assert.Equal(t, content, file.bytes())
 	assert.Equal(t, 1, file.commitCount())
 	assert.Equal(t, 3, calls.gets(target.Digest))
+	assert.Equal(t, []int64{0, 500, 500}, calls.offsets(target.Digest),
+		"a Get that never opened a body moved no byte, so the next attempt asks from the same place")
 	assert.Equal(t, []time.Duration{500 * time.Millisecond, time.Second}, sleeps.waits())
 }

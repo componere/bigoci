@@ -654,11 +654,100 @@ proves the grep would have found something: `auth=bearer` on the lines that
 carried one means the instrument was looking at authenticated requests, not at
 an empty log.
 
+### Resuming an interrupted pull
+
+Interrupt a pull part way through and read what the second one fetches. Start
+from the four-part push already on the record:
+
+```
+./bin/bigoci pull -plain-http "127.0.0.1:5050/team/model@$d" /tmp/resume.bin
+# Ctrl-C once, part way through
+echo "exit=$?"                        # 130
+ls -l /tmp/resume.bin.bigoci-partial  # present, at the full size
+ls /tmp/resume.bin                    # "No such file or directory"
+```
+
+The destination does not exist — it never appears early — and the partial file
+does, at the full 200 MiB: the file is sized up front, so its length says
+nothing about how much arrived.
+Over loopback this pull is over in a couple of seconds, so use a larger file or
+put the toxiproxy from the retry recipe in front of the registry if the
+interrupt keeps landing after the last part.
+
+Now pull again and count the blob reads:
+
+```
+./bin/bigoci pull -plain-http -debug "127.0.0.1:5050/team/model@$d" \
+  /tmp/resume.bin 2>resume.log
+grep '^bigoci: http ' resume.log
+```
+
+How many parts the Ctrl-C left behind depends on where it landed, so the
+numbers vary run to run. For a pull that had finished two of the four parts,
+the summary reads:
+
+```
+bigoci: http requests=3 failed=0 blob-check=0 (0 hit, 0 miss) blob-write=0 upload-open=0 blob-read=2 manifest-read=1 manifest-write=0 manifest-check=0 other=0
+```
+
+`blob-read=` is one request per part, so with no retries in the log it is the
+count of parts that were missing, and `manifest-read=1` is the one request a
+resume always makes: the manifest is what names the digests every part is
+checked against, so it is fetched before anything can be verified. A cold pull
+of this file reads four blobs, so `blob-read=2` means two parts came off the
+disk.
+
+Which two is the digest grep, the same idiom the retry recipe uses:
+
+```
+grep 'http> .*class=blob-read' resume.log \
+  | grep -o 'blobs/sha256:[0-9a-f]\{64\}' | sort
+```
+
+Those digests are a subset of the manifest's layers, in whatever order the
+workers got to them.
+
+The gate at the other end is a partial that is already complete. Pull once to
+get a good file, then put it back under the partial name and pull again:
+
+```
+./bin/bigoci pull -plain-http "127.0.0.1:5050/team/model@$d" /tmp/whole.bin
+mv /tmp/whole.bin /tmp/whole.bin.bigoci-partial
+./bin/bigoci pull -plain-http -debug "127.0.0.1:5050/team/model@$d" /tmp/whole.bin 2>whole.log
+grep '^bigoci: http ' whole.log
+shasum -a 256 /tmp/model.bin /tmp/whole.bin
+```
+
+```
+bigoci: http requests=1 failed=0 blob-check=0 (0 hit, 0 miss) blob-write=0 upload-open=0 blob-read=0 manifest-read=1 manifest-write=0 manifest-check=0 other=0
+```
+
+`blob-read=0 manifest-read=1` is the pull-side twin of the warm re-push's
+`blob-write=0`: everything was already there, every part hashed to what the
+manifest names, and the only request made was the one that said so. The two
+`shasum` lines still match, which is what makes it a resume and not a shortcut.
+
+That pull committed, so the partial is now the destination. Put it back, flip a
+byte inside it, and exactly one part comes back:
+
+```
+mv /tmp/whole.bin /tmp/whole.bin.bigoci-partial
+b=$(xxd -p -l1 -s1000000 /tmp/whole.bin.bigoci-partial)
+printf "\x$(printf '%02x' $((0x$b ^ 0xff)))" \
+  | dd of=/tmp/whole.bin.bigoci-partial bs=1 seek=1000000 conv=notrunc
+./bin/bigoci pull -plain-http -debug "127.0.0.1:5050/team/model@$d" /tmp/whole.bin 2>flip.log
+grep -c 'http> .*class=blob-read' flip.log   # 1
+shasum -a 256 /tmp/model.bin /tmp/whole.bin
+```
+
+The `xxd` round trip inverts the byte that is there, whatever it is — writing
+a fixed byte would silently change nothing the one time in 256 it matches.
+
+One blob read, for the part the byte fell in, and the hashes match again: the
+part was refetched over the damage.
+
 ### Forward pointers
 
-- **Resume (phase 4).** Interrupt a pull with Ctrl-C, confirm exit 130 and a
-  `.bigoci-partial` file left beside the destination, then pull again and watch
-  which parts are fetched.
 - **Authentication (phase 5).** Watch for `class=other` lines around a `401`
   with a `challenge=` field, and for the `auth=` column changing from `none` to
   `bearer`.
@@ -703,8 +792,8 @@ which build ran, not as proof of which source it was built from.
 
 ## Limits
 
-- No authentication, no resume, and no progress output. Each arrives with the
-  library phase that implements it.
+- No authentication and no progress output. Each arrives with the library phase
+  that implements it.
 - No environment variables, no configuration file, no shell completions. Flags
   are the whole interface.
 - No `-` operands for standard input or standard output, and there cannot be.

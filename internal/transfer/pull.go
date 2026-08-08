@@ -61,14 +61,24 @@ type PullSpec struct {
 // gives the same answer. Neither does a destination that will not take the
 // bytes — a local disk is not a peer having a bad minute.
 //
-// The whole part is fetched again, from its first byte, because this phase
-// asks for no byte range: the second attempt writes over what the first left
-// in the range, and the digest check covers only the bytes of the attempt
-// that passed it.
+// An attempt that follows a broken one carries on where it stopped. It asks
+// the blob port for the rest of the part and hashes what arrives onto what the
+// earlier attempts hashed, so a stream that died after most of a part costs
+// only the bytes that never landed. A registry that will not serve the range
+// says so by answering with the whole blob, which the port reports as a stream
+// starting at byte zero: the attempt then writes the part again from its first
+// byte, over what it already held, inside the same attempt and without a
+// second request.
 //
-// Pull does not resume: every part is fetched, even one an earlier attempt
-// already wrote. A cancelled ctx stops the workers and cuts short any wait in
-// progress.
+// Pull also resumes into a partial file an earlier run left behind. When the
+// destination is already exactly as long as the manifest declares, each part
+// is hashed out of the file before anything is fetched, and a part that
+// already matches its digest costs no request at all. Bytes no run ever wrote
+// read back as zeros and fail that check, so nothing has to be recorded
+// between runs: the file on disk is the whole of the state. A partial of any
+// other length belongs to some other artifact, and every part is fetched.
+//
+// A cancelled ctx stops the workers and cuts short any wait in progress.
 func Pull(ctx context.Context, spec PullSpec) error {
 	if err := spec.validate(); err != nil {
 		return err
@@ -84,11 +94,21 @@ func Pull(ctx context.Context, spec PullSpec) error {
 		return fmt.Errorf("decode the manifest: %w", err)
 	}
 
+	// Measuring comes first because the truncate below destroys the evidence:
+	// it is what makes a leftover partial the right length or cuts it to fit,
+	// and afterwards nothing can tell the two apart.
+	existing, err := spec.Sink.Size()
+	if err != nil {
+		return fmt.Errorf("measure the destination: %w", err)
+	}
+
+	resume := resumable(existing, artifact)
+
 	if err := spec.Sink.Truncate(artifact.FileSize); err != nil {
 		return fmt.Errorf("size the destination to %d bytes: %w", artifact.FileSize, err)
 	}
 
-	if err := fetchParts(ctx, spec, artifact); err != nil {
+	if err := fetchParts(ctx, spec, artifact, resume); err != nil {
 		return err
 	}
 
@@ -125,6 +145,23 @@ func fetchManifest(ctx context.Context, spec PullSpec) ([]byte, error) {
 	return body, nil
 }
 
+// resumable reports whether what the sink already holds is worth hashing
+// before anything is fetched.
+//
+// The only evidence a resume rests on is the length: a partial file exactly as
+// long as the manifest declares was written by a pull of an artifact this size,
+// and every part range in it either hashes to the digest the manifest names or
+// does not. Any other length belongs to some other artifact, and hashing it
+// would only be a slow way of fetching everything.
+//
+// The size must be positive as well as equal. A zero-byte artifact makes a
+// zero-byte destination look complete before a single request has gone out,
+// and its one empty part would be verified out of a file nobody wrote — so an
+// empty artifact is always fetched, exactly as it is on a first run.
+func resumable(existing int64, artifact manifest.Artifact) bool {
+	return existing == artifact.FileSize && artifact.FileSize > 0
+}
+
 // validate checks the spec before the pull touches anything. A missing port
 // or a nonsensical knob is a programming error, and catching it here means no
 // request is made and no file is created on the way to reporting it.
@@ -148,7 +185,12 @@ func (s PullSpec) validate() error {
 // part boundary it reaches once the group's context is cancelled, or as soon
 // as a backoff sleep is interrupted, which is why a failed or cancelled pull
 // cannot leave a worker behind.
-func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact) error {
+//
+// resume says the sink holds a partial file worth hashing, and it travels to
+// the workers rather than being acted on here: verifying a part is the first
+// step of that part's job, so the hashing runs at the pull's own parallelism
+// and overlaps the fetches of the parts that failed it.
+func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact, resume bool) error {
 	split, err := plan.New(artifact.FileSize, artifact.PartSize)
 	if err != nil {
 		return fmt.Errorf("plan the split: %w", err)
@@ -165,7 +207,7 @@ func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact) 
 	// receive and leave, so its goroutine is never started.
 	for range min(spec.Workers, split.NumParts()) {
 		group.Go(func() error {
-			return fetchWorker(groupCtx, spec, jobs)
+			return fetchWorker(groupCtx, spec, jobs, resume)
 		})
 	}
 
@@ -175,8 +217,8 @@ func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact) 
 // fetchWorker drains jobs until the channel closes, downloading and verifying
 // each part it takes. Every worker builds its own fetcher, so the scratch a
 // part streams through is never shared between goroutines.
-func fetchWorker(ctx context.Context, spec PullSpec, jobs <-chan partJob) error {
-	fetcher := newPartFetcher(spec.Blobs, spec.Sink, spec.Retry)
+func fetchWorker(ctx context.Context, spec PullSpec, jobs <-chan partJob, resume bool) error {
+	fetcher := newPartFetcher(spec.Blobs, spec.Sink, spec.Retry, resume)
 
 	for job := range jobs {
 		if err := ctx.Err(); err != nil {
@@ -208,73 +250,155 @@ type partFetcher struct {
 	hasher hash.Hash
 	// policy is how often and how patiently a part is attempted.
 	policy retry.Policy
+	// resume says the sink already holds a partial file of the right length,
+	// so every part is hashed out of it before it is fetched.
+	resume bool
 }
 
 // newPartFetcher builds the fetcher for one worker, allocating that worker's
 // share of scratch once.
-func newPartFetcher(blobs Blobs, sink Sink, policy retry.Policy) *partFetcher {
+func newPartFetcher(blobs Blobs, sink Sink, policy retry.Policy, resume bool) *partFetcher {
 	return &partFetcher{
 		blobs:  blobs,
 		sink:   sink,
 		buf:    make([]byte, copyBufferSize),
 		hasher: sha256.New(),
 		policy: policy,
+		resume: resume,
 	}
 }
 
-// fetch downloads one part into its range of the sink and verifies it,
-// attempting it again while the policy says a failure is worth repeating.
+// fetch puts one part into its range of the sink and verifies it: out of the
+// partial file when a resume finds it already there, and off the registry
+// otherwise, attempted again while the policy says a failure is worth
+// repeating.
 //
-// Nothing has to be undone between attempts. The hasher is reset and the
-// offset writer built inside the attempt, and the part is written at fixed
-// offsets from its first byte, so a second pass writes over whatever the
-// first left in the range byte for byte and the digest that is checked covers
-// only the bytes of the pass that wrote them. That is the same property that
-// lets workers finish in any order, used a second time.
+// The verify runs outside the retry budget, and deliberately. A part that is
+// already on disk costs no attempt because it makes no request, and a partial
+// file that cannot be read is a local failure, which is terminal here for the
+// same reason a local write failure is: the orchestrator retries the registry,
+// never the disk.
+//
+// How much of the part has arrived lives in done, in this frame, for the whole
+// run of attempts. The hasher lives just as long, holding the bytes those
+// attempts moved off the wire and nothing else, which is what lets a broken
+// part be continued rather than started over and still be checked against one
+// digest at the end.
 func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
+	if f.resume {
+		matched, err := f.verify(job)
+		if err != nil {
+			return err
+		}
+		if matched {
+			return nil
+		}
+	}
+
+	var done int64
+
 	return retry.Do(ctx, f.policy, func(ctx context.Context) error {
-		return f.attempt(ctx, job)
+		return f.attempt(ctx, job, &done)
 	})
 }
 
-// attempt is one try at one part: open the blob, stream it into the sink's
-// range while hashing it, and check what arrived against the manifest.
+// verify hashes one part's range out of the sink and reports whether what is
+// there is already the part the manifest names.
 //
-// Every attempt opens the blob from its first byte. This phase asks for no
-// byte range, so a fresh Get also re-resolves whatever redirect the registry
-// points at, and no expired presigned URL is ever reused.
+// A mismatch is not a failure and never becomes an error value: bytes an
+// earlier run never wrote read back as zeros, and a range that hashes wrong is
+// simply a part still to fetch. Only the reading can fail. That separation is
+// what keeps [ErrDigestMismatch] meaning one thing — a registry served content
+// the artifact does not describe — instead of also meaning a stale file on the
+// local disk.
+//
+// The hash runs through the worker's own buffer and hasher, both idle at this
+// point in the job, so a resume costs one read pass over the file and not a
+// byte of scratch beyond what the fetch would have used anyway.
+//
+// Cancellation is checked between jobs, not inside the hash: a cancelled pull
+// finishes verifying at most one part per worker before it stops, which is the
+// same bound a part being fetched already has.
+func (f *partFetcher) verify(job partJob) (bool, error) {
+	f.hasher.Reset()
+
+	read, err := io.CopyBuffer(f.hasher, io.NewSectionReader(f.sink, job.part.Offset, job.part.Size), f.buf)
+	if err != nil {
+		return false, fmt.Errorf("read part %d of the existing file: %w", job.part.Index, err)
+	}
+	if read != job.part.Size {
+		return false, fmt.Errorf(
+			"read part %d of the existing file: got %d bytes, but the manifest declares %d",
+			job.part.Index, read, job.part.Size,
+		)
+	}
+
+	return digest.NewDigest(digest.SHA256, f.hasher) == job.dgst, nil
+}
+
+// attempt is one try at the rest of one part: open the blob where the part
+// left off, stream what arrives into the sink's range while hashing it, and
+// check the part against the manifest once all of it is there.
+//
+// Every attempt opens the blob again, which re-resolves whatever redirect the
+// registry points at, so no expired presigned URL is ever reused. What it asks
+// for is the part from done, and done is the bytes earlier attempts provably
+// moved.
+//
+// A part that already has all its bytes is asked for whole instead. The last
+// chunk of a body can arrive together with the failure that ends it, which
+// leaves nothing to continue from: a range starting at the end of the part is
+// a range no registry can satisfy, so the attempt starts the part over rather
+// than earning a 416.
 //
 // The port reports where the stream it hands back really begins, and the
-// attempt writes nothing until that offset is one it can place. A stream
-// starting anywhere else would be copied into bytes of the file it does not
-// belong to, so it ends the attempt terminally instead of being worked around.
+// attempt writes nothing until that offset is one it can place. Zero means the
+// registry ignored the range and is sending the whole blob, which this attempt
+// consumes as the fetch it would otherwise have had to ask for — no error, no
+// second request, and no attempt spent. Any other start is a stream that would
+// be copied into bytes of the file it does not belong to, so it ends the
+// attempt terminally instead of being worked around.
 //
 // The reader is closed on every path out, including the ones where the part
 // is rejected: a pull that gives up still has to hand the connection back,
 // and an attempt that held its body open would keep every earlier attempt's
 // body open with it.
-func (f *partFetcher) attempt(ctx context.Context, job partJob) error {
-	content, start, err := f.blobs.Get(ctx, job.dgst, 0)
+func (f *partFetcher) attempt(ctx context.Context, job partJob, done *int64) error {
+	if *done == job.part.Size {
+		*done = 0
+	}
+
+	content, start, err := f.blobs.Get(ctx, job.dgst, *done)
 	if err != nil {
 		return fmt.Errorf("fetch part %d (%s): %w", job.part.Index, job.dgst, err)
 	}
 	defer content.Close()
 
 	// The port contracts a start of either the offset asked for or zero, and
-	// this attempt asks for zero, so the two coincide and only zero is
-	// placeable. A port that reports anything else has broken its contract,
-	// which is why the error names the port and not the registry: a conformant
-	// adapter has already refused any answer that starts elsewhere.
-	if start != 0 {
+	// nothing else is placeable: one continues the part, the other restarts it.
+	// A port that reports a third number has broken its contract, which is why
+	// the error names the port and not the registry: a conformant adapter has
+	// already refused any answer that starts elsewhere.
+	if start != 0 && start != *done {
 		return fmt.Errorf(
 			"fetch part %d (%s): the blob port's stream starts at byte %d, which this attempt cannot write from",
 			job.part.Index, job.dgst, start,
 		)
 	}
 
-	f.hasher.Reset()
+	// A stream that starts at zero is the whole blob: either this attempt asked
+	// for it, or the registry ignored the range and sent it anyway. From here
+	// the two are one thing — the part is written again from its first byte,
+	// over whatever it already held.
+	if start == 0 {
+		*done = 0
+	}
 
-	if err := f.stream(content, job.part); err != nil {
+	if *done == 0 {
+		f.hasher.Reset()
+	}
+
+	if err := f.stream(content, job.part, done); err != nil {
 		return err
 	}
 
@@ -287,17 +411,21 @@ func (f *partFetcher) attempt(ctx context.Context, job partJob) error {
 	return nil
 }
 
-// stream copies the part's bytes from content into its range of the sink,
-// hashing them on the way, and checks that the blob is exactly as long as the
+// stream copies the rest of the part from content into its range of the sink,
+// hashing it on the way, and checks that the blob is exactly as long as the
 // manifest says.
 //
 // The copy runs through the worker's own buffer into an [io.OffsetWriter],
 // which turns the sink's positional writes into a stream, so no part is ever
-// held whole in memory and no worker writes outside its own range. The limit
-// stops the copy at the declared length; a blob longer than that would
-// otherwise go unnoticed, so [io.ReadFull] asks for one more byte afterwards,
-// and getting it proves the registry served content the manifest does not
-// describe.
+// held whole in memory and no worker writes outside its own range. done says
+// where in the part this copy begins: it is both what the limit is measured
+// against and what the writer is offset by, so a continued attempt writes past
+// the bytes an earlier one left and hashes onto them.
+//
+// The limit stops the copy at the declared length; a blob longer than that
+// would otherwise go unnoticed, so [io.ReadFull] asks for one more byte
+// afterwards, and getting it proves the registry served content the manifest
+// does not describe.
 //
 // The blob reader travels through a tagging wrapper because [io.CopyBuffer]
 // collapses reader and writer failures into one value: a registry that hangs
@@ -305,26 +433,43 @@ func (f *partFetcher) attempt(ctx context.Context, job partJob) error {
 // — and the retry policy treats the two differently, because a broken
 // connection is worth another attempt and a disk that will not take bytes is
 // not.
-func (f *partFetcher) stream(content io.Reader, part plan.Part) error {
-	into := io.MultiWriter(f.hasher, io.NewOffsetWriter(f.sink, part.Offset))
+//
+// The distinction decides what is recorded, too. [io.CopyBuffer] writes and
+// counts each chunk before it looks at the read error that came with it, and
+// the hasher is the first writer of the pair, so after a read failure the
+// hasher, the sink, and the count agree to the byte and the next attempt can
+// carry on from there. A write failure carries no such promise — the hasher
+// took the bytes the sink refused — so it returns before anything is recorded,
+// which is safe because a destination that will not take bytes is never
+// attempted again.
+func (f *partFetcher) stream(content io.Reader, part plan.Part, done *int64) error {
+	from, remaining := *done, part.Size-*done
+	into := io.MultiWriter(f.hasher, io.NewOffsetWriter(f.sink, part.Offset+from))
 
-	written, err := io.CopyBuffer(into, io.LimitReader(tagReads{r: content}, part.Size), f.buf)
+	written, err := io.CopyBuffer(into, io.LimitReader(tagReads{r: content}, remaining), f.buf)
 	if err != nil {
 		var read *readError
 		if errors.As(err, &read) {
+			*done += written
+
 			return fmt.Errorf("fetch part %d: %w", part.Index, read.err)
 		}
 
-		return fmt.Errorf("write part %d into the destination at offset %d: %w", part.Index, part.Offset, err)
+		return fmt.Errorf("write part %d into the destination at offset %d: %w", part.Index, part.Offset+from, err)
 	}
-	if written != part.Size {
+	*done += written
+
+	if written != remaining {
 		// The one failure the orchestrator diagnoses itself: a body that ended
 		// cleanly before the manifest's byte count is a truncated transfer, and
-		// the accounting that says so is the plan's, not the registry's. The
-		// sibling case below stays terminal — extra bytes are content the
-		// manifest does not describe, and a second fetch serves them again.
+		// the accounting that says so is the plan's, not the registry's. It is
+		// stated against the part rather than against this attempt, because
+		// what a reader needs to know is how much of the part is missing, not
+		// how much of it this particular stream carried. The sibling case below
+		// stays terminal — extra bytes are content the manifest does not
+		// describe, and a second fetch serves them again.
 		return retry.Transient(fmt.Errorf(
-			"part %d ended after %d bytes, but the manifest declares %d", part.Index, written, part.Size,
+			"part %d ended after %d bytes, but the manifest declares %d", part.Index, *done, part.Size,
 		), 0)
 	}
 

@@ -212,6 +212,11 @@ type Sink interface {
 	// an implementation may have to ask the filesystem for it. A pull
 	// compares the answer against the file size in the manifest to decide
 	// whether an existing partial file is worth resuming into.
+	//
+	// A pull reads it once, before it truncates. The order is part of the
+	// contract rather than an implementation detail: [Sink.Truncate] is what
+	// makes a leftover partial the right length, so afterwards nothing can
+	// tell a file an earlier run filled from one this pull just sized.
 	Size() (int64, error)
 
 	// Truncate sets the sink's length to size bytes, extending it with zeros

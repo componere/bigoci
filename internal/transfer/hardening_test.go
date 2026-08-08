@@ -162,7 +162,9 @@ func TestPullReportsABrokenBlobReadAsAFetchFailure(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, _ digest.Digest, _ int64) (io.ReadCloser, int64, error) {
+		func(_ context.Context, _ digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+			assert.Zero(t, offset, "nothing has arrived yet, so the fetch starts at the part's first byte")
+
 			return &brokenBody{fail: readFailed}, 0, nil
 		},
 	)

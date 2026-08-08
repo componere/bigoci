@@ -179,8 +179,10 @@ func TestPullRefusesAStreamThatStartsSomewhereElse(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, int64, error) {
-			part, err := store.serve(dgst)
+		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+			assert.Zero(t, offset, "a part nothing has fetched yet is asked for from its first byte")
+
+			part, _, err := store.serve(dgst, 0)
 
 			return part, 1, err
 		},
@@ -231,6 +233,7 @@ func TestPullRefusesAManifestThatIsNotABigociArtifact(t *testing.T) {
 	require.ErrorIs(t, err, manifest.ErrNotBigociArtifact)
 
 	blobs.AssertNotCalled(t, "Get", mock.Anything, mock.Anything, mock.Anything)
+	sink.AssertNotCalled(t, "Size")
 	sink.AssertNotCalled(t, "Truncate", mock.Anything)
 	sink.AssertNotCalled(t, "Commit")
 }
@@ -255,9 +258,18 @@ func TestPullReportsAFailureFromEachPort(t *testing.T) {
 			wantErr: unreachable,
 		},
 		{
+			name: "a destination that cannot be measured surfaces",
+			wire: func(manifests *ocimocks.MockManifests, _ *ocimocks.MockBlobs, sink *filemocks.MockSink) {
+				manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil).Once()
+				sink.EXPECT().Size().Return(0, full).Once()
+			},
+			wantErr: full,
+		},
+		{
 			name: "a destination that cannot be sized surfaces",
 			wire: func(manifests *ocimocks.MockManifests, _ *ocimocks.MockBlobs, sink *filemocks.MockSink) {
 				manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil).Once()
+				sink.EXPECT().Size().Return(0, nil).Once()
 				sink.EXPECT().Truncate(mock.Anything).Return(full).Once()
 			},
 			wantErr: full,
@@ -266,6 +278,7 @@ func TestPullReportsAFailureFromEachPort(t *testing.T) {
 			name: "a part that cannot be fetched surfaces",
 			wire: func(manifests *ocimocks.MockManifests, blobs *ocimocks.MockBlobs, sink *filemocks.MockSink) {
 				manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil).Once()
+				sink.EXPECT().Size().Return(0, nil).Once()
 				sink.EXPECT().Truncate(mock.Anything).Return(nil).Once()
 				blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).Return(nil, 0, unreachable)
 			},
@@ -275,13 +288,16 @@ func TestPullReportsAFailureFromEachPort(t *testing.T) {
 			name: "a part that cannot be written surfaces",
 			wire: func(manifests *ocimocks.MockManifests, blobs *ocimocks.MockBlobs, sink *filemocks.MockSink) {
 				manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil).Once()
+				sink.EXPECT().Size().Return(0, nil).Once()
 				sink.EXPECT().Truncate(mock.Anything).Return(nil).Once()
 				sink.EXPECT().WriteAt(mock.Anything, mock.Anything).Return(0, full)
 
 				store := newBlobStore(artifact.Parts, content)
 				blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-					func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, int64, error) {
-						return wholeBlob(store.serve(dgst))
+					func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+						assert.Zero(t, offset, "a destination that took no bytes leaves nothing to continue from")
+
+						return store.serve(dgst, offset)
 					},
 				)
 			},
@@ -323,10 +339,11 @@ func TestPullStopsWhenTheContextIsCancelled(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Get(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, _ int64) (io.ReadCloser, int64, error) {
+		func(_ context.Context, dgst digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+			assert.Zero(t, offset, "the first fetch of a part starts at its first byte")
 			cancel()
 
-			return wholeBlob(store.serve(dgst))
+			return store.serve(dgst, offset)
 		},
 	).Maybe()
 
