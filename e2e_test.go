@@ -316,22 +316,26 @@ type zot struct {
 }
 
 // newZot starts a zot registry in a container and returns it, bound to the
-// address the container's port is published on.
+// address the container's port is published on. Any opts are applied after
+// the ones every zot in this package needs, which is how the broken-network
+// suite puts its registry on a private network.
 //
 // The container is registered for cleanup before its error is checked, so a
 // start that got far enough to create one still tears it down, and the
 // address is logged so a failing test says which registry it was talking to.
-func newZot(t *testing.T) zot {
+func newZot(t *testing.T, opts ...testcontainers.ContainerCustomizer) zot {
 	t.Helper()
 
 	container, err := testcontainers.Run(t.Context(), zotImage,
-		testcontainers.WithExposedPorts(zotPort),
-		testcontainers.WithFiles(testcontainers.ContainerFile{
-			Reader:            strings.NewReader(zotConfig),
-			ContainerFilePath: zotConfigPath,
-			FileMode:          zotConfigMode,
-		}),
-		testcontainers.WithWaitStrategy(wait.ForHTTP(apiPath).WithPort(zotPort)),
+		append([]testcontainers.ContainerCustomizer{
+			testcontainers.WithExposedPorts(zotPort),
+			testcontainers.WithFiles(testcontainers.ContainerFile{
+				Reader:            strings.NewReader(zotConfig),
+				ContainerFilePath: zotConfigPath,
+				FileMode:          zotConfigMode,
+			}),
+			testcontainers.WithWaitStrategy(wait.ForHTTP(apiPath).WithPort(zotPort)),
+		}, opts...)...,
 	)
 	testcontainers.CleanupContainer(t, container)
 	require.NoError(t, err, "start %s", zotImage)
