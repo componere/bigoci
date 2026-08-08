@@ -361,3 +361,37 @@ GATE 3 — dead port (README recipe: push to 127.0.0.1:5999, -debug, NO
 
 Gate logs kept in scratchpad/gates/ (gate1-final.log, gate2.log, gate3.log)
 until session close. Containers torn down.
+
+## 2026-08-08 13:31 — PR3 flake-hunted, reworked, PR #24 open
+PR3 implementer delivered the toxiproxy suite with two first-class catches of
+its own: (a) zot v2.1.20 dedupes blobs GLOBALLY and answers HEAD across
+repositories — with size-seeded fixtures, three of four rows uploaded NOTHING
+and the suite passed while proving nothing; fixed by stamping the row's repo
+digest into every part (newRowFile). (b) A fixed 1.2s outage window would
+flake ~1-in-7 (P(three jittered sleeps sum < 1.2s) ≈ 3.6% × 5 units); the
+outage row enables the proxy causally instead.
+
+Dedicated flake-hunter reviewer (20 stressed runs + read toxiproxy source):
+6 findings, all folded in. Key mechanism: reset_peer timeout:0 kills the
+FIRST chunk on every fresh connection, so under blanket reset/outage the
+failures always land on the HEAD existence checks and the uploads run after
+the repair — rows 2-3 could never claim "upload retried through damage"
+(uploads == parts in 20/20 runs), and the reviewer's own fix (gate on upload
+failures) would DEADLOCK for exactly the same reason. My rework: the
+limit_data row (checks survive the 87KB cut, PUTs die mid-body) asserts
+uploads > parts STRICTLY; rows 2-3 keep honest claims. Also: bounded gate
+dial (1s) so port-forwarders that black-hole a disabled port don't hang into
+the backstop; one 30s backstop replaces the machine-sized 1.2s/3s walls;
+pull row gates+asserts on a REPEATED read of one blob (total counts can be
+inflated by request-pattern changes → silent pass); aggregate budget
+ceilings (arithmetically unreachable) became per-digest bounds that can
+fail. 3 further green runs post-rework.
+
+LESSONS (promote at close): zot global blob dedupe can hollow out any
+multi-row e2e that reuses content — vary bytes per row; and "the damage the
+toxic does" depends on WHICH request meets it first — reset-at-connect hits
+the cheap probe requests, not the expensive bodies, so evidence claims must
+be scoped per toxic.
+
+Commits d20caf7 + df6eaf8 (both G). PR #24 open, CI monitored. After merge:
+PLAN.md phase-3 boxes + TECH_NOTES promotions + session close.
