@@ -125,3 +125,24 @@ contract, warm-push dedup, -title wire check), and ~16 README/doc.go
 consistency fixes (port 5050, -part-size 64MiB recipes with true numbers,
 curl by digest, dead-port wording, provenance caveat, etc.). I review its
 diff before committing.
+
+## 2026-08-08 00:25 — PR #19 open
+Fix batch reviewed line-by-line and accepted: test hardening (exact
+option-slice assertions, pullOptions coverage, injection + digest-gate +
+unparseable-query redaction tests, signal-outranks-error rows, quoted-value
+grammar regexes) plus registry_test.go — an in-process fake registry driving
+run() end to end: cold push (stdout = exactly one digest line), warm re-push
+(identical digest, blob-write=0), byte-identical pull, and the -title ""
+wire-semantics check. README/doc.go consistency fixes all landed (port 5050,
+-part-size 64MiB cookbook with true numbers, cold recipe against a fresh
+repo, curl by digest, three documented second-line forms, provenance
+worktree caveat, fixed-shape summary).
+
+Fixed three lint fallout items from my own edits (govet shadow x2, golines).
+Full acceptance green. Commit 90ab67a (GPG stalled once while the laptop
+slept; user woke it and signing succeeded). PR #19 open:
+"feat(cli): reference CLI for push and pull". Waiting on CI, then squash
+merge, then PR 2 (moon/CI wiring: workspace.yml cli entry, cli/moon.yml with
+--disable gomoddirectives lint, root check dep, CI cache keys + cli/go.sum,
+release-please exclude-paths, drop stale workspace comment). Manual gates run
+after both PRs merge.
