@@ -146,3 +146,39 @@ merge, then PR 2 (moon/CI wiring: workspace.yml cli entry, cli/moon.yml with
 --disable gomoddirectives lint, root check dep, CI cache keys + cli/go.sum,
 release-please exclude-paths, drop stale workspace comment). Manual gates run
 after both PRs merge.
+
+## 2026-08-08 09:05 — PR #19 merged; phase-2 manual gates all pass; PR #20 in flight
+PR #19 squash-merged as a658d00. Two merge blockers hit and solved:
+1. GPG passphrase: pinentry stalled while the laptop slept; user woke it.
+2. Ruleset requires VERIFIED signatures and the implementer agent's commit
+   was signed but attributed to josh@gilman.io (not associated with the
+   jmgilman GitHub account -> verification "no_user"). Branch history is
+   disposable under squash-merge, so I collapsed the branch to one commit
+   (543f25f) under joshuagilman@gmail.com. LESSON: agents inherit the wrong
+   git identity from harness context — commit agent work myself or audit %ae
+   before pushing.
+
+Manual gates (plan phase 2, doubling as phase 1's proof) run from merged
+master against zot v2.1.20 on 127.0.0.1:5050 — ALL FIVE PASS:
+1. 100 MiB push at 64MiB parts -> manifest verified by digest via curl+jq:
+   artifactType vnd.bigoci.file.v1, empty config (44136fa..., size 2), two
+   ordered part layers 67108864+37748736 = 104857600, all four annotations.
+2. Pull by digest to another dir: sha256 29654bd3... identical across
+   original, pulled file, and io.bigoci.file.digest annotation.
+3. Warm re-push: identical manifest digest (1fd44df9...), summary
+   blob-check=3 (3 hit, 0 miss) blob-write=0 upload-open=0, done in 100ms.
+4. 1 MiB file at 64MiB parts: one layer; layer digest == file annotation ==
+   shasum (8d3a5157...).
+5. Structure audit: core go mod graph has 0 mentions of the cli module
+   (beware: bare `grep cli` false-positives on moby/client); clean GitHub
+   clone builds the CLI and prints the reference banner; nothing publishes
+   it (local replace blocks go install; no goreleaser; release-please
+   exclude-paths lands in PR #20).
+Gate artifacts (logs, manifest.json) in session scratchpad gates/.
+
+PR #20 (ci: build and test the cli module) hit one real CI failure: moon
+runs root:lint and cli:lint concurrently and golangci-lint's instance lock
+refused the second runner ("parallel golangci-lint is running") — passed
+locally only by scheduling luck. Fixed with --allow-parallel-runners on both
+lint tasks (fmt has no such flag and did not collide). Re-run in flight;
+merge + PLAN.md checkbox updates when green.
