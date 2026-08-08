@@ -48,3 +48,35 @@ hash-pass parallelism, Truncate placement.
 Workflow wf_2db7765e-8e0: 3 opus/xhigh designers (invariants lens, seams
 lens, failure-modes lens) → 2 opus/xhigh comparative adversarial judges
 (correctness angle, provability angle). Synthesis into DESIGN.md is mine.
+
+## 2026-08-08 14:45 — Design synthesized (DESIGN.md in this folder)
+Panel outcome: both judges ranked [seams] first and ruled identically on the
+one contested question. Seven of ten questions unanimous across designers:
+Blobs.Get grows a third return value (actual stream start ∈ {off, 0} — the
+200-fallback becomes free, no sentinel, import graph untouched); verify folds
+into the worker pipeline gated on size==FileSize && FileSize>0; Truncate
+stays unconditional after Size (order load-bearing); wrong-size partial =
+Truncate + fetch-all (PLAN.md "discarded" wording to be amended with dated
+note); one unchanged budget per part, 200-fallback costs no attempt; push
+needs zero code; Workers/copyBufferSize reused.
+Q2 ruled for the LIVE HASHER across attempts (against [invariants]' prefix
+re-hash): io.copyBuffer delivers each chunk before surfacing its read error,
+multiwriter feeds hasher first, write-side failures are untagged and never
+retried — and decisively, re-hashing mixes disk bytes into the digest, which
+forces a transient carve-out on the terminal ErrDigestMismatch rule.
+Judges' mandatory corrections adopted: cap done→0 at part.Size boundary
+(unsatisfiable-range 416 bug in [seams]); orchestrator terminal-guards
+start ∉ {0, done}; progress recorded only on nil-or-read-error branch;
+hasher reset only when resume point is 0, after the re-plan.
+[failure-modes] had a fatal flaw (accepting 0<start<offset corrupts the
+digest verdict) but its e2e harness is grafted wholesale: TestMain self-exec
+child, counting proxy (pass-through/strip-Range/cut-mid-part-once),
+Workers:1 causal kill trigger on the (N+1)th request, on-disk intact-set
+assertions ([seams] graft) for messy rows, SIGKILL window table.
+My lead rulings: 416 stays untagged terminal (cap removes the self-inflicted
+path; a real 416 proves the registry's blob is shorter than the manifest —
+same family as content mismatch); sparse-partial rerun hash cost accepted +
+documented; refuse-Range pinned at integration level, not e2e.
+PR shape: 3 PRs — feat(oci) inert port change (call site guards start!=0,
+provable inertness), feat(transfer) resume + all docs, test(e2e) kill
+coverage. Next: implement PR 1.
