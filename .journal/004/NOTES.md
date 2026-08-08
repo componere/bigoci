@@ -274,3 +274,34 @@ wrong-length row (suite stays clock-free), the design.md altitude, the
 Committed e985d53 feat(transfer): per-part retry with backoff (signed G).
 Review panel wf_a9bedb85-580 running (3 opus xhigh lenses + sonnet
 acceptance incl. the real dead-port and E2E runs).
+
+## 2026-08-08 12:44 — PR2 panel: 9 findings, all fixed; PR #23 open
+Panel (582k tokens) returned 9 findings, acceptance PASS. The big one
+(correctness+contracts, verified by the reviewer with an overlay test): a
+Source read failure DURING an upload surfaces from inside client.Do, so oci
+tags it transient and a dead disk cost the whole budget per part — exactly
+what ports.go/push.go/design.md promise cannot happen. Fix: uploader tags
+its section reader (tagSourceReads/sourceError, mirror of pull's readError)
+and unwraps its own marker after a failed Put, rebuilding the error untagged
+("read part N of the source at offset..."). The mock Put now mimics the
+adapter (tags body-read failures) so the new test proves the tag DISCARD,
+and counts the died-mid-body attempt.
+
+Also measured by the panel and fixed: the dead-port recipe's "exactly four
+http! lines per digest, sixteen total" overclaim — only the FIRST-exhausted
+digest reaches 4; peers are cancelled mid-backoff (measured totals 8-13).
+Recipe + governing DESIGN gate-3 evidence amended. Blockers: cli/doc.go and
+root doc.go still said exit 7 reserved / "nothing is retried" — both narrowed;
+repo README Status too. Test gaps closed: budget-isolation assertions in
+both suites (a per-transfer budget passed every row — reviewer verified
+red-on-mutant), exit-7 row in the CLI sentinel table, twin-digest guard in
+the wake test. gocognit forced the isolation loop into a shared helper
+(assertOnlyTargetRetried).
+
+LESSON (for TECH_NOTES): the errgroup-cancels-peers-mid-backoff effect means
+"attempts per digest" is only exact for the first-exhausted digest — any
+gate or doc that counts retries per worker must account for cancellation.
+
+Commits: e985d53 + 7f9dda4 (both G). PR #23 open, CI monitored. PR3 worktree
+.wt/test-flaky-e2e branched from feat/transfer-retry (e2e needs the retry
+behavior; will rebase onto master after #23 merges).
