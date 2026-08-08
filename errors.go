@@ -26,6 +26,21 @@ var ErrNotFound = errors.New("not found")
 // broken.
 var ErrNotBigociArtifact = errors.New("not a bigoci artifact")
 
+// ErrPartTooLarge reports that the registry refused a part as larger than it
+// accepts.
+//
+// This is how a registry's layer cap surfaces. bigoci ships no table of
+// vendor limits — the caps differ per registry, they move, and a stale table
+// is worse than none — so the limit is discovered by being told about it,
+// once, by the registry that enforces it.
+//
+// The fix is to push again with a smaller [WithPartSize]. Note that the same
+// file at a different part size is a different artifact with a different
+// manifest digest, because the part size is part of what the manifest
+// describes: the second push is not another route to the first one's result.
+// The wrapped error names the part and the status the registry answered with.
+var ErrPartTooLarge = errors.New("part too large")
+
 // ErrDigestMismatch reports that pulled bytes hash differently than the
 // manifest says they should. The part is named in the wrapped error.
 //
@@ -43,14 +58,15 @@ var ErrDigestMismatch = errors.New("digest mismatch")
 // only points inward. An error that matches nothing public comes back
 // unchanged rather than being dressed up as a case it is not.
 //
-// The design also names an unauthorized case and a part the registry rejected
-// as too large. Neither can happen yet — this phase talks to registries
-// anonymously and does not classify a failed upload — so they arrive with the
-// authentication and retry phases rather than being declared empty here.
+// The design also names an unauthorized case. It cannot happen yet — this
+// phase talks to registries anonymously — so it arrives with the
+// authentication phase rather than being declared empty here.
 func classify(err error) error {
 	switch {
 	case errors.Is(err, oci.ErrNotFound):
 		return fmt.Errorf("%w: %w", ErrNotFound, err)
+	case errors.Is(err, oci.ErrTooLarge):
+		return fmt.Errorf("%w: %w", ErrPartTooLarge, err)
 	case errors.Is(err, manifest.ErrNotBigociArtifact):
 		return fmt.Errorf("%w: %w", ErrNotBigociArtifact, err)
 	case errors.Is(err, transfer.ErrDigestMismatch):

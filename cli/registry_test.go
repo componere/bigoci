@@ -36,6 +36,10 @@ const (
 	// fixturePartSize is the "-part-size" the end-to-end runs ask for, spelled
 	// the way a caller types it.
 	fixturePartSize = "64KiB"
+	// wholePartSize is a part size above the fixture's own length, so a push
+	// that asks for it moves the file as a single part. The retry test uses
+	// it to keep the run to one backoff, which it really waits out.
+	wholePartSize = "256KiB"
 	// fixtureBlobs is how many blobs a cold push of the fixture writes: its four
 	// parts, and the empty config blob every OCI manifest carries. A pull reads
 	// the four parts and not the config, which is why its counts are one lower.
@@ -79,6 +83,12 @@ type fakeRegistry struct {
 	manifests map[string]storedManifest
 	// sessions numbers the upload sessions, so each PUT lands on its own URL.
 	sessions int
+	// refusing answers every completing upload with 413, for a registry whose
+	// layer cap the part is over.
+	refusing bool
+	// failing is how many completing uploads answer 500 before the registry
+	// starts storing what it is sent, for a registry having a bad minute.
+	failing int
 	// server is the HTTP server the registry is served by.
 	server *httptest.Server
 	// host is the address the server listens on: the registry half of a
@@ -173,6 +183,43 @@ func (r *fakeRegistry) blobCount() int {
 	return len(r.blobs)
 }
 
+// refuseUploads makes every completing upload answer 413, which is how a
+// registry says a part is larger than it accepts.
+func (r *fakeRegistry) refuseUploads() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.refusing = true
+}
+
+// failUploads makes the next n completing uploads answer 500 and the ones
+// after them succeed, which is the shape of a failure worth another attempt.
+func (r *fakeRegistry) failUploads(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.failing = n
+}
+
+// refusal reports the status a completing upload is answered with instead of
+// storing the blob, and whether a hook named one at all. A scripted failure
+// is spent as it is read, so the attempt after it is answered normally.
+func (r *fakeRegistry) refusal() (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	switch {
+	case r.refusing:
+		return http.StatusRequestEntityTooLarge, true
+	case r.failing > 0:
+		r.failing--
+
+		return http.StatusInternalServerError, true
+	default:
+		return 0, false
+	}
+}
+
 // openUpload answers with the session URL the blob's content belongs at.
 func (r *fakeRegistry) openUpload(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
@@ -186,9 +233,19 @@ func (r *fakeRegistry) openUpload(w http.ResponseWriter, req *http.Request) {
 
 // completeUpload stores the uploaded blob under the digest its session names,
 // after checking that the bytes that arrived really hash to it.
+//
+// The body is read before any hook answers, the way a registry that has to
+// weigh a part reads it: an answer sent over an unread request body is a
+// broken pipe on the client's side rather than the status the hook meant.
 func (r *fakeRegistry) completeUpload(w http.ResponseWriter, req *http.Request) {
 	body, err := readWholeBody(w, req)
 	if err != nil {
+		return
+	}
+
+	if status, refused := r.refusal(); refused {
+		http.Error(w, "the registry refused the upload", status)
+
 		return
 	}
 
@@ -413,4 +470,47 @@ func TestEndToEndTitleReachesTheWire(t *testing.T) {
 			assert.NotContains(t, manifest, fixtureName)
 		})
 	}
+}
+
+// TestEndToEndAPartTheRegistryRefusesIsExitSeven activates the code that has
+// been reserved since the CLI was written. The 413 is terminal, so the run
+// costs no backoff at all: the library asks once and reports what it was told.
+func TestEndToEndAPartTheRegistryRefusesIsExitSeven(t *testing.T) {
+	t.Parallel()
+
+	reg := newFakeRegistry(t)
+	reg.refuseUploads()
+	src, _ := fixture(t)
+
+	got := pushFixture(t, reg, src)
+
+	assert.Equal(t, exitPartTooLarge, got.code, got.stderr)
+	assert.Empty(t, got.stdout, "a push that failed writes no digest")
+	assert.Contains(t, got.stderr, "registry returned 413 Request Entity Too Large")
+	assert.Contains(t, got.stderr, "bigoci: matched sentinel bigoci.ErrPartTooLarge (exit 7)\n")
+	assert.Zero(t, reg.blobCount(), "a refused part is not stored")
+}
+
+// TestEndToEndPushRidesThroughAServerError is the only test in this tree that
+// runs on the library's real clock, and it is deliberate: everything else
+// injects a sleep, and something has to prove the shipped policy works end to
+// end through the default HTTP client rather than only under a fixture.
+//
+// The fixture is a single part, so the whole cost is one draw from the first
+// backoff window — half a second on average, under one at worst.
+func TestEndToEndPushRidesThroughAServerError(t *testing.T) {
+	t.Parallel()
+
+	reg := newFakeRegistry(t)
+	reg.failUploads(1)
+	src, content := fixture(t)
+
+	got := runCLI(t, cmdPush, "-plain-http", "-part-size", wholePartSize, src, reg.taggedRef(fakeTag))
+	require.Equal(t, exitOK, got.code, got.stderr)
+
+	assert.Equal(t, 2, reg.blobCount(), "the part that was refused once, and the empty config blob")
+
+	stored, held := reg.blob(digestOf(content))
+	require.True(t, held, "a single part is the whole file, stored under the file's own digest")
+	assert.Equal(t, content, stored, "the second attempt must stream the part again in full")
 }

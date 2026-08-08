@@ -68,6 +68,13 @@ type TransferOption interface {
 // bigoci grows authentication — an authenticating
 // [net/http.RoundTripper]. A nil client is ignored, so a caller may pass one
 // through unconditionally.
+//
+// bigoci retries failed transfers itself, so a transport that also retries
+// multiplies the schedule: the attempts a part gets become the product of the
+// two counts, and the waits between them stack. A client Timeout bounds each
+// attempt rather than the transfer, and an attempt that times out is retried
+// with a fresh window — so the deadline a caller means to put on the whole
+// transfer belongs on the context, not on the client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(s *clientSettings) {
 		if client != nil {
@@ -95,7 +102,9 @@ func WithPlainHTTP() Option {
 // before it opens anything.
 //
 // Raising it trades parallelism for fewer, larger requests and has to stay
-// under the registry's layer cap. Lowering it makes a failed part cheaper to
+// under the registry's layer cap. A registry that refuses a part for being
+// larger than it accepts reports [ErrPartTooLarge]; the answer is to push
+// again with a smaller size. Lowering it makes a failed part cheaper to
 // re-push; the format allows at most 4096 parts, so a very small part size
 // puts a ceiling on the file.
 func WithPartSize(size PartSize) PushOption {

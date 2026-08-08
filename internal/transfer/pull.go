@@ -13,10 +13,11 @@ import (
 
 	"github.com/componere/bigoci/internal/manifest"
 	"github.com/componere/bigoci/internal/plan"
+	"github.com/componere/bigoci/internal/retry"
 )
 
 // PullSpec wires one pull: the registry end of the transfer, the file end,
-// and the one knob that shapes it. Every field is required.
+// and the one knob that shapes it. Every field but Retry is required.
 type PullSpec struct {
 	// Sink is the destination the file is assembled in. Pull sizes it once,
 	// writes every part into it at that part's offset, and commits it when
@@ -29,6 +30,11 @@ type PullSpec struct {
 	Manifests Manifests
 	// Workers is how many parts download at once. It must be positive.
 	Workers int
+	// Retry is the policy every registry operation of the pull runs under:
+	// the manifest fetch and each part, each with its own budget. The zero
+	// value is the library's default policy, so a caller that has nothing to
+	// say about retries leaves it out.
+	Retry retry.Policy
 }
 
 // Pull downloads the artifact the manifests port is bound to into the sink.
@@ -45,16 +51,32 @@ type PullSpec struct {
 // left uncommitted, so the destination keeps whatever it held before and the
 // partial content stays behind for a later attempt.
 //
-// Pull does not retry, and it does not resume: every part is fetched, even
-// one an earlier attempt already wrote.
+// A part whose fetch breaks in a way some layer marked worth repeating — a
+// dropped connection, a 429, a 5xx, a body that ended before the manifest
+// said it would — is fetched again under [PullSpec.Retry]: four times by
+// default, with a jittered wait that grows between attempts and never falls
+// short of one a registry asked for. The manifest fetch has a budget of its
+// own. A part that arrives whole and hashes wrong does not: that is the
+// registry serving content the artifact does not describe, and asking again
+// gives the same answer. Neither does a destination that will not take the
+// bytes — a local disk is not a peer having a bad minute.
+//
+// The whole part is fetched again, from its first byte, because this phase
+// asks for no byte range: the second attempt writes over what the first left
+// in the range, and the digest check covers only the bytes of the attempt
+// that passed it.
+//
+// Pull does not resume: every part is fetched, even one an earlier attempt
+// already wrote. A cancelled ctx stops the workers and cuts short any wait in
+// progress.
 func Pull(ctx context.Context, spec PullSpec) error {
 	if err := spec.validate(); err != nil {
 		return err
 	}
 
-	body, _, err := spec.Manifests.Get(ctx)
+	body, err := fetchManifest(ctx, spec)
 	if err != nil {
-		return fmt.Errorf("fetch the manifest: %w", err)
+		return err
 	}
 
 	artifact, err := manifest.Decode(body)
@@ -77,6 +99,32 @@ func Pull(ctx context.Context, spec PullSpec) error {
 	return nil
 }
 
+// fetchManifest reads the manifest the pull is bound to, under a budget of
+// its own. A fetch is a plain read, so repeating one asks the same question
+// and nothing about the transfer has started yet: a 503 on the first request
+// of a pull should not be the whole answer.
+//
+// The descriptor the port also returns is dropped here. It describes the
+// bytes, which is what the caller decodes, and the port has already checked
+// it against a digest reference.
+func fetchManifest(ctx context.Context, spec PullSpec) ([]byte, error) {
+	var body []byte
+
+	if err := retry.Do(ctx, spec.Retry, func(ctx context.Context) error {
+		fetched, _, err := spec.Manifests.Get(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch the manifest: %w", err)
+		}
+		body = fetched
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return body, nil
+}
+
 // validate checks the spec before the pull touches anything. A missing port
 // or a nonsensical knob is a programming error, and catching it here means no
 // request is made and no file is created on the way to reporting it.
@@ -96,8 +144,9 @@ func (s PullSpec) validate() error {
 //
 // Every job is queued before the first worker starts, into a channel with
 // room for all of them, so no send can block and the channel is closed before
-// anything reads it. A worker leaves when the queue runs dry or when the
-// group's context is cancelled, which is why a failed or cancelled pull
+// anything reads it. A worker leaves when the queue runs dry, or at the next
+// part boundary it reaches once the group's context is cancelled, or as soon
+// as a backoff sleep is interrupted, which is why a failed or cancelled pull
 // cannot leave a worker behind.
 func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact) error {
 	split, err := plan.New(artifact.FileSize, artifact.PartSize)
@@ -116,7 +165,7 @@ func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact) 
 	// receive and leave, so its goroutine is never started.
 	for range min(spec.Workers, split.NumParts()) {
 		group.Go(func() error {
-			return fetchWorker(groupCtx, spec.Blobs, spec.Sink, jobs)
+			return fetchWorker(groupCtx, spec, jobs)
 		})
 	}
 
@@ -126,8 +175,8 @@ func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact) 
 // fetchWorker drains jobs until the channel closes, downloading and verifying
 // each part it takes. Every worker builds its own fetcher, so the scratch a
 // part streams through is never shared between goroutines.
-func fetchWorker(ctx context.Context, blobs Blobs, sink Sink, jobs <-chan partJob) error {
-	fetcher := newPartFetcher(blobs, sink)
+func fetchWorker(ctx context.Context, spec PullSpec, jobs <-chan partJob) error {
+	fetcher := newPartFetcher(spec.Blobs, spec.Sink, spec.Retry)
 
 	for job := range jobs {
 		if err := ctx.Err(); err != nil {
@@ -157,25 +206,49 @@ type partFetcher struct {
 	// hasher computes the digest of the part being fetched. It is reset
 	// between parts rather than allocated again.
 	hasher hash.Hash
+	// policy is how often and how patiently a part is attempted.
+	policy retry.Policy
 }
 
 // newPartFetcher builds the fetcher for one worker, allocating that worker's
 // share of scratch once.
-func newPartFetcher(blobs Blobs, sink Sink) *partFetcher {
+func newPartFetcher(blobs Blobs, sink Sink, policy retry.Policy) *partFetcher {
 	return &partFetcher{
 		blobs:  blobs,
 		sink:   sink,
 		buf:    make([]byte, copyBufferSize),
 		hasher: sha256.New(),
+		policy: policy,
 	}
 }
 
-// fetch downloads one part into its range of the sink and verifies it against
-// the digest the manifest recorded.
+// fetch downloads one part into its range of the sink and verifies it,
+// attempting it again while the policy says a failure is worth repeating.
+//
+// Nothing has to be undone between attempts. The hasher is reset and the
+// offset writer built inside the attempt, and the part is written at fixed
+// offsets from its first byte, so a second pass writes over whatever the
+// first left in the range byte for byte and the digest that is checked covers
+// only the bytes of the pass that wrote them. That is the same property that
+// lets workers finish in any order, used a second time.
+func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
+	return retry.Do(ctx, f.policy, func(ctx context.Context) error {
+		return f.attempt(ctx, job)
+	})
+}
+
+// attempt is one try at one part: open the blob, stream it into the sink's
+// range while hashing it, and check what arrived against the manifest.
+//
+// Every attempt opens the blob from its first byte. This phase asks for no
+// byte range, so a fresh Get also re-resolves whatever redirect the registry
+// points at, and no expired presigned URL is ever reused.
 //
 // The reader is closed on every path out, including the ones where the part
-// is rejected: a pull that gives up still has to hand the connection back.
-func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
+// is rejected: a pull that gives up still has to hand the connection back,
+// and an attempt that held its body open would keep every earlier attempt's
+// body open with it.
+func (f *partFetcher) attempt(ctx context.Context, job partJob) error {
 	content, err := f.blobs.Get(ctx, job.dgst, 0)
 	if err != nil {
 		return fmt.Errorf("fetch part %d (%s): %w", job.part.Index, job.dgst, err)
@@ -211,8 +284,10 @@ func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
 //
 // The blob reader travels through a tagging wrapper because [io.CopyBuffer]
 // collapses reader and writer failures into one value: a registry that hangs
-// up mid-part must be reported as a fetch failure, not a destination write
-// failure — the retry phase classifies the two differently.
+// up mid-part is reported as a fetch failure, not a destination write failure
+// — and the retry policy treats the two differently, because a broken
+// connection is worth another attempt and a disk that will not take bytes is
+// not.
 func (f *partFetcher) stream(content io.Reader, part plan.Part) error {
 	into := io.MultiWriter(f.hasher, io.NewOffsetWriter(f.sink, part.Offset))
 
@@ -226,9 +301,14 @@ func (f *partFetcher) stream(content io.Reader, part plan.Part) error {
 		return fmt.Errorf("write part %d into the destination at offset %d: %w", part.Index, part.Offset, err)
 	}
 	if written != part.Size {
-		return fmt.Errorf(
+		// The one failure the orchestrator diagnoses itself: a body that ended
+		// cleanly before the manifest's byte count is a truncated transfer, and
+		// the accounting that says so is the plan's, not the registry's. The
+		// sibling case below stays terminal — extra bytes are content the
+		// manifest does not describe, and a second fetch serves them again.
+		return retry.Transient(fmt.Errorf(
 			"part %d ended after %d bytes, but the manifest declares %d", part.Index, written, part.Size,
-		)
+		), 0)
 	}
 
 	if _, err := io.ReadFull(content, f.buf[:1]); !errors.Is(err, io.EOF) {

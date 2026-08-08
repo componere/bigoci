@@ -6,9 +6,16 @@
 // with the ports it consumes: [Blobs] and [Manifests] for the registry end of
 // a transfer, [Source] and [Sink] for the file end.
 //
-// Retries, resume, and progress accounting are not here yet. A failure
-// surfaces to the caller instead of being retried, and a pull fetches every
-// part even when an earlier attempt left some of them on disk.
+// Every registry operation runs under the policy in the
+// [github.com/componere/bigoci/internal/retry] package: a part, the empty
+// config blob, and each manifest call are attempted again while some layer
+// under the failure marked it worth repeating, and a failure nobody marked is
+// terminal. The orchestrator is the only thing in bigoci that repeats an
+// operation, so the decision is made in the core while the knowledge behind
+// it stays in the adapter that owns the connection.
+//
+// Resume and progress accounting are not here yet: a pull fetches every part
+// even when an earlier attempt left some of them on disk.
 //
 // # The port model
 //

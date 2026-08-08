@@ -3,6 +3,7 @@ package transfer_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -250,6 +251,18 @@ func (s *blobStore) serve(dgst digest.Digest) (io.ReadCloser, error) {
 	return &blobBody{store: s, reader: bytes.NewReader(body)}, nil
 }
 
+// serveFlaky returns a body that serves prefix and then raises breaks,
+// counted against the store's closes like any other body it handed out. It
+// stands in for a registry that hangs up part way through a part.
+func (s *blobStore) serveFlaky(prefix []byte, breaks error) io.ReadCloser {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.served++
+
+	return &blobBody{store: s, reader: bytes.NewReader(prefix), fail: breaks}
+}
+
 // counts returns how many bodies were served and how many of those were
 // closed.
 func (s *blobStore) counts() (int, int) {
@@ -274,11 +287,20 @@ type blobBody struct {
 	store *blobStore
 	// reader holds the bytes still to be read.
 	reader *bytes.Reader
+	// fail is what the body raises once its bytes run out, nil for a body
+	// that simply ends.
+	fail error
 }
 
-// Read reads from the body.
+// Read reads from the body, raising the failure it was built with in place of
+// the end of its bytes.
 func (b *blobBody) Read(p []byte) (int, error) {
-	return b.reader.Read(p)
+	n, err := b.reader.Read(p)
+	if b.fail != nil && errors.Is(err, io.EOF) {
+		return n, b.fail
+	}
+
+	return n, err
 }
 
 // Close records the close with the store. It never fails.
