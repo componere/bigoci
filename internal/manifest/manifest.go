@@ -168,18 +168,33 @@ func encodeCanonical(manifest ocispec.Manifest) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
-// emptyConfig returns the OCI empty descriptor a bigoci manifest uses as its
-// config.
+// EmptyConfig returns the OCI empty descriptor a bigoci manifest carries as
+// its config, together with the two bytes that descriptor addresses.
 //
-// ocispec.DescriptorEmptyJSON carries the two config bytes inline in its Data
-// field, which would marshal into a "data" member the format's manifest does
-// not have. Clearing Data on the copy keeps the encoding canonical; readers
-// accept the descriptor either way.
-func emptyConfig() ocispec.Descriptor {
-	config := ocispec.DescriptorEmptyJSON
-	config.Data = nil
+// A push needs both halves. A registry rejects a manifest that references a
+// blob it does not hold, so the pusher asks for the descriptor's digest and
+// uploads the content when the repository is missing it, before it writes the
+// manifest. Everything else in bigoci only ever needs the descriptor.
+//
+// The content is a fresh copy on every call, so a caller may stream it, wrap
+// it, or hold onto it without reaching the slice the image spec exports.
+func EmptyConfig() (ocispec.Descriptor, []byte) {
+	// ocispec.DescriptorEmptyJSON carries the two config bytes inline in its
+	// Data field, which would marshal into a "data" member the format's
+	// manifest does not have. Clearing Data on the copy keeps the encoding
+	// canonical; readers accept the descriptor either way.
+	descriptor := ocispec.DescriptorEmptyJSON
+	descriptor.Data = nil
 
-	return config
+	return descriptor, bytes.Clone(ocispec.DescriptorEmptyJSON.Data)
+}
+
+// emptyConfig returns the descriptor half of [EmptyConfig], which is all the
+// encoder needs.
+func emptyConfig() ocispec.Descriptor {
+	descriptor, _ := EmptyConfig()
+
+	return descriptor
 }
 
 // validate checks an artifact against the format contract. [Encode] and

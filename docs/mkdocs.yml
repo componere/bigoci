@@ -35,6 +35,8 @@ theme:
 
 nav:
   - Home: index.md
+  - How-to:
+      - Push and pull a file: how-to/push-and-pull.md
   - Explanation:
       - Design: explanation/design.md
   - Reference:
