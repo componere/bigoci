@@ -305,3 +305,14 @@ gate or doc that counts retries per worker must account for cancellation.
 Commits: e985d53 + 7f9dda4 (both G). PR #23 open, CI monitored. PR3 worktree
 .wt/test-flaky-e2e branched from feat/transfer-retry (e2e needs the retry
 behavior; will rebase onto master after #23 merges).
+
+## 2026-08-08 12:46 — PR #23 merged; retries are live on master
+PR #23 squash-merged → master 4dca285 (CI green first try this time — the
+tap de-flake held). Phase-3 code is fully shipped: classification (PR #21) +
+orchestrator wiring/ErrPartTooLarge/exit 7/docs (PR #23). feat/transfer-retry
+worktree removed. Remaining: PR3 toxiproxy e2e (implementer wf_adf2a3f6-36a
+running in .wt/test-flaky-e2e — must rebase onto master before PR since it
+branched from the now-squashed PR2 branch), then the three manual gates with
+journaled evidence, then PLAN.md checkboxes + session close. Deliberately
+waiting for the implementer to finish before heavy docker use so its e2e
+timing runs stay clean.
