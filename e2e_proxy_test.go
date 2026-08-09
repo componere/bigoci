@@ -452,7 +452,6 @@ func (p *countProxy) addUpstream(n int64) {
 
 // record files a request that has completed.
 func (p *countProxy) record(rec proxyRecord) {
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
