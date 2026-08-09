@@ -735,6 +735,63 @@ Nothing in that log can carry a signature: the query of every URL is rendered
 with its values elided, and the library builds no error that names a signed
 location either.
 
+### The same gates, run by CI
+
+Everything above is a recipe a person runs. `.github/workflows/conformance.yml`
+runs the same gates against GHCR in this order: the refusal with an empty
+`DOCKER_CONFIG`, a multi-part round trip, the counted no-leak check over that
+pull's log, a digest-only round trip, and a credential the registry refuses.
+The rows live in `cli/conformance_test.go` behind a `conformance` build tag, so
+no ordinary build and no per-commit CI run compiles them.
+
+Three things to know before reading a run:
+
+- **Nothing triggers it but a person.** `workflow_dispatch` is its only
+  trigger. It pushes real packages with the repository's own token and deletes
+  them again, which is not something a pull request should do.
+- **The evidence is the logs, not the green tick.** Every row writes the
+  `-debug` log it captured — before it asserts anything, so a failed row leaves
+  its evidence too — and the job uploads all of them as one artifact. Those
+  files are what a journal entry quotes. Uploading them is safe for the reason
+  this whole section is: the tap renders schemes and never credentials, elides
+  every query value but a verified digest, and logs no body at all.
+- **The refusal runs first, and it is the whole argument.** Every row after it
+  differs only in which directory `DOCKER_CONFIG` names. If the target
+  repository ever stops being private, that first row fails and the run stops,
+  rather than four green rows claiming something they no longer show.
+
+Each run writes to `run-<run id>-<attempt>` tags, which is what keeps a stale
+artifact from answering a later run's pull, and what makes a version the
+cleanup step could not delete identifiable by hand.
+
+To run the same rows yourself against a repository you own:
+
+```
+docker login ghcr.io
+cd cli
+BIGOCI_CONFORMANCE_REPO=ghcr.io/you/bigoci/conformance \
+BIGOCI_CONFORMANCE_DOCKER_CONFIG="$HOME/.docker" \
+BIGOCI_CONFORMANCE_LOG_DIR=/tmp/conformance \
+  go test -tags conformance -count=1 -v .
+```
+
+`BIGOCI_CONFORMANCE_REPO` unset skips the whole suite. The credential
+directory is named separately rather than read from `DOCKER_CONFIG` because
+this package's tests empty that variable on purpose, so that no other test can
+reach a real credential.
+
+One more thing about that credential directory: it must hold a `config.json`
+with a plain base64 `auth` entry. This package's tests run with an empty
+`PATH`, so a login that stored its secret in a credential helper —
+`"credsStore": "osxkeychain"`, which is what Docker Desktop writes — cannot
+be read here. If yours did, write a config by hand into a scratch directory:
+
+```
+d=$(mktemp -d)
+printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf 'USER:TOKEN' | base64)" >"$d/config.json"
+BIGOCI_CONFORMANCE_DOCKER_CONFIG="$d" ...
+```
+
 ### Resuming an interrupted pull
 
 Interrupt a pull part way through and read what the second one fetches. Start
@@ -907,7 +964,9 @@ not, deliberately:
   watches a transfer unwind; the manual gates above do that.
 
 Running against a real registry is still the manual gate, and always will be: a
-fake answers the way it was written to.
+fake answers the way it was written to. The conformance job is that gate
+written down rather than replaced — it runs the same rows against GHCR, and it
+still runs only when somebody triggers it.
 
 ## License
 
