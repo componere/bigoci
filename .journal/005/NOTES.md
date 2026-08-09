@@ -231,3 +231,17 @@ evidence; the wrong-size-partial guard-rail wording amended per DESIGN Q4
 5 (auth) — 7 remain. Reserved seams intact: exit 6/ErrUnauthorized and the
 PHASE-5 instrument constraint (auth at request-build time, caller's
 transport outermost, clean redirect client derived from caller's client).
+
+## 2026-08-08 18:05 — Session closed
+Phase 4 complete and gated; user directed cutting here and saving phase 5
+for the next session. PRs #25 (2b06ecf), #26 (d789849), #27 (d69afc0) all
+squash-merged, CI green, local master fast-forwarded to d69afc0, session
+branches deleted from origin, implementation worktrees removed, gate
+containers (gate-zot/gate-toxi/gates-net) torn down. SUMMARY.md written;
+INDEX row 005 complete; TECH_NOTES updated (resume contract, the
+httptest-Close barrier lesson, windows-vet gap, toxiproxy per-connection
+rates, redirect Range survival for phase 5) and phases counter moved to
+1–4 done. Hand-off for the next session: start phase 5 (auth) from
+PLAN.md:257 — the oras-go credentials adapter behind the Auth port,
+presigned-redirect handling under the standing instrument constraint, and
+the manual GHCR gates. Release PR #11 (0.1.0) remains deliberately open.
