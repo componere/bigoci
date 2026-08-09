@@ -86,8 +86,8 @@ func New(opts ...Option) (*Client, error) {
 // unreferenced, and a later push finds and skips them.
 //
 // A cancelled ctx stops the workers, cuts short any wait in progress, and
-// returns its error. The errors a caller branches on are [ErrNotFound] and
-// [ErrPartTooLarge].
+// returns its error. The errors a caller branches on are [ErrNotFound],
+// [ErrUnauthorized], and [ErrPartTooLarge].
 func (c *Client) Push(
 	ctx context.Context,
 	ref Reference,
@@ -141,7 +141,7 @@ func (c *Client) Push(
 //
 // A cancelled ctx stops the workers, cuts short any wait in progress, and
 // returns its error. The errors a caller branches on are [ErrNotFound],
-// [ErrNotBigociArtifact], and [ErrDigestMismatch].
+// [ErrUnauthorized], [ErrNotBigociArtifact], and [ErrDigestMismatch].
 func (c *Client) Pull(ctx context.Context, ref Reference, dest FileDest, opts ...PullOption) error {
 	if err := c.pull(ctx, ref, dest, opts); err != nil {
 		return classify(err)

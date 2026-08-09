@@ -43,6 +43,25 @@ const errorBodyLimit = 4096
 // [errors.Is]; nothing wraps the sentinel in a second layer.
 var ErrNotFound = errors.New("not found")
 
+// ErrUnauthorized reports that the registry refused a request rather than
+// answering it: it wants credentials the request did not carry, or the ones
+// it carried do not reach what the request asked for. A 401's or a 403's
+// [StatusError] matches it through [errors.Is], the same way a 404 matches
+// [ErrNotFound]; nothing wraps the sentinel in a second layer.
+//
+// The sentinel means "your credentials" and nothing else, which is what makes
+// it worth branching on: every failure it names is answered by logging in or
+// by being granted access, and no further attempt changes either.
+//
+// Admitting the 403 beside the 401 is deliberate — a registry refuses a
+// credential it could not read, or one that falls short of the access asked
+// for, with either status. The cost is that a 403 from something standing in
+// front of the registry, a proxy or a web application firewall, reports as
+// unauthorized too. That is admitted the way [ErrTooLarge] admits a 413
+// answering a manifest write: sniffing the body to tell the two apart would
+// be the vendor table again in a different shape.
+var ErrUnauthorized = errors.New("unauthorized")
+
 // ErrTooLarge reports that the registry refused a request as larger than it
 // accepts. A 413's [StatusError] matches it through [errors.Is], the same way
 // a 404 matches [ErrNotFound].
@@ -293,14 +312,17 @@ func (e *StatusError) Error() string {
 	return summary
 }
 
-// Is makes a 404 match [ErrNotFound] and a 413 match [ErrTooLarge] under
-// [errors.Is] without a second wrapping layer, so a not-found failure says
-// "not found" once — in the status text the message already carries —
-// instead of stacking the phrase at every boundary.
+// Is makes a 404 match [ErrNotFound], a 401 or a 403 match [ErrUnauthorized],
+// and a 413 match [ErrTooLarge] under [errors.Is] without a second wrapping
+// layer, so a not-found failure says "not found" once — in the status text
+// the message already carries — instead of stacking the phrase at every
+// boundary.
 func (e *StatusError) Is(target error) bool {
 	switch target {
 	case ErrNotFound:
 		return e.Status == http.StatusNotFound
+	case ErrUnauthorized:
+		return e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden
 	case ErrTooLarge:
 		return e.Status == http.StatusRequestEntityTooLarge
 	default:

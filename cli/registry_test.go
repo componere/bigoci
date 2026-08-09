@@ -51,6 +51,13 @@ const (
 	// titleAnnotation is the standard annotation key a push records the file name
 	// under.
 	titleAnnotation = "org.opencontainers.image.title"
+	// refusedTag is the tag the refused runs name. It is deliberately not
+	// fakeTag: a registry that will not serve the caller refuses before it
+	// looks anything up, so what the reference names has no bearing on the
+	// answer, and a tag nothing was ever stored under says so. It is also
+	// what keeps unparam from demanding taggedRef lose its parameter for
+	// always being handed fakeTag.
+	refusedTag = "refused"
 )
 
 // storedManifest is one manifest the fake registry holds: the bytes a push wrote
@@ -89,6 +96,9 @@ type fakeRegistry struct {
 	// failing is how many completing uploads answer 500 before the registry
 	// starts storing what it is sent, for a registry having a bad minute.
 	failing int
+	// denying answers every request with 401, for a registry that will not
+	// serve this repository to whoever is asking.
+	denying bool
 	// server is the HTTP server the registry is served by.
 	server *httptest.Server
 	// host is the address the server listens on: the registry half of a
@@ -115,7 +125,7 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 	mux.HandleFunc("GET "+prefix+"/manifests/{reference}", reg.getManifest)
 	mux.HandleFunc("PUT "+prefix+"/manifests/{reference}", reg.putManifest)
 
-	reg.server = httptest.NewServer(mux)
+	reg.server = httptest.NewServer(reg.guard(mux))
 	t.Cleanup(reg.server.Close)
 
 	parsed, err := url.Parse(reg.server.URL)
@@ -199,6 +209,51 @@ func (r *fakeRegistry) failUploads(n int) {
 	defer r.mu.Unlock()
 
 	r.failing = n
+}
+
+// denyRequests answers every request with 401, which is how a registry says
+// the caller may not have what it asked for until it authenticates.
+func (r *fakeRegistry) denyRequests() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.denying = true
+}
+
+// denied reports whether the registry is refusing everything it is asked.
+func (r *fakeRegistry) denied() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.denying
+}
+
+// guard answers with 401 while the registry is refusing, and hands every other
+// request to the endpoints.
+//
+// It wraps the mux rather than sitting in each handler because a refusal comes
+// before the endpoint a request names: a registry that wants credentials says
+// so at the first request, whatever that request was for.
+func (r *fakeRegistry) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !r.denied() {
+			next.ServeHTTP(w, req)
+
+			return
+		}
+
+		w.Header().Set("WWW-Authenticate", r.challenge())
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+	})
+}
+
+// challenge is the WWW-Authenticate value the guard sends beside its 401,
+// spelled the way a real registry spells it. Nothing reads it yet. The realm
+// points at the fake's own server rather than at some name on the internet,
+// so the day the library starts following a challenge, this test stays
+// hermetic instead of reaching for a host that does not answer.
+func (r *fakeRegistry) challenge() string {
+	return `Bearer realm="` + r.server.URL + `/token",service="fake"`
 }
 
 // refusal reports the status a completing upload is answered with instead of
@@ -489,6 +544,55 @@ func TestEndToEndAPartTheRegistryRefusesIsExitSeven(t *testing.T) {
 	assert.Contains(t, got.stderr, "registry returned 413 Request Entity Too Large")
 	assert.Contains(t, got.stderr, "bigoci: matched sentinel bigoci.ErrPartTooLarge (exit 7)\n")
 	assert.Zero(t, reg.blobCount(), "a refused part is not stored")
+}
+
+// TestEndToEndARegistryThatRefusesTheRequestIsExitSix activates the code that
+// has been reserved since the CLI was written. A 401 is terminal, so the run
+// costs no backoff at all: the library asks once, is refused, and reports it.
+//
+// Both directions are driven because they meet the refusal at different
+// requests — a push at the first blob check, a pull at the manifest fetch —
+// and the exit code has to be the same one either way.
+func TestEndToEndARegistryThatRefusesTheRequestIsExitSix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args func(ref, src, dest string) []string
+	}{
+		{
+			name: "a push to a repository the caller may not write",
+			args: func(ref, src, _ string) []string {
+				return []string{cmdPush, "-plain-http", "-part-size", fixturePartSize, src, ref}
+			},
+		},
+		{
+			name: "a pull from a repository the caller may not read",
+			args: func(ref, _, dest string) []string {
+				return []string{cmdPull, "-plain-http", ref, dest}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg := newFakeRegistry(t)
+			reg.denyRequests()
+			src, _ := fixture(t)
+			dest := filepath.Join(t.TempDir(), "out.bin")
+
+			got := runCLI(t, tt.args(reg.taggedRef(refusedTag), src, dest)...)
+
+			assert.Equal(t, exitUnauthorized, got.code, got.stderr)
+			assert.Empty(t, got.stdout, "a transfer the registry refused writes no digest")
+			assert.Contains(t, got.stderr, "registry returned 401 Unauthorized")
+			assert.Contains(t, got.stderr, "bigoci: matched sentinel bigoci.ErrUnauthorized (exit 6)\n")
+			assert.Zero(t, reg.blobCount(), "a refused transfer stores nothing")
+			assert.NoFileExists(t, dest, "a refused transfer publishes no file")
+		})
+	}
 }
 
 // TestEndToEndPushRidesThroughAServerError is the only test in this tree that

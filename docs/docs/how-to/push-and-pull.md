@@ -139,9 +139,12 @@ Two things to know if you configure the transport:
 
 ## Handle the errors that matter
 
-Four failures are worth branching on with `errors.Is`:
+Five failures are worth branching on with `errors.Is`:
 
 - `bigoci.ErrNotFound` — the registry does not hold what the reference names.
+- `bigoci.ErrUnauthorized` — the registry refused the transfer. Log in to it
+  (for most setups, `docker login <registry>`) and check that the account may
+  read the repository — or write it, for a push.
 - `bigoci.ErrNotBigociArtifact` — the reference resolves to something else,
   such as a container image.
 - `bigoci.ErrDigestMismatch` — pulled bytes failed verification; nothing was
