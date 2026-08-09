@@ -370,14 +370,16 @@ downgraded to anonymous. Exchanging one is a named follow-up. A
 
 ## Defaults
 
-Part size and worker count are starting points, not measured optima. The
-benchmark harness (see [Testing](#testing)) sets the final defaults before
-v1.
+Part size and worker count are measured, not guessed. The benchmark
+harness (see [Testing](#testing)) swept both against zot, CNCF
+Distribution, and GHCR from bare metal in August 2026, and the sweep
+confirmed the original reasoning; the
+[benchmarks reference](../reference/benchmarks.md) holds the numbers.
 
 | Setting | Default | Reasoning |
 |---|---|---|
-| Part size | 512 MiB | Small enough that a 5 GB file splits into 10 parts and a lost part costs seconds to retry. Large enough that per-part overhead (3 requests) is noise: a 50 GB file makes roughly 300 requests. Roughly 19× under the lowest registry layer cap (GHCR, 10 GB). |
-| Workers | 4 | One worker holds one HTTPS connection. AWS measures 85–90 MB/s per S3 connection; four saturate a 2–3 Gbit/s path. Configurable for bigger pipes. |
+| Part size | 512 MiB | Small enough that a 5 GB file splits into 10 parts and a lost part costs seconds to retry. Large enough that per-part overhead (3 requests) is noise: a 50 GB file makes roughly 300 requests. Roughly 19× under the lowest registry layer cap (GHCR, 10 GB). Measured: within 2% of the best cell at 16 GiB on zot, best on Distribution, tied on GHCR; 64 MiB parts cost 11% at scale. |
+| Workers | 4 | One worker holds one HTTPS connection. AWS measures 85–90 MB/s per S3 connection — and GHCR measured at 78–99 MB/s per push, confirming it. Four workers pushed at ~90% of a 10 Gbit/s link; eight bought at most 3% more. Configurable for bigger pipes. |
 | Retry policy | 4 attempts; exponential backoff, 1 s base, 30 s cap, full jitter; honors `Retry-After` when sent | A transient failure should never surface to the caller. Network errors, 429, and 5xx retry; other 4xx fail fast. |
 | Digest algorithm | sha256 | The OCI default; universally supported. |
 
@@ -600,16 +602,25 @@ money to exercise at size.
 The walking skeleton, in order: push and pull one file against zot in
 testcontainers, with small fixed parts, no retries, no resume, anonymous
 auth. Then retries, then resume, then auth — each shipped behind the
-end-to-end gate above. The benchmark harness, which sets the real defaults,
-is what remains.
+end-to-end gate above. The benchmark harness came last and set the
+measured defaults.
 
 ## Open questions
 
-One question is genuinely open.
+None remain. The one the design carried is answered below, with data.
 
-**Should worker count self-tune?** A fixed count wastes fast pipes and can
-oversubscribe slow ones. Adaptive concurrency (ramp while throughput grows,
-back off on 429 and 503) risks fighting registry rate limiters in ways that
-are hard to test honestly. This needs benchmark-harness data and
-real-registry behavior before a decision. Until then: fixed default,
-caller-configurable.
+**Should worker count self-tune?** No — decided against for v1, on the
+August 2026 benchmark data (see the
+[benchmarks reference](../reference/benchmarks.md)). The case for adaptive
+concurrency was that a fixed count wastes fast pipes and oversubscribes
+slow ones, and that backing off on 429 and 503 might be needed against
+real registries. The measurements support neither half: across 333
+recorded transfers — including eight workers against GHCR — the harness's
+status-counting transport saw **zero** 429 or 503 responses, and on paths
+whose per-connection throughput spanned a 40× range (roughly 90 MB/s to
+GHCR versus several Gbit/s same-site) the fixed default of four workers
+landed within a few percent of the best measured cell everywhere. Adaptive
+logic would add a hard-to-test control loop to buy those few percent.
+`WithWorkers` remains the escape hatch for callers who know their pipe.
+Revisit only if a real registry is observed throttling multi-part
+transfers.

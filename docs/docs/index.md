@@ -23,3 +23,5 @@ credential.
   split-part format, the transport, and the architecture.
 - [Format](reference/format.md) — the artifact format contract for
   implementers.
+- [Benchmarks](reference/benchmarks.md) — the measured throughput behind
+  the default part size and worker count.

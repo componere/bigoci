@@ -19,16 +19,24 @@ type PartSize int64
 //
 // 512 MiB sits roughly 19 times under the lowest registry layer cap, makes a
 // 5 GB file into ten parts, and keeps the per-part request overhead in the
-// noise. It is a provisional value: the benchmark harness sets the measured
-// one before v1.
+// noise. The value is measured, not provisional: on a 10 Gbit/s path it came
+// within two percent of the best cell of a 64 MiB to 1 GiB sweep against zot
+// at 16 GiB, led the sweep against CNCF Distribution, and tied within noise
+// against GHCR, while smaller parts paid visible per-part overhead at scale
+// (bare-metal matrix, 2026-08; see
+// https://componere.github.io/bigoci/reference/benchmarks/).
 const DefaultPartSize PartSize = 512 << 20
 
 // DefaultWorkers is how many parts a push or a pull moves at once when the
 // caller names no worker count.
 //
-// One worker holds one connection, and four saturate a 2 to 3 Gbit/s path
-// against the throughput a single registry connection sustains. Callers with
-// a bigger pipe raise it with [WithWorkers].
+// One worker holds one connection. Measured on a 10 Gbit/s path, four
+// workers pushed at roughly ninety percent of the link and eight bought at
+// most three percent more; against GHCR, where a connection sustains the
+// 85 to 90 MB/s the design predicted, extra workers changed little and
+// drew no throttling (bare-metal matrix, 2026-08; see
+// https://componere.github.io/bigoci/reference/benchmarks/). Callers with a
+// bigger pipe raise it with [WithWorkers].
 const DefaultWorkers = 4
 
 // Option configures a [Client] as [New] builds it.
