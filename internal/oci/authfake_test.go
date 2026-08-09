@@ -47,6 +47,10 @@ type authRecord struct {
 	// authorization is the Authorization header the request carried, empty
 	// when it carried none.
 	authorization string
+	// cookie is the Cookie header the request carried, which is what says a
+	// caller's jar reached the registry before a redirect took the request
+	// somewhere the jar must not follow.
+	cookie string
 	// bodyLen is how many bytes of body arrived, which is what proves an
 	// upload's body was sent exactly once.
 	bodyLen int
@@ -96,6 +100,10 @@ type authRegistry struct {
 	// fixture minted and has not retired, and takes the whole request so a
 	// test can refuse one endpoint while serving the rest.
 	accepts func(r *http.Request) bool
+	// answerAs takes an authenticated repository request over when set and
+	// reports whether it answered it, so a test can redirect one endpoint and
+	// leave every other one serving as it always did.
+	answerAs func(w http.ResponseWriter, r *http.Request) bool
 
 	// mu guards everything below.
 	mu sync.Mutex
@@ -142,6 +150,7 @@ func (a *authRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path:          r.URL.Path,
 		query:         r.URL.Query(),
 		authorization: r.Header.Get(headerAuthorization),
+		cookie:        r.Header.Get("Cookie"),
 		bodyLen:       len(body),
 	})
 	a.mu.Unlock()
@@ -359,8 +368,13 @@ func (a *authRegistry) scopeStated() string {
 	return a.challengeScope
 }
 
-// serveEndpoint answers the distribution-spec endpoints these tests exercise.
+// serveEndpoint answers the distribution-spec endpoints these tests exercise,
+// after whatever a test scripted in place of one of them has had its say.
 func (a *authRegistry) serveEndpoint(w http.ResponseWriter, r *http.Request) {
+	if a.answerAs != nil && a.answerAs(w, r) {
+		return
+	}
+
 	switch {
 	case r.URL.Path == apiPrefix:
 		w.WriteHeader(http.StatusOK)

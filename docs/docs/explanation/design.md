@@ -520,17 +520,38 @@ bigoci/              public API: Client, options, sentinel errors
 Only the root package is importable; the thin API below is the whole exported
 surface.
 
-**Transport sharp edges**, owned by `internal/oci` (the redirect edges are
-the redirect phase's contract and are not built yet — until they land, the
-standard library's own following governs, and its rule forwards a credential
-to any same-domain-or-subdomain target):
+**Transport sharp edges**, owned by `internal/oci`:
 
-- A blob `GET` that redirects to presigned object storage must not forward
-  the `Authorization` header; S3, GCS, and Azure all reject presigned
-  requests that carry one. The adapter disables automatic redirect following
-  and re-issues the redirect itself with a clean client.
-- Presigned redirect URLs expire. A retry never reuses a stored redirect URL;
-  it re-requests the blob from the registry and follows the fresh redirect.
+- Automatic redirect following is off for every request. The adapter derives
+  two clients from the caller's by copying the struct — `http.Client` is four
+  exported fields and no hidden state, so the caller's own client is never
+  touched — and follows a redirect itself, up to three hops, for a `GET` or a
+  `HEAD` and nothing else. Every hop is a fresh request carrying two headers,
+  `Range` and `Accept` — plus the credential in the one same-origin case the
+  next bullet names, and nothing else. The second client also drops the
+  cookie jar.
+- A blob `GET` that redirects to presigned object storage does not forward the
+  `Authorization` header. This is a confidentiality requirement, not a
+  compatibility one: the header is not rejected by the storage those
+  registries use. GHCR's storage and Docker Hub's CloudFront both answer 200
+  to a request that carries the registry's bearer token as well as the
+  signature, which is measured behavior, not an assumption — **so a working
+  pull is not evidence that nothing leaked.** The evidence is the request log:
+  every off-registry line reads `auth=none`. The credential rides a hop only
+  when the location is the registry itself — same scheme, same host, same
+  port — which is stricter than the standard library's rule, and deliberately:
+  Go forwards to any domain-or-subdomain target, so a CDN on a subdomain of
+  the registry would be handed the token.
+- Presigned redirect URLs expire. No redirect URL is ever stored: a location
+  lives inside the one call that received it, and a later attempt re-requests
+  the blob from the registry and follows the fresh redirect. Beyond the
+  registry, `401`, `403`, `404`, and `410` are all worth another attempt for
+  that reason, and none of them reports as `ErrUnauthorized` or `ErrNotFound`
+  — an expired signature is neither a credential problem nor a missing
+  artifact.
+- No error carries a signed URL. Every failure is reported against the
+  registry method and path the request started as, and where naming the far
+  end helps, only its host appears.
 - A `PUT` streamed from an `io.SectionReader` must set `Content-Length`
   explicitly. Go otherwise sends chunked transfer encoding, which some
   registries and proxies reject.

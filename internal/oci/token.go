@@ -110,7 +110,11 @@ func (a *authState) credential(ctx context.Context) (Credential, error) {
 // registry bigoci talks to accepts the GET.
 //
 // The exchange rides the repository's own client, so a caller watching that
-// client sees the token request exactly as it sees every other request, and
+// client sees the token request exactly as it sees every other request — with
+// one deliberate difference: a redirect from the realm is terminal rather
+// than followed. The exchange carries a Basic header, a redirected token
+// endpoint is a shape no measured registry has, and failing loudly beats
+// deciding where a credential goes next on a token server's say-so. And
 // its failures classify through the same table a blob request's do — a token
 // endpoint answering 503 is worth another attempt for the same reason a
 // registry answering 503 is.

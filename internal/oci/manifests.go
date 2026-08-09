@@ -62,6 +62,8 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 	}
 	req.Header.Set("Accept", ocispec.MediaTypeImageManifest)
 
+	at := originOf(req)
+
 	resp, err := m.repo.send(req)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, err
@@ -69,13 +71,13 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, ocispec.Descriptor{}, statusError(resp)
+		return nil, ocispec.Descriptor{}, statusErrorAt(at, resp)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, ocispec.Descriptor{}, statusError(resp)
+		return nil, ocispec.Descriptor{}, statusErrorAt(at, resp)
 	}
 
-	body, err := readManifest(resp)
+	body, err := readManifest(at, resp)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, err
 	}
@@ -157,19 +159,14 @@ func manifestPath(target string) string {
 // blob path reaches through its wrapped reader. A body that arrives whole and
 // is simply too large is not: asking again produces the same oversized
 // document.
-func readManifest(resp *http.Response) ([]byte, error) {
+func readManifest(at origin, resp *http.Response) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestSize+1))
 	if err != nil {
-		return nil, retry.Transient(
-			fmt.Errorf("%s %s: read manifest: %w", resp.Request.Method, resp.Request.URL.Path, err), 0,
-		)
+		return nil, retry.Transient(fmt.Errorf("%s: read manifest: %w", at, err), 0)
 	}
 
 	if len(body) > maxManifestSize {
-		return nil, fmt.Errorf(
-			"%s %s: manifest is larger than the %d byte limit",
-			resp.Request.Method, resp.Request.URL.Path, maxManifestSize,
-		)
+		return nil, fmt.Errorf("%s: manifest is larger than the %d byte limit", at, maxManifestSize)
 	}
 
 	return body, nil

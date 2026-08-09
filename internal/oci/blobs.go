@@ -38,7 +38,11 @@ type Blobs struct {
 // Exists reports whether the repository holds the blob dgst names.
 //
 // A 404 is the registry answering the question, so a blob it does not hold is
-// (false, nil) rather than an error. This is the check a push makes for every
+// (false, nil) rather than an error. That reading stops at the registry's own
+// origin: a registry that redirects the check to storage has already decided
+// the blob exists, so a 404 from the location it named is a stale signature
+// rather than an answer, and comes back as an error worth another attempt —
+// matching neither [ErrNotFound] nor [ErrUnauthorized]. This is the check a push makes for every
 // part before uploading it, and on a first push the answer is "no" every
 // time. Any other unexpected status is an error naming the method, the path,
 // and the status.
@@ -60,7 +64,7 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 	case http.StatusNotFound:
 		return false, nil
 	default:
-		return false, statusError(resp)
+		return false, statusErrorAt(originOf(req), resp)
 	}
 }
 
@@ -81,7 +85,10 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 // orchestrator that asked. A 206 whose range starts at some third byte is
 // still an error — that is an answer to a question nobody asked.
 //
-// A blob the registry does not hold is an error wrapping [ErrNotFound].
+// A blob the registry does not hold is an error wrapping [ErrNotFound]. A 404
+// from a storage location the registry redirected to is not that answer: it
+// reads as a stale signature, comes back marked worth another attempt, and
+// matches no sentinel.
 func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.ReadCloser, int64, error) {
 	req, err := b.repo.newRequest(ctx, http.MethodGet, b.repo.endpoint(blobPath(dgst)), nil)
 	if err != nil {
@@ -96,7 +103,7 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.Read
 		return nil, 0, err
 	}
 
-	start, err := blobReadStart(resp, off)
+	start, err := blobReadStart(originOf(req), resp, off)
 	if err != nil {
 		_ = resp.Body.Close()
 
@@ -158,12 +165,20 @@ func (b *Blobs) openUpload(ctx context.Context) (*url.URL, error) {
 		return nil, fmt.Errorf("POST %s: registry opened an upload but sent no Location header", endpoint.Path)
 	}
 
+	// The Location is never quoted in a failure: an upload session URL
+	// carries registry-minted state in its query, the same class of string
+	// as a signature.
 	session, err := url.Parse(location)
 	if err != nil {
-		return nil, fmt.Errorf("POST %s: registry sent an unusable Location %q: %w", endpoint.Path, location, err)
+		return nil, fmt.Errorf("POST %s: registry sent an unusable Location: %w", endpoint.Path, err)
 	}
 
-	return resp.Request.URL.ResolveReference(session), nil
+	resolved := resp.Request.URL.ResolveReference(session)
+	if err := b.repo.checkSession(resolved); err != nil {
+		return nil, fmt.Errorf("POST %s: %w", endpoint.Path, err)
+	}
+
+	return resolved, nil
 }
 
 // completeUpload streams size bytes of r into the session and names the
@@ -178,6 +193,15 @@ func (b *Blobs) completeUpload(
 	req, err := b.repo.newRequest(ctx, http.MethodPut, withDigest(session, dgst), uploadBody(size, r))
 	if err != nil {
 		return err
+	}
+
+	// A session on another origin is a presigned location: the registry
+	// handed the upload to a party its credential means nothing to, and the
+	// same-origin rule that governs a followed redirect governs this
+	// registry-chosen Location the same way. The URL's own signed query is
+	// what authenticates the write there.
+	if !sameOrigin(b.repo.registryURL(), session) {
+		req.Header.Del(headerAuthorization)
 	}
 
 	req.ContentLength = size
@@ -252,16 +276,23 @@ func withDigest(session *url.URL, dgst digest.Digest) *url.URL {
 // asking again would only be refused again.
 //
 // The 404 is called out first only so the not-found chain is obvious at a
-// glance; either arm below would route it to the same [statusError], whose
+// glance; either arm below would route it to the same [statusErrorAt], whose
 // status is what [ErrNotFound] matches on.
-func blobReadStart(resp *http.Response, off int64) (int64, error) {
+//
+// It runs on the response that carried the content, which after a redirect is
+// the object store's rather than the registry's. That changes nothing about
+// the rule: a 206 from storage still has to start where the request said, and
+// a 200 from storage is still the whole blob from its first byte. What it does
+// change is where a failure is reported against, which is why at is threaded
+// in — a storage URL has no business in an error message.
+func blobReadStart(at origin, resp *http.Response, off int64) (int64, error) {
 	if resp.StatusCode == http.StatusNotFound {
-		return 0, statusError(resp)
+		return 0, statusErrorAt(at, resp)
 	}
 
 	if off == 0 {
 		if resp.StatusCode != http.StatusOK {
-			return 0, statusError(resp)
+			return 0, statusErrorAt(at, resp)
 		}
 
 		return 0, nil
@@ -269,7 +300,7 @@ func blobReadStart(resp *http.Response, off int64) (int64, error) {
 
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
-		if err := checkRangeStart(resp, off); err != nil {
+		if err := checkRangeStart(at, resp, off); err != nil {
 			return 0, err
 		}
 
@@ -277,7 +308,7 @@ func blobReadStart(resp *http.Response, off int64) (int64, error) {
 	case http.StatusOK:
 		return 0, nil
 	default:
-		return 0, statusError(resp)
+		return 0, statusErrorAt(at, resp)
 	}
 }
 
@@ -286,21 +317,19 @@ func blobReadStart(resp *http.Response, off int64) (int64, error) {
 // would hand the caller a stream at the wrong position and silently corrupt
 // the file being assembled, so it is an error rather than something to seek
 // around.
-func checkRangeStart(resp *http.Response, offset int64) error {
+//
+// The message names the registry request at describes, whoever answered it.
+// The Content-Range value is quoted because it is a short header the far end
+// chose and the whole point of the failure is what it said.
+func checkRangeStart(at origin, resp *http.Response, offset int64) error {
 	contentRange := resp.Header.Get("Content-Range")
 
 	first, ok := rangeStart(contentRange)
 	if !ok {
-		return fmt.Errorf(
-			"%s %s: registry answered the range request with an unusable Content-Range %q",
-			resp.Request.Method, resp.Request.URL.Path, contentRange,
-		)
+		return fmt.Errorf("%s: the range request came back with an unusable Content-Range %q", at, contentRange)
 	}
 	if first != offset {
-		return fmt.Errorf(
-			"%s %s: asked for bytes from %d but the registry's range starts at %d",
-			resp.Request.Method, resp.Request.URL.Path, offset, first,
-		)
+		return fmt.Errorf("%s: asked for bytes from %d but the range starts at %d", at, offset, first)
 	}
 
 	return nil

@@ -440,22 +440,55 @@ func TestASpentBodyOnAVirginRepositoryProbesFirst(t *testing.T) {
 }
 
 // TestEveryRequestCrossesTheCallersTransport is the instrument's own gate.
-// The challenged request, the token exchange, and the re-issue all go out
-// through the client the caller supplied, which is what makes a tap on that
-// client a complete record and the no-leak checks it feeds non-vacuous.
+// The challenged request, the token exchange, the re-issue, and every hop of a
+// redirect all go out through the client the caller supplied, which is what
+// makes a tap on that client a complete record and the no-leak checks it feeds
+// non-vacuous.
+//
+// The redirect row is the one that could quietly stop being true. Both clients
+// this package derives are copies of the caller's, so a hop keeps the caller's
+// transport; a client built here instead — with its own transport, or with
+// none — would send a request nothing outside could see, and the counted
+// no-leak recipes would be counting an empty log.
 func TestEveryRequestCrossesTheCallersTransport(t *testing.T) {
 	t.Parallel()
 
-	fake := newAuthRegistry(t)
-	counter := &countingTransport{next: fake.server.Client().Transport}
+	t.Run("a challenge, an exchange, and the re-issue", func(t *testing.T) {
+		t.Parallel()
 
-	repo := fake.repository(t, WithHTTPClient(&http.Client{Transport: counter}))
+		fake := newAuthRegistry(t)
+		counter := &countingTransport{next: fake.server.Client().Transport}
 
-	_, _, err := repo.Manifests().Get(t.Context())
-	require.NoError(t, err)
+		repo := fake.repository(t, WithHTTPClient(&http.Client{Transport: counter}))
 
-	manifest := apiPrefix + authRepo + "/manifests/" + authTag
-	assert.Equal(t, []string{manifest, tokenPath, manifest}, counter.crossed())
+		_, _, err := repo.Manifests().Get(t.Context())
+		require.NoError(t, err)
+
+		manifest := apiPrefix + authRepo + "/manifests/" + authTag
+		assert.Equal(t, []string{manifest, tokenPath, manifest}, counter.crossed())
+	})
+
+	t.Run("and the hop a redirect adds", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newAuthRegistry(t)
+		store := newBlobStore(t)
+		fake.answerAs = redirectBlobReads(store, http.StatusTemporaryRedirect)
+
+		counter := &countingTransport{next: fake.server.Client().Transport}
+		repo := fake.repository(t, WithHTTPClient(&http.Client{Transport: counter}))
+
+		body, _, err := repo.Blobs().Get(t.Context(), authDigest(), 0)
+		require.NoError(t, err)
+
+		defer body.Close()
+
+		_, err = io.Copy(io.Discard, body)
+		require.NoError(t, err)
+
+		blob := apiPrefix + authRepo + "/blobs/" + authDigest().String()
+		assert.Equal(t, []string{blob, tokenPath, blob, storagePrefix + blob}, counter.crossed())
+	})
 }
 
 // TestThePackageBuildsNoClientOfItsOwn is a reviewable invariant rather than
