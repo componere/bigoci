@@ -42,6 +42,7 @@ nav:
       - Design: explanation/design.md
   - Reference:
       - Format: reference/format.md
+      - Benchmarks: reference/benchmarks.md
 
 plugins:
   - search

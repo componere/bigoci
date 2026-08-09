@@ -23,10 +23,19 @@ registries that demand a token for anonymous reads get the full exchange —
 and registries that hand blob reads to signed object storage are followed
 with a clean request that carries no credential.
 
-The manually-triggered cloud-registry conformance job is next. The
+The defaults are measured, not guessed: a benchmark matrix run on bare
+metal against zot, CNCF Distribution, and GHCR confirmed the 512 MiB part
+size and 4 workers, and closed the design's one open question — worker
+count does not self-tune (zero throttling observed; `WithWorkers` is the
+escape hatch). The numbers live in the
+[benchmarks reference](https://componere.github.io/bigoci/reference/benchmarks/).
+A manually-triggered conformance job exercises GHCR; the
 [design document](https://componere.github.io/bigoci/explanation/design/) and
 the [artifact format contract](https://componere.github.io/bigoci/reference/format/)
 are settled.
+
+Progress reporting, the API polish pass, and the first release remain
+before v0.1.0.
 
 ## Development
 
