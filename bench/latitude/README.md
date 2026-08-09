@@ -46,6 +46,14 @@ Everything below is ordered so the paid window stays as short as possible.
    `lsh servers list --project=<project>` before retrying — never leave a
    half-provisioned pair running unnoticed.
 
+   Two failure shapes observed live: the site can run out of the plan's
+   stock between the two creates (`SERVERS_OUT_OF_STOCK`) — create the
+   registry box by hand on a sibling plan in the *same site* and write
+   `hosts.env` yourself rather than moving sites; and a create can be
+   accepted and then reaped server-side (status "on" with an IP, then 404
+   minutes later) — the script now fails loudly when a box vanishes, and
+   the fix is simply to create it again.
+
 3. **Set up the registry box and measure the link:**
 
    ```sh
