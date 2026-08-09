@@ -37,12 +37,12 @@ grep -q '"name": "zot"' "$SPEC" && ENDPOINTS="$ENDPOINTS -endpoint zot=$REGISTRY
 grep -q '"name": "dist"' "$SPEC" && ENDPOINTS="$ENDPOINTS -endpoint dist=$REGISTRY_IP:5001"
 
 echo "== running (interrupt-safe: re-run this script to resume) =="
-# The remote command sees the credentials only through its environment. -t
-# ties the remote process to this terminal, so a local Ctrl-C reaches it.
-ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$CLIENT_IP" \
-  "cd $WORKDIR && \
-   GHCR_USERNAME='${GHCR_USERNAME:-}' GHCR_TOKEN='${GHCR_TOKEN:-}' \
-   ./bench run -spec spec.json -out $REMOTE_OUT -resume$ENDPOINTS" \
+# The credentials travel over stdin into the remote shell's variables —
+# interpolating them into the ssh argument string would print them in the
+# local and remote process listings for the whole run.
+printf '%s\n%s\n' "${GHCR_USERNAME:-}" "${GHCR_TOKEN:-}" | ssh "${SSH_OPTS[@]}" "$SSH_USER@$CLIENT_IP" \
+  "read -r GHCR_USERNAME && read -r GHCR_TOKEN && export GHCR_USERNAME GHCR_TOKEN; \
+   cd $WORKDIR && ./bench run -spec spec.json -out $REMOTE_OUT -resume$ENDPOINTS" \
   || echo "run exited non-zero; partial results still collected"
 
 echo "== collecting results =="

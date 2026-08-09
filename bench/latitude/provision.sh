@@ -22,6 +22,8 @@ if [[ -z "$SSH_KEYS" ]]; then
   exit 1
 fi
 
+# lsh renders create/get responses as single-element arrays; accept both
+# shapes so a CLI change in either direction cannot break provisioning.
 create() {
   local hostname="$1"
   lsh servers create \
@@ -32,7 +34,7 @@ create() {
     --hostname="$hostname" \
     --ssh_keys="$SSH_KEYS" \
     --billing=hourly \
-    --json | jq -r '.id // empty'
+    --json | jq -r 'if type == "array" then .[0] else . end | .id // empty'
 }
 
 echo "creating bigoci-bench-client and bigoci-bench-registry ($PLAN, $SITE, hourly)..."
@@ -46,20 +48,32 @@ fi
 echo "client=$CLIENT_ID registry=$REGISTRY_ID"
 
 # Wait for both to deploy. A fresh bare-metal deploy takes a few minutes;
-# poll well past that before declaring failure.
+# poll well past that before declaring failure. A create can also be
+# accepted and then reaped server-side (observed live: status "on" with an
+# IP, then 404 fifteen minutes later) — treat a vanished server as a hard
+# failure, never as "still deploying".
 ip_of() {
-  lsh servers get --id="$1" --json |
+  lsh servers get --id="$1" --json 2>/dev/null |
     jq -r '.. | objects | select(has("primary_ipv4")) | .primary_ipv4 // empty' | head -1
 }
 status_of() {
-  lsh servers get --id="$1" --json |
-    jq -r '.. | objects | select(has("status")) | .status // empty' | head -1
+  local raw
+  raw="$(lsh servers get --id="$1" --json 2>&1)"
+  if grep -q not_found <<<"$raw"; then
+    echo "gone"
+    return
+  fi
+  jq -r '.. | objects | select(has("status")) | .status // empty' <<<"$raw" | head -1
 }
 
 for _ in $(seq 1 90); do
   CLIENT_STATUS="$(status_of "$CLIENT_ID")"
   REGISTRY_STATUS="$(status_of "$REGISTRY_ID")"
   echo "client: ${CLIENT_STATUS:-?}  registry: ${REGISTRY_STATUS:-?}"
+  if [[ "$CLIENT_STATUS" == "gone" || "$REGISTRY_STATUS" == "gone" ]]; then
+    echo "a server was reaped after creation; check 'lsh servers list' and re-create the missing box" >&2
+    exit 1
+  fi
   if [[ "$CLIENT_STATUS" == "on" && "$REGISTRY_STATUS" == "on" ]]; then
     break
   fi
