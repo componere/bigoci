@@ -1,0 +1,12 @@
+{
+  "run_id": "smoke",
+  "targets": [
+    {"name": "zot", "endpoint": "localhost:5000", "plain_http": true, "repo_prefix": "bench"}
+  ],
+  "scenarios": ["cold-push", "warm-push", "cold-pull"],
+  "part_sizes": ["16MiB", "32MiB"],
+  "workers": [2, 4],
+  "file_sizes": ["64MiB"],
+  "iterations": 1,
+  "verify": "all"
+}

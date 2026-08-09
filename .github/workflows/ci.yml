@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-mod-${{ hashFiles('go.sum', 'cli/go.sum') }}
+          key: ${{ runner.os }}-go-mod-${{ hashFiles('go.sum', 'cli/go.sum', 'bench/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-mod-
 
@@ -56,18 +56,18 @@ jobs:
         uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('mise.lock', 'go.sum', 'cli/go.sum') }}-${{ github.run_id }}
+          key: ${{ runner.os }}-go-build-${{ hashFiles('mise.lock', 'go.sum', 'cli/go.sum', 'bench/go.sum') }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-go-build-${{ hashFiles('mise.lock', 'go.sum', 'cli/go.sum') }}-
+            ${{ runner.os }}-go-build-${{ hashFiles('mise.lock', 'go.sum', 'cli/go.sum', 'bench/go.sum') }}-
             ${{ runner.os }}-go-build-
 
       - name: Cache golangci-lint
         uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: ~/.cache/golangci-lint
-          key: ${{ runner.os }}-golangci-lint-${{ hashFiles('mise.lock', '.golangci.yml', 'go.sum', 'cli/go.sum') }}-${{ github.run_id }}
+          key: ${{ runner.os }}-golangci-lint-${{ hashFiles('mise.lock', '.golangci.yml', 'go.sum', 'cli/go.sum', 'bench/go.sum') }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-golangci-lint-${{ hashFiles('mise.lock', '.golangci.yml', 'go.sum', 'cli/go.sum') }}-
+            ${{ runner.os }}-golangci-lint-${{ hashFiles('mise.lock', '.golangci.yml', 'go.sum', 'cli/go.sum', 'bench/go.sum') }}-
             ${{ runner.os }}-golangci-lint-
 
       - name: Cache uv downloads

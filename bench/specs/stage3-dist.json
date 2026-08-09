@@ -1,0 +1,13 @@
+{
+  "run_id": "stage3",
+  "targets": [
+    {"name": "dist", "endpoint": "REGISTRY:5001", "plain_http": true, "repo_prefix": "bench"}
+  ],
+  "scenarios": ["cold-push", "cold-pull"],
+  "part_sizes": ["256MiB", "512MiB"],
+  "workers": [2, 4, 8],
+  "file_sizes": ["8GiB"],
+  "iterations": 3,
+  "verify": "first",
+  "fixture_dir": "fixtures"
+}
