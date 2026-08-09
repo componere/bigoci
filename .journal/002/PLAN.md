@@ -314,8 +314,12 @@ this phase bigoci works against GHCR with `docker login`, not just local zot.
       surfaces with an actionable message (`errors.Is` demonstrable via the
       CLI's exit path).
 - [ ] Manual: tagless (digest-only) push + pull round-trip against GHCR.
-- [ ] Automated gates: auth adapter integration tests; auth-enabled e2e in
+- [x] Automated gates: auth adapter integration tests; auth-enabled e2e in
       CI; conformance workflow runs green when triggered by hand.
+      *(2026-08-09: adapter/state-machine suites + htpasswd-zot and
+      bearer-gateway e2e run per commit since PRs #29/#30; conformance run
+      31323351318 green against real GHCR — all five rows passed, including
+      the counted no-leak gate and exit 6. Evidence: session 006 NOTES.)*
 
 ---
 

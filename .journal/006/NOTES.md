@@ -194,3 +194,18 @@ feat-presigned-redirects worktree, and a piped tail masked root:check's
 failure so the commit landed before diagnosis — harmless, lint was clean
 after cache clean, but: never pipe the check that gates a commit).
 Commit 5b889ea (verified, G).
+
+## 2026-08-09 09:30 — All four PRs merged; conformance green against real GHCR
+PR #31 squash-merged (master e49ce48). Hand-triggered conformance run
+31323351318: SUCCESS — all five rows passed against real GHCR in 8.6s
+(negative control refused; 8-part round trip byte-identical; the counted
+no-leak gate saw >=8 off-registry requests all auth=none with the
+challenge= and auth=bearer instrument controls present; digest round trip;
+wrong token exit 6). Cleanup deleted two package versions then hit
+GitHub's last-version deletion rule (continue-on-error, run green) — one
+version of ghcr.io/componere/bigoci/conformance remains; harmless by
+design, possible follow-up: delete the whole package when it is the last
+version. PLAN.md phase-5 automated-gates box checked with dated evidence.
+Remaining for phase close: the four manual PLAN.md gates plus DESIGN.md's
+gate 5 (long push outliving the token lifetime — BLOCKING). These need
+Josh: docker login ghcr.io + a private repo.
