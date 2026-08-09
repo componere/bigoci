@@ -138,3 +138,33 @@ must never construct a sentinel-matching error (expired presigned signature
 is transient, not ErrUnauthorized/ErrNotFound). T7 single-use-signature e2e
 and the gateway 302 row land here; design.md sharp-edges rewrite corrects
 the measured-false S3/GCS/Azure claim.
+
+## 2026-08-09 01:10 — PR 2 built, reviewed, fixed, opened
+wf_7e0edfda-e66: opus implementer (who hit a Docker outage — the four new
+container e2e rows shipped unexecuted and were flagged honestly) + three
+xhigh/high reviewers. No blockers; all findings applied by hand:
+- 3xx bodies never become error detail (statusDetail): servers render their
+  Location into redirect bodies, so a refused blob-PUT 307 was printing the
+  presigned URL verbatim (reproduced by the reviewer with an Apache-style
+  body). Uniform rule covers the token-exchange 302 echo too.
+- Upload-session Locations validated like redirect targets and the
+  credential stripped off-origin (reproduced harvest of Authorization + blob
+  bytes via a hostile session URL); session URLs never quoted (state= is
+  signed-class).
+- redirectError carries no body detail at all — S3 SignatureDoesNotMatch
+  echoes the CanonicalRequest incl. X-Amz-Security-Token (a live session
+  credential); storage fixture body now S3-shaped with planted sig so the
+  assertions exercise the real channel.
+- scrub() wired into do (token exchange at cross-host realm + session PUT
+  can be off-origin); off-origin unfollowable redirects report as the
+  store's answer, not "registry returned"; sameOrigin hostnames compare
+  case-insensitively; on-origin hop refusals routed through answer() (the
+  D8 machine bounds the loop, denied absorbing).
+- Docs: README status folded in; oci doc.go two-re-issues paragraph;
+  cli/README grep anchored to ^http> (was counting request+response lines);
+  refusal-vs-blind caveat; WithHTTPClient several-requests + no-jar clauses;
+  token no-follow exception documented.
+Full root:check + fresh -count=1 root e2e (25.8s) green including the
+previously-unexecuted rows. Commit 1aa6e99 (verified, G).
+Known stale text deliberately left: cli/redact.go:80 future-tense comment
+(C6 freezes the file) — noted in the PR body.
