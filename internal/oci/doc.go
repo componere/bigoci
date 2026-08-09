@@ -41,13 +41,27 @@
 // challenges costs nothing at all: no probe, no header, and not one extra
 // request.
 //
-// A refusal is the only thing that makes this package send a request a second
-// time, and only when answering the challenge changed what that request would
-// carry and the standard library says the body can be produced again. A blob
-// upload's body cannot, by construction, so a refusal in the middle of one
-// comes back marked worth repeating and the orchestrator opens the file
-// again. Nothing else here is ever repeated.
+// Two things make this package send a request a second time, and both are
+// the registry demanding a different request rather than failing to answer
+// one: a challenge, answered when it changed what the request would carry and
+// the standard library says the body can be produced again, and a redirect,
+// re-issued as the paragraph below describes. A blob upload's body cannot be
+// produced again, by construction, so a refusal in the middle of one comes
+// back marked worth repeating and the orchestrator opens the file again. No
+// identical request is ever repeated.
 //
-// The redirect handling a blob read needs on registries that offload their
-// content to presigned object storage arrives in a later phase.
+// Registries that keep their blob content in object storage answer a read
+// with a location rather than with bytes, and this package follows that
+// location itself instead of letting [net/http] do it. Automatic following is
+// off for every request; a read is re-issued up to three times, each time as a
+// request built from nothing and carrying two headers and no more. The
+// credential goes along only when the location is the registry itself —
+// same scheme, same host, same port — so a request to signed storage arrives
+// with no Authorization header and no cookie, and a location is never stored:
+// the next attempt asks the registry again and follows whatever fresh location
+// it sends. Beyond the registry, a refusal reads differently: a signature that
+// has expired looks like a 403 or a 404 and is worth another attempt, and
+// never means the caller's credentials or a missing artifact. No error this
+// package returns names a signed location; every one of them names the
+// registry request it started as.
 package oci

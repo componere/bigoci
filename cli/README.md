@@ -696,6 +696,45 @@ proves the grep would have found something: `auth=bearer` on the lines that
 carried one means the instrument was looking at authenticated requests, not at
 an empty log. A log where every line reads `auth=none` proves nothing at all.
 
+### No credential leaves for storage
+
+GHCR answers a blob read with a `307` at signed object storage, so a pull makes
+two requests per part: one to `ghcr.io`, and one to whatever host it named.
+The second is the one that matters, and **a pull that works says nothing about
+it** — that storage answers `200` to a request carrying the registry's bearer
+token exactly as happily as to a clean one. Docker Hub's CloudFront does the
+same. The log is the evidence, not the transfer:
+
+```
+./bin/bigoci pull -debug ghcr.io/you/model:v1 /tmp/back.bin 2>redirect.log
+grep '^http> ' redirect.log | grep -v ' https://ghcr.io/' >off-registry.log
+
+wc -l <off-registry.log                     # at least one line per part
+grep -cv 'auth=none' off-registry.log       # 0
+grep -c '^http> .*class=blob-read' redirect.log # two per part here: registry hop + storage read
+grep -c '^http> .*class=other' redirect.log # at least 1
+```
+
+Three counts, and all three have to hold:
+
+- **Presence.** There is at least one off-`ghcr.io` request line per part. A
+  count of zero is a pull that never left the registry, and every line below it
+  is then about nothing.
+- **Universality.** No off-registry line reads anything but `auth=none`. The
+  key is the host and the `auth=` field, never `class=`: what a storage URL's
+  path looks like is the storage provider's choice, so the same request lands
+  in `blob-read` at one registry and in `other` at the next. `class=` is
+  corroboration here, not the key.
+- **The instrument sees traffic.** At least one `class=other` request line
+  exists, which is the token exchange. Together with the `challenge=` field on
+  the `http<` line before it, that is the proof the tap is watching the
+  authenticated path — the same reason the recipe above wants one `auth=bearer`
+  line.
+
+Nothing in that log can carry a signature: the query of every URL is rendered
+with its values elided, and the library builds no error that names a signed
+location either.
+
 ### Resuming an interrupted pull
 
 Interrupt a pull part way through and read what the second one fetches. Start
@@ -788,13 +827,6 @@ a fixed byte would silently change nothing the one time in 256 it matches.
 One blob read, for the part the byte fell in, and the hashes match again: the
 part was refetched over the damage.
 
-### Forward pointers
-
-- **Redirects to object storage.** Registries that offload blob content answer
-  a blob read with a `307` and a `loc=` field naming signed storage. The hops
-  are visible today because the standard library re-issues them through the
-  same transport; the caveat below says what that does and does not prove.
-
 ## Honest caveats
 
 **`dur` is time to headers, not throughput.** On a `GET` of a large blob it is
@@ -802,14 +834,28 @@ time to first byte; the body streams afterwards and is not timed. On a `PUT` it
 is closer to the whole upload, because the server answers after reading the
 body. The two are not comparable, and neither is a throughput measurement.
 
-**Redirect hops are visible today, and that is contingent.** A registry that
-redirects blob reads to storage shows both hops, because the standard library
-re-issues the redirected request through the same transport. The library now
-authenticates and keeps the caller's transport outermost — token exchanges
-show up as `class=other` lines — but what a redirect hop carries is still the
-standard library's decision until the redirect phase derives its clean client
-from the caller's. A log with a `307` and no follow-up request line does not
-prove that no credential leaked — it proves the instrument went blind.
+**Redirect hops are visible, and what they carry is the library's decision.**
+A registry that redirects blob reads to storage shows both hops, because the
+library derives the client that follows a redirect from the caller's rather
+than building one of its own: the re-issue crosses this tap exactly as the
+first request did, and so do the token exchanges, which show up as
+`class=other` lines. What a hop carries is no longer the standard library's
+rule either — automatic following is off, and each hop is built fresh with a
+two-header allow-list. A log with a `307` and no follow-up request line
+means one of two things: the instrument went blind, or the library refused
+the location — an empty or userinfo-carrying `Location`, a plain-http
+downgrade, a fourth hop. The failure line is what tells you which: a refusal
+ends the run with an error naming the registry request, while a blind
+instrument shows a transfer that carried on regardless.
+
+**Against a redirecting registry, one part read is two requests.** The `307`
+from the registry is one and the read of the location it named is the other.
+Which class the second lands in depends on the path the storage provider
+chose: GHCR's signed URLs keep a `/blobs/` segment, so `blob-read=` counts two
+per part there, while a provider whose paths look different puts the same
+request in `other`. Either way, every count in the resume recipe above —
+`blob-read=` as the number of parts that were missing, one request per part —
+is true of the local zot it is written against and of nothing else.
 
 **The counters are HTTP-level inference, not library truth.** They are what an
 observer outside the library can honestly say. A count that disagrees with the

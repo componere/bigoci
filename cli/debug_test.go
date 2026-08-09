@@ -227,9 +227,11 @@ func TestTapLogsATransportFailureAsOneLine(t *testing.T) {
 	assert.Regexp(t, ` err="[^"]+"$`, log.failed[0])
 }
 
-// TestTapLogsBothHopsOfARedirect pre-proves the mechanism a later phase depends
-// on: a redirect to another host is visible as a second request, the standard
-// library strips the credential on the way, and the log says so.
+// TestTapLogsBothHopsOfARedirect pins the tap's own sightline: a redirect to
+// another host is visible as a second request line, and what that line's
+// auth= field says is evidence. The client here is a bare [net/http.Client]
+// on purpose — the tap must see hops whatever follows them, and the library
+// no longer lets the standard library follow at all.
 func TestTapLogsBothHopsOfARedirect(t *testing.T) {
 	t.Parallel()
 
@@ -256,7 +258,7 @@ func TestTapLogsBothHopsOfARedirect(t *testing.T) {
 	require.Len(t, log.received, 2)
 
 	assert.Contains(t, log.sent[0], "auth=bearer")
-	assert.Contains(t, log.sent[1], "auth=none", "the standard library strips a credential across hosts")
+	assert.Contains(t, log.sent[1], "auth=none", "a cross-host hop must show as auth=none, and the tap must see it")
 	assert.Contains(t, log.received[0], "status=307")
 	assert.Contains(t, log.received[0], `loc="http://localhost:`+targetPort+`/v2/team/m/blobs/sha256:ab"`)
 	assert.Contains(t, log.received[1], "status=200")

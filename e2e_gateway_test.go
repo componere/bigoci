@@ -161,6 +161,56 @@ func TestE2EBearerGatewaySurvivesTokensThatExpireMidTransfer(t *testing.T) {
 	assert.LessOrEqual(t, gate.log.most(classBlobGet), maxAttempts, "no part may be read more often than its budget")
 }
 
+// TestE2EBearerGatewayHandsBlobReadsToStorageWithoutTheToken is where the two
+// halves of a cloud registry meet.
+//
+// The gateway demands a bearer token, and then answers the reads it
+// authenticated with a location on another host. That is the only place a
+// registry credential and a third-party URL exist at the same moment, and the
+// question the row settles is what arrives at the third party: a request the
+// store would refuse outright if it carried the token, answered for every part
+// including the one that had to continue from an offset.
+func TestE2EBearerGatewayHandsBlobReadsToStorageWithoutTheToken(t *testing.T) {
+	const repo = "e2e/gateway-redirect"
+
+	reg := newZot(t)
+	store := newSignedStorage(t, reg.host)
+	store.cutAt = storageCut
+	gate := newRedirectingGateway(t, reg.host, store)
+	client := newClient(t, bigoci.WithPlainHTTP(), bigoci.WithCredentials(authUser, authPassword))
+
+	source := newRandomFile(t, multiSize)
+	dest := newPath(t, destName)
+
+	_, err := client.Push(
+		t.Context(), gate.at.taggedRef(repo, tag), bigoci.FromFile(source),
+		bigoci.WithPartSize(multiPartSize), bigoci.WithWorkers(gatewayWorkers),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Pull(
+		t.Context(), gate.at.taggedRef(repo, tag), bigoci.ToFile(dest), bigoci.WithWorkers(1),
+	))
+	assert.Equal(t, fileDigest(t, source), fileDigest(t, dest), "the pulled file must be byte-identical")
+
+	served := store.all()
+	require.NotEmpty(t, served, "the store was never asked for anything: this row proves nothing")
+
+	ranged := 0
+
+	for _, one := range served {
+		assert.False(t, one.credentialed, "the gateway's own token must not reach the location it named")
+
+		if one.ranged {
+			ranged++
+
+			assert.Equal(t, http.StatusPartialContent, one.status)
+		}
+	}
+
+	assert.Equal(t, 1, ranged, "the part whose body was cut continued with a range, and the store answered 206")
+}
+
 // gatewayAnswer is the token document the gateway's endpoint returns, in the
 // shape the distribution spec's token flow defines.
 type gatewayAnswer struct {
@@ -180,10 +230,11 @@ type gatewayAnswer struct {
 // refuses anything, so every refusal a row observes is this fixture's and its
 // meaning is exact.
 //
-// It deliberately does not redirect blob reads to storage. That is the other
-// half of a cloud registry's behavior, and it arrives with the phase that
-// implements it; this type is shaped so that adding it is a branch in
-// [gateway.ServeHTTP] and nothing else.
+// Given a store it also does the other half of what a cloud registry does:
+// authenticate a blob read and then answer it with a signed location on
+// somebody else's host. That row is here rather than beside the other redirect
+// rows because this is the only fixture where a redirect and a bearer token
+// meet, which is where a credential would leak from if one could.
 type gateway struct {
 	// at is the registry address rows aim their transfers at.
 	at zot
@@ -199,11 +250,18 @@ type gateway struct {
 	// lifespan is how many requests one token authenticates before the gateway
 	// treats it as expired, or gatewayForever for a token that never does.
 	lifespan int
+	// store is the object store blob reads are answered with a location at,
+	// nil for a gateway that serves them out of the registry behind it.
+	store *signedStorage
 
 	// mu guards everything below.
 	mu sync.Mutex
 	// issued is how many tokens the endpoint has handed out.
 	issued int
+	// signed is how many locations have been handed out. It doubles as the
+	// signature each one carries, so no two reads can be answered with the
+	// same location.
+	signed int
 	// refused is how many requests were turned away for carrying a token the
 	// gateway had stopped accepting.
 	refused int
@@ -240,6 +298,21 @@ func newGateway(t *testing.T, upstream string, lifespan int) *gateway {
 	return g
 }
 
+// newRedirectingGateway starts a bearer gateway whose tokens never expire and
+// whose blob reads are answered with a location at store.
+//
+// The store is installed before the fixture has served anything, which is the
+// same shape every other knob in these files takes: a row scripts the fixture,
+// then makes the transfer the row is about.
+func newRedirectingGateway(t *testing.T, upstream string, store *signedStorage) *gateway {
+	t.Helper()
+
+	g := newGateway(t, upstream, gatewayForever)
+	g.store = store
+
+	return g
+}
+
 // ServeHTTP answers one request: a token exchange, a challenge, or a proxied
 // registry request.
 func (g *gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -257,11 +330,35 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// A blob read the gateway has authenticated is answered with a location
+	// rather than with bytes, which is what a registry that keeps its content
+	// in object storage does. The token was spent above, so the read is as
+	// authenticated as any other; what happens to it after that is the
+	// client's decision about what a re-issued request may carry.
+	if class, _ := classifyRequest(req); g.store != nil && class == classBlobGet {
+		w.Header().Set("Location", g.sign(req))
+		w.WriteHeader(http.StatusFound)
+
+		return
+	}
+
 	// The token has done its job and the registry behind has no use for it.
 	// Stripping it here is what makes that registry's silence meaningful: it
 	// never sees a credential, so nothing it does can depend on one.
 	req.Header.Del(gatewayHeaderAuth)
 	g.proxy.ServeHTTP(w, req)
+}
+
+// sign returns the location a blob read is answered with: the store's address,
+// the blob's own path under the store's prefix, and a signature no other
+// location carries.
+func (g *gateway) sign(req *http.Request) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.signed++
+
+	return g.store.server.URL + storagePrefix + req.URL.Path + "?" + storageSigParam + "=" + strconv.Itoa(g.signed)
 }
 
 // tokens returns how many tokens the endpoint has issued.

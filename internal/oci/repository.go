@@ -31,12 +31,14 @@ const apiPrefix = "/v2/"
 
 // The two headers a credential travels in.
 const (
-	// headerAuthorization is the request header a credential rides in. Three
+	// headerAuthorization is the request header a credential rides in. Four
 	// places set it, and no more: [Repository.newRequest], [Repository.replay],
-	// and the token exchange's SetBasicAuth — which is safe because the
-	// request it authenticates is one this package built for the realm, never
-	// one that leaves for the registry or anywhere a caller named. That closed
-	// list is what makes "where can a credential go" a reviewable question.
+	// the token exchange's SetBasicAuth — which is safe because the request it
+	// authenticates is one this package built for the realm, never one that
+	// leaves for the registry or anywhere a caller named — and the same-origin
+	// arm of [Repository.nextHop], which carries it onto a re-issue only when
+	// the location the registry named is the registry itself. That closed list
+	// is what makes "where can a credential go" a reviewable question.
 	headerAuthorization = "Authorization"
 	// headerChallenge is the response header a registry states its
 	// authentication requirement in.
@@ -163,8 +165,15 @@ type bound struct {
 // use from several goroutines at once, which is what lets one repository
 // carry a transfer's parts in parallel.
 type Repository struct {
-	// client sends every request the repository makes.
+	// client sends every request the repository makes to the registry itself.
+	// It is the caller's client with redirect following turned off, so a 3xx
+	// comes back to be decided on here rather than being followed by rules
+	// this package did not write.
 	client *http.Client
+	// redirect sends the re-issue of a request a redirect moved. It is the
+	// same client again with no cookie jar, so nothing the registry set in one
+	// travels to a host the registry named.
+	redirect *http.Client
 	// scheme is the URL scheme, "https" or "http".
 	scheme string
 	// host is the registry, with a port when the reference named one.
@@ -197,6 +206,14 @@ type Repository struct {
 // The repository talks https with a client built on
 // [net/http.DefaultTransport]. [WithPlainHTTP] and [WithHTTPClient] change
 // that.
+//
+// Two clients are derived from whichever one is in force, and the caller's own
+// is never touched: [net/http.Client] is four exported fields and no hidden
+// state, so copying the struct copies all of it. One turns redirect following
+// off, which is how this package rather than [net/http] decides what a
+// re-issued request may carry; the other drops the cookie jar as well, and
+// sends the re-issues. Everything still goes out through the caller's
+// transport, so a tap on it sees every request bigoci makes.
 func NewRepository(ref string, opts ...Option) (*Repository, error) {
 	named, err := reference.ParseNamed(ref)
 	if err != nil {
@@ -217,8 +234,15 @@ func NewRepository(ref string, opts ...Option) (*Repository, error) {
 		opt(&applied)
 	}
 
+	request := *applied.client
+	request.CheckRedirect = refuseRedirect
+
+	redirect := request
+	redirect.Jar = nil
+
 	repo := &Repository{
-		client:   applied.client,
+		client:   &request,
+		redirect: &redirect,
 		scheme:   applied.scheme,
 		host:     reference.Domain(named),
 		name:     reference.Path(named),
@@ -261,9 +285,10 @@ func (r *Repository) endpoint(path string) *url.URL {
 //
 // Authenticating is a pre-condition of a request rather than a recovery from
 // one: what a request must carry is worked out before it is built, and the
-// header is set here and nowhere else but the one re-issue a challenge itself
-// demands. A registry that has not challenged asks for nothing, so nothing is
-// set and nothing extra is sent.
+// header is set here and nowhere else but the two re-issues the registry
+// itself asks for — the one a challenge demands, and the one a redirect back
+// to the registry's own origin demands. A registry that has not challenged
+// asks for nothing, so nothing is set and nothing extra is sent.
 func (r *Repository) newRequest(
 	ctx context.Context,
 	method string,
@@ -296,10 +321,10 @@ func (r *Repository) newRequest(
 // send sends req and reports the registry's verdict on it back to the auth
 // state.
 //
-// Everything but a refusal proves the credential the request carried and
-// comes straight back with its body open, exactly as [Repository.do] returned
-// it. A refusal is the registry demanding a different request, which is the
-// one thing that makes this package send a second one.
+// A refusal is the registry demanding a different request, which is one of the
+// two things that make this package send a second one. Everything else proves
+// the credential the request carried and goes to [Repository.accepted], which
+// hands back the response unless the registry named somewhere else to get it.
 func (r *Repository) send(req *http.Request) (*http.Response, error) {
 	resp, err := r.do(req)
 	if err != nil {
@@ -310,7 +335,38 @@ func (r *Repository) send(req *http.Request) (*http.Response, error) {
 		return r.answer(req, resp)
 	}
 
-	r.auth.answered(req.Header.Get(headerAuthorization))
+	return r.accepted(req, resp, req.Header.Get(headerAuthorization))
+}
+
+// accepted records that the registry answered a request rather than refusing
+// it, and follows the answer when the answer is a location instead of content.
+//
+// A redirect proves a credential exactly as a 200 does: a registry that did
+// not like what the request carried would have said so rather than pointing
+// somewhere. presented is the header the request that got this answer carried,
+// which is what the auth state marks as working.
+func (r *Repository) accepted(req *http.Request, resp *http.Response, presented string) (*http.Response, error) {
+	r.auth.answered(presented)
+
+	if isRedirect(resp.StatusCode) {
+		followed, err := r.follow(originOf(req), req, resp)
+		if err != nil {
+			return nil, err
+		}
+
+		// A refusal that comes back from a chain is on the registry's own
+		// origin by construction — anything off it classified through the
+		// off-origin table inside follow — so it is the registry speaking,
+		// and it gets the same answer a refusal of the first request gets.
+		// The replay inside re-sends the original request, which a followed
+		// method guarantees is bodyless, and the auth state bounds the loop
+		// the way it bounds every refusal: denied is absorbing.
+		if isRefusal(followed.StatusCode) {
+			return r.answer(req, followed)
+		}
+
+		return followed, nil
+	}
 
 	return resp, nil
 }
@@ -397,9 +453,7 @@ func (r *Repository) replay(req *http.Request, header string) (*http.Response, e
 		return nil, r.auth.deny(req.Method, header, statusError(resp))
 	}
 
-	r.auth.answered(header)
-
-	return resp, nil
+	return r.accepted(second, resp, header)
 }
 
 // do sends req and reports a transport failure against the method and path it
@@ -416,7 +470,13 @@ func (r *Repository) replay(req *http.Request, header string) (*http.Response, e
 func (r *Repository) do(req *http.Request) (*http.Response, error) {
 	resp, err := r.client.Do(req)
 	if err != nil {
-		failure := fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, err)
+		// Scrubbed unconditionally: [net/http.Client.Do] wraps every failure
+		// in a [net/url.Error] that renders its URL whole, and two requests
+		// that pass through here can be off the registry's origin — a token
+		// exchange at a cross-host realm, and a blob upload at the session
+		// URL the registry named — where the query is signed state. The
+		// method and path prefix already say which request failed.
+		failure := fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, scrub(err))
 		if req.Context().Err() != nil {
 			return nil, failure
 		}
@@ -482,7 +542,10 @@ func boundManifest(named reference.Named) (bound, error) {
 type StatusError struct {
 	// Method is the HTTP method of the request that failed.
 	Method string
-	// Path is the request path on the registry.
+	// Path is the request path on the registry, and always that: a request the
+	// registry redirected somewhere else is reported against the path that was
+	// asked for, never against the location it was sent to. A signed URL
+	// therefore has no way into this field, and neither has its query.
 	Path string
 	// Status is the HTTP status code the registry answered with.
 	Status int
@@ -529,22 +592,37 @@ func (e *StatusError) Is(target error) bool {
 }
 
 // statusError reports a response whose status the adapter did not expect,
-// classified for the retry policy on the way out. It reads the body for the
-// error detail, which also drains it for the close that follows.
-//
-// The classification lives here because this is the one place every
-// unexpected status passes through, which is what keeps the
-// transient-or-terminal split a single table instead of a decision repeated
-// at every endpoint. A transient status still gets its detail read, so a
-// 503's body reaches the message and the connection still goes back in the
-// pool.
+// against the request that produced it. It is for the endpoints a request
+// never leaves: a write, an upload session, a token exchange. Everything a
+// redirect can move reports through [statusErrorAt] instead.
 func statusError(resp *http.Response) error {
+	return statusErrorAt(originOf(resp.Request), resp)
+}
+
+// statusErrorAt reports a response whose status the adapter did not expect,
+// against the registry request at names, classified for the retry policy on
+// the way out. It reads the body for the error detail, which also drains it
+// for the close that follows.
+//
+// The classification lives here because this is the one place every unexpected
+// status from the registry passes through, which is what keeps the
+// transient-or-terminal split a single table instead of a decision repeated at
+// every endpoint. A transient status still gets its detail read, so a 503's
+// body reaches the message and the connection still goes back in the pool. A
+// redirect's does not: see [statusDetail].
+//
+// The origin is threaded in rather than read off the response because the
+// response may have come from somewhere else entirely: after a re-issue,
+// resp.Request is the request that went to the location the registry named,
+// and rendering its URL would print a signature. What at holds was fixed
+// before anything was sent.
+func statusErrorAt(at origin, resp *http.Response) error {
 	err := &StatusError{
-		Method:     resp.Request.Method,
-		Path:       resp.Request.URL.Path,
+		Method:     at.method,
+		Path:       at.path,
 		Status:     resp.StatusCode,
 		RetryAfter: retryAfter(resp),
-		Detail:     errorDetail(resp.Body),
+		Detail:     statusDetail(resp),
 	}
 
 	if transientStatus(err.Status) {
@@ -552,6 +630,22 @@ func statusError(resp *http.Response) error {
 	}
 
 	return err
+}
+
+// statusDetail reads a failed response's body for the error message — unless
+// the status is a redirect. A 3xx body is a server's courtesy rendering of
+// its own Location header, which for a blob read is a presigned URL, and an
+// error is no place for one: the status and the method already say
+// everything a redirect this package refused can usefully say. The body is
+// drained instead, so the connection still goes back in the pool.
+func statusDetail(resp *http.Response) string {
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		drain(resp.Body)
+
+		return ""
+	}
+
+	return errorDetail(resp.Body)
 }
 
 // errorDetail reads the first errorBodyLimit bytes of a failed response body

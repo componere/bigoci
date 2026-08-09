@@ -67,17 +67,37 @@ type TransferOption interface {
 // WithHTTPClient sends every registry request with client instead of the
 // default one.
 //
-// This is the seam for timeouts, proxies, connection pool tuning, and — once
-// bigoci grows authentication — an authenticating
-// [net/http.RoundTripper]. A nil client is ignored, so a caller may pass one
-// through unconditionally.
+// This is the seam for timeouts, proxies, connection pool tuning, and a
+// credential source bigoci does not have — an authenticating
+// [net/http.RoundTripper] such as go-containerregistry's keychain. A nil
+// client is ignored, so a caller may pass one through unconditionally.
 //
 // bigoci retries failed transfers itself, so a transport that also retries
 // multiplies the schedule: the attempts a part gets become the product of the
 // two counts, and the waits between them stack. A client Timeout bounds each
-// attempt rather than the transfer, and an attempt that times out is retried
-// with a fresh window — so the deadline a caller means to put on the whole
-// transfer belongs on the context, not on the client.
+// request rather than the transfer or even one attempt of it — an attempt
+// that authenticates and follows a redirect chain makes several requests,
+// each with a fresh window — so the deadline a caller means to put on the
+// whole transfer belongs on the context, not on the client.
+//
+// A transport that adds Authorization unconditionally will add it to the
+// re-issue of a redirect too. bigoci strips the header on its way to a host
+// the registry named, but a transport sits below that decision by
+// construction: whatever it sets, it sets on the request bigoci already
+// cleaned. Large registries answer a blob read with a redirect to object
+// storage on a URL that is already signed, so a credential added there is a
+// credential in somebody else's logs, on a request that would have worked
+// without it. The fix is a host check in the transport — set the header only
+// when req.URL.Host is the registry the transport was built for, comparing
+// hosts and not domains. The authentication how-to shows it in full.
+//
+// bigoci copies this client rather than using it, and never writes to the
+// original: a program that shares one client with the rest of its work gets it
+// back exactly as it handed it over. The copies keep the transport and the
+// timeout, and set a redirect policy of their own — bigoci decides what a
+// re-issued request may carry, which is the whole of the paragraph above. The
+// copy that follows a redirect also carries no cookie jar, so nothing a
+// registry set in one reaches the host it redirected to.
 func WithHTTPClient(client *http.Client) Option {
 	return func(s *clientSettings) {
 		if client != nil {
