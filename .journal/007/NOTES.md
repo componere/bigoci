@@ -172,3 +172,27 @@ network-free — the honest ceiling story for w1.
 Runbook fixes queued for a fix(bench) PR: provision.sh jq array bug
 (`.[0].id`), poll-for-evaporation (a create can be accepted then reaped —
 sv_BoQ45AvrraMYA), run.sh credentials via stdin, README notes. Then PR 2.
+
+## 2026-08-09 15:31 — Phase 6 complete: all three PRs merged
+Master now carries the full phase: #32 (harness, 92e7d52), #37 (runbook
+hardening, f98a380), #38 (measured defaults, 1070793) — three PRs against
+the plan's two; the extra fix PR carries what the live session taught the
+scripts, kept separate so the chore stays a chore. CI green on all three;
+every commit signed under the verified identity; `git ls-files .journal`
+empty on master.
+
+PR #38's substance: DefaultPartSize/DefaultWorkers keep 512MiB/4 with
+godocs rewritten from "provisional" to measured (linking the new
+docs/reference/benchmarks.md page, now in the mkdocs nav); design.md's
+Defaults table cites the matrix and Open Questions now reads "None
+remain" with the adaptive-concurrency NO backed by the zero-throttle
+data; README status caught up (it still claimed the conformance job was
+"next").
+
+PLAN.md phase-6 boxes all checked with dated evidence (b2d5ee8),
+including the amended nightly criterion (manual-only by decision).
+Teardown verified twice: `lsh servers list` empty, zero bigoci-bench
+packages on GHCR. Total measured spend: ~2h × two boxes ≈ $4.
+
+Phase 7 (progress reporting, error-contract audit, docs set, v0.1.0) is
+all that remains.
