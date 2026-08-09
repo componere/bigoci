@@ -48,7 +48,7 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 		return false, err
 	}
 
-	resp, err := b.repo.do(req)
+	resp, err := b.repo.send(req)
 	if err != nil {
 		return false, err
 	}
@@ -91,7 +91,7 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.Read
 		req.Header.Set("Range", rangeFrom(off))
 	}
 
-	resp, err := b.repo.do(req)
+	resp, err := b.repo.send(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -142,7 +142,7 @@ func (b *Blobs) openUpload(ctx context.Context) (*url.URL, error) {
 		return nil, err
 	}
 
-	resp, err := b.repo.do(req)
+	resp, err := b.repo.send(req)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func (b *Blobs) completeUpload(
 	req.ContentLength = size
 	req.Header.Set("Content-Type", mediaTypeBlob)
 
-	resp, err := b.repo.do(req)
+	resp, err := b.repo.send(req)
 	if err != nil {
 		return err
 	}

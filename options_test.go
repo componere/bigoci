@@ -94,3 +94,18 @@ func TestWithWorkersConfiguresBothDirections(t *testing.T) {
 	assert.FileExists(t, dest)
 	assert.Equal(t, 1, reg.peakTransfers(), "one worker moves the parts of both directions one at a time")
 }
+
+// TestNewWithDockerCredentialsOnAMachineWithNoHome pins the zero-config
+// contract for the environment a scratch container has: no $DOCKER_CONFIG and
+// no home directory is a machine with no configuration, which is the
+// anonymous case rather than an error — a public pull must not need a home.
+func TestNewWithDockerCredentialsOnAMachineWithNoHome(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", "")
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+
+	client, err := bigoci.New(bigoci.WithDockerCredentials())
+
+	require.NoError(t, err, "a machine that cannot name its configuration has none, and none is not an error")
+	require.NotNil(t, client)
+}

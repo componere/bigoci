@@ -68,6 +68,21 @@ const (
 // that died takes its pipes with it.
 const helperWaitDelay = 15 * time.Second
 
+// credentialEnv returns the environment variables a credential lookup reads:
+// the Docker configuration directory, and nothing else.
+//
+// DOCKER_CONFIG alone is a complete gate, because the library consults a home
+// directory only when that variable names nothing — and [runTests] always
+// makes it name an empty directory, which every helper child carries too, so
+// a transfer in this package resolves every registry to the anonymous
+// credential unless the row that ran it planted one. HOME and USERPROFILE are
+// deliberately left alone: testcontainers resolves rootless Docker sockets
+// and its own image-pull credentials through them, and redirecting the home
+// of the whole test binary would break the registries these tests stand up.
+func credentialEnv() []string {
+	return []string{"DOCKER_CONFIG"}
+}
+
 // TestMain runs one transfer and exits when the environment asks for a helper
 // child, and the package's tests otherwise.
 //
@@ -77,12 +92,49 @@ const helperWaitDelay = 15 * time.Second
 // to assert anything. Re-execing the test binary is the cheapest honest way to
 // get one: the child is the same code, built the same way, talking to the same
 // registry, and it never reaches [testing.M.Run], so it runs no test.
+//
+// The ordinary run also isolates the credential environment, which every row
+// that authenticates depends on: the rows that mean to transfer anonymously
+// have to be unable to find a real credential, and the rows that plant one
+// have to be the only thing the lookup can see.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperModeEnv); mode != "" {
 		os.Exit(runHelper(mode))
 	}
 
-	os.Exit(m.Run())
+	os.Exit(runTests(m))
+}
+
+// runTests points the credential environment at a directory that holds
+// nothing, runs the package's tests, and returns the status the process should
+// leave with.
+//
+// PATH and the home variables are left exactly as they are, unlike the CLI
+// package's isolation: these tests start registries with testcontainers,
+// which finds the docker command on PATH and the Docker endpoint and its own
+// pull credentials through the home. Nothing here names a credential helper,
+// and DOCKER_CONFIG being set means no bigoci lookup ever reaches a home.
+//
+// The status travels through a variable rather than straight into [os.Exit] so
+// the temporary directory is still removed on the way out.
+func runTests(m *testing.M) int {
+	dir, err := os.MkdirTemp("", "bigoci-e2e-test")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isolate the credential environment: %v\n", err)
+
+		return helperFailed
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	for _, name := range credentialEnv() {
+		if err := os.Setenv(name, dir); err != nil {
+			fmt.Fprintf(os.Stderr, "isolate %s: %v\n", name, err)
+
+			return helperFailed
+		}
+	}
+
+	return m.Run()
 }
 
 // runHelper runs the one transfer the environment describes and returns the
@@ -192,10 +244,14 @@ type helperSpec struct {
 // than inherited so that nothing about the parent's test run — its flags, its
 // coverage directory, its own helper variables — can reach the child.
 //
-// The one exception is the Go runtime's own knobs. A maintainer chasing a
-// scheduling bug in a kill row reaches for GOMAXPROCS or GODEBUG, and an
-// environment that silently dropped them would perturb only the parent while
-// the process actually being killed ran untouched.
+// Two sets of variables are carried through anyway. The Go runtime's own knobs
+// come first: a maintainer chasing a scheduling bug in a kill row reaches for
+// GOMAXPROCS or GODEBUG, and an environment that silently dropped them would
+// perturb only the parent while the process actually being killed ran
+// untouched. The credential variables come second, and they are carried for
+// the opposite reason: [runTests] pointed them at an empty directory, and a
+// child that inherited none of them would look for a configuration under the
+// home of whoever ran the tests.
 func (s helperSpec) env() []string {
 	env := []string{
 		helperModeEnv + "=" + s.mode,
@@ -205,7 +261,8 @@ func (s helperSpec) env() []string {
 		helperWorkersEnv + "=" + strconv.Itoa(s.workers),
 	}
 
-	for _, knob := range []string{"GOMAXPROCS", "GODEBUG", "GOTRACEBACK", "GORACE"} {
+	knobs := []string{"GOMAXPROCS", "GODEBUG", "GOTRACEBACK", "GORACE"}
+	for _, knob := range append(knobs, credentialEnv()...) {
 		if value, ok := os.LookupEnv(knob); ok {
 			env = append(env, knob+"="+value)
 		}

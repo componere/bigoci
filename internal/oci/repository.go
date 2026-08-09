@@ -29,6 +29,20 @@ const (
 // apiPrefix is the path prefix every distribution-spec endpoint hangs off.
 const apiPrefix = "/v2/"
 
+// The two headers a credential travels in.
+const (
+	// headerAuthorization is the request header a credential rides in. Three
+	// places set it, and no more: [Repository.newRequest], [Repository.replay],
+	// and the token exchange's SetBasicAuth — which is safe because the
+	// request it authenticates is one this package built for the realm, never
+	// one that leaves for the registry or anywhere a caller named. That closed
+	// list is what makes "where can a credential go" a reviewable question.
+	headerAuthorization = "Authorization"
+	// headerChallenge is the response header a registry states its
+	// authentication requirement in.
+	headerChallenge = "WWW-Authenticate"
+)
+
 // errorBodyLimit caps how many bytes of a response body this package reads
 // when it is not the content the caller asked for: the detail quoted in an
 // error, and the drain that lets a connection go back in the pool. Registries
@@ -91,6 +105,12 @@ type settings struct {
 	client *http.Client
 	// scheme is the URL scheme, https unless [WithPlainHTTP] changes it.
 	scheme string
+	// creds resolves the credential a challenge is answered with, nil when the
+	// caller configured none.
+	creds Credentials
+	// now reads the clock token expiry is measured on, [time.Now] unless a
+	// test replaced it.
+	now func() time.Time
 }
 
 // WithHTTPClient sends the repository's requests with client instead of the
@@ -110,6 +130,20 @@ func WithHTTPClient(client *http.Client) Option {
 func WithPlainHTTP() Option {
 	return func(s *settings) {
 		s.scheme = schemeHTTP
+	}
+}
+
+// withClock reads the clock token expiry is measured on from now instead of
+// [time.Now]. A nil function is ignored.
+//
+// It exists for the tests, which have to watch a token cross its expiry
+// without waiting a minute for it, and it is unexported because a caller has
+// no business moving the clock a live transfer authenticates against.
+func withClock(now func() time.Time) Option {
+	return func(s *settings) {
+		if now != nil {
+			s.now = now
+		}
 	}
 }
 
@@ -139,6 +173,10 @@ type Repository struct {
 	name string
 	// manifest is the reference the manifest endpoints are bound to.
 	manifest bound
+	// auth is what the registry challenged with and the tokens acquired for
+	// it. It is the one part of a repository that changes after construction,
+	// and it guards itself.
+	auth *authState
 }
 
 // NewRepository returns the repository ref names.
@@ -170,18 +208,25 @@ func NewRepository(ref string, opts ...Option) (*Repository, error) {
 		return nil, fmt.Errorf("reference %q: %w", ref, err)
 	}
 
-	applied := settings{client: &http.Client{Transport: http.DefaultTransport}, scheme: schemeHTTPS}
+	applied := settings{
+		client: &http.Client{Transport: http.DefaultTransport},
+		scheme: schemeHTTPS,
+		now:    time.Now,
+	}
 	for _, opt := range opts {
 		opt(&applied)
 	}
 
-	return &Repository{
+	repo := &Repository{
 		client:   applied.client,
 		scheme:   applied.scheme,
 		host:     reference.Domain(named),
 		name:     reference.Path(named),
 		manifest: manifest,
-	}, nil
+	}
+	repo.auth = newAuthState(repo, applied.creds, applied.now)
+
+	return repo, nil
 }
 
 // Blobs returns the adapter for this repository's blob endpoints.
@@ -211,8 +256,14 @@ func (r *Repository) endpoint(path string) *url.URL {
 }
 
 // newRequest builds a request to endpoint. Every request this package sends
-// is built here, which is what guarantees they all carry the caller's
-// context.
+// is built here, which is what guarantees they all carry the caller's context
+// and whatever credential the registry has asked for.
+//
+// Authenticating is a pre-condition of a request rather than a recovery from
+// one: what a request must carry is worked out before it is built, and the
+// header is set here and nowhere else but the one re-issue a challenge itself
+// demands. A registry that has not challenged asks for nothing, so nothing is
+// set and nothing extra is sent.
 func (r *Repository) newRequest(
 	ctx context.Context,
 	method string,
@@ -224,7 +275,131 @@ func (r *Repository) newRequest(
 		return nil, fmt.Errorf("build %s request for %s: %w", method, endpoint.Path, err)
 	}
 
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		if resolved := r.auth.resolve(ctx); resolved != nil {
+			return nil, resolved
+		}
+	}
+
+	header, err := r.auth.authorize(ctx, method)
+	if err != nil {
+		return nil, err
+	}
+
+	if header != "" {
+		req.Header.Set(headerAuthorization, header)
+	}
+
 	return req, nil
+}
+
+// send sends req and reports the registry's verdict on it back to the auth
+// state.
+//
+// Everything but a refusal proves the credential the request carried and
+// comes straight back with its body open, exactly as [Repository.do] returned
+// it. A refusal is the registry demanding a different request, which is the
+// one thing that makes this package send a second one.
+func (r *Repository) send(req *http.Request) (*http.Response, error) {
+	resp, err := r.do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if isRefusal(resp.StatusCode) {
+		return r.answer(req, resp)
+	}
+
+	r.auth.answered(req.Header.Get(headerAuthorization))
+
+	return resp, nil
+}
+
+// answer decides what a refusal is worth and acts on it.
+//
+// A 403 stating no requirement is a permission answer, or something standing
+// in front of the registry — presenting the same identity again cannot change
+// it, so it ends here. Everything else carries a challenge, and answering it
+// either changes what the next request will present or it does not; the auth
+// state is what knows which, and it says so by returning a header or an
+// error.
+//
+// A request whose body can only be sent once is the case this cannot rescue.
+// The credential is refreshed all the same, so the next attempt goes out with
+// it, and the failure comes back marked worth repeating: the orchestrator
+// opens the file again, which is the only place a second copy of those bytes
+// exists.
+func (r *Repository) answer(req *http.Request, resp *http.Response) (*http.Response, error) {
+	defer resp.Body.Close()
+
+	status := statusError(resp)
+
+	raw := challengeHeader(resp)
+	if raw == "" && resp.StatusCode == http.StatusForbidden {
+		return nil, status
+	}
+
+	// A challenge nobody can answer still happened to a request the registry
+	// answered, so the refusal it sent stays underneath: the status a caller
+	// reaches through errors.As is the registry's, and the message says what
+	// was wrong with the challenge after saying what the registry said.
+	asked, err := parseChallenge(raw)
+	if err != nil {
+		return nil, &authError{cause: status, reason: err.Error()}
+	}
+
+	sent := req.Header.Get(headerAuthorization)
+
+	header, err := r.auth.refused(req.Context(), req.Method, sent, asked, status)
+	if err != nil {
+		return nil, err
+	}
+
+	if !replayable(req) {
+		return nil, retry.Transient(&authError{
+			cause:  status,
+			reason: "the credential was refreshed, but this request's body can only be sent once",
+		}, 0)
+	}
+
+	return r.replay(req, header)
+}
+
+// replay sends a refused request a second time, carrying what the auth state
+// acquired in answer to the challenge.
+//
+// This is the only place in bigoci where a request goes out twice, and it is
+// not a retry: no attempt is spent and no wait is taken, because the registry
+// asked for a different request rather than failing to answer this one. It
+// happens at most once — a refusal of the refreshed credential is the scope's
+// verdict, not another chance.
+func (r *Repository) replay(req *http.Request, header string) (*http.Response, error) {
+	second := req.Clone(req.Context())
+	second.Header.Set(headerAuthorization, header)
+
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: rewind the request body: %w", req.Method, req.URL.Path, err)
+		}
+
+		second.Body = body
+	}
+
+	resp, err := r.do(second)
+	if err != nil {
+		return nil, err
+	}
+
+	if isRefusal(resp.StatusCode) {
+		defer resp.Body.Close()
+
+		return nil, r.auth.deny(req.Method, header, statusError(resp))
+	}
+
+	r.auth.answered(header)
+
+	return resp, nil
 }
 
 // do sends req and reports a transport failure against the method and path it
@@ -250,6 +425,29 @@ func (r *Repository) do(req *http.Request) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+// isRefusal reports whether a status is the registry refusing a request
+// rather than answering it.
+//
+// Both statuses point at the same thing: the credential the request carried,
+// or the one it did not carry. A registry refuses a credential it could not
+// read with either of them, and one that falls short of the access asked for
+// with either of them, so both get the same chance to be answered and neither
+// proves a token.
+func isRefusal(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+// replayable reports whether [net/http] can produce req's body a second time.
+//
+// It is a fact the standard library computes rather than a judgement this
+// package makes: [net/http.NewRequestWithContext] fills in GetBody for the
+// readers it can rewind and leaves it nil for everything else. The one
+// request that must never be sent twice — a blob upload streaming a section
+// of a file — is exactly the one it refuses to rewind.
+func replayable(req *http.Request) bool {
+	return req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
 }
 
 // boundManifest returns the manifest reference named addresses. A reference

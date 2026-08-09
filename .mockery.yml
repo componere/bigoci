@@ -1,13 +1,15 @@
-# mockery: mock generation for the transfer ports (AGENTS.md T2/T3).
+# mockery: mock generation for the ports (AGENTS.md T2/T3).
 #
-# Every mock in this repository is generated; none is hand-written. The ports
-# live in internal/transfer, but the mocks live under the adapter that
-# implements each one, in a `mocks` subpackage, so a test importing
-# internal/oci/mocks gets the registry doubles and one importing
-# internal/file/mocks gets the file doubles.
+# Every mock in this repository is generated; none is hand-written. A port is
+# declared by the package that consumes it — internal/transfer for the two
+# registry ports and the two file ports, internal/oci for the credentials one —
+# and its mock lives under the adapter that implements it, in a `mocks`
+# subpackage, so a test importing internal/oci/mocks gets the registry doubles,
+# one importing internal/file/mocks gets the file doubles, and one importing
+# internal/auth/mocks gets the credential double.
 #
-# Regenerate with `mise x -- mockery` (or `moon run root:mocks`) after
-# changing internal/transfer/ports.go, and commit the result.
+# Regenerate with `mise x -- mockery` (or `moon run root:mocks`) after changing
+# a port, and commit the result.
 
 # Only the interfaces listed below are mocked; nothing is generated wholesale.
 all: false
@@ -45,3 +47,11 @@ packages:
         config:
           dir: internal/file/mocks
           filename: sink.go
+  github.com/componere/bigoci/internal/oci:
+    interfaces:
+      # Credential port: implemented by internal/auth, the Docker
+      # configuration and credential-helper adapter.
+      Credentials:
+        config:
+          dir: internal/auth/mocks
+          filename: credentials.go

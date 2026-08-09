@@ -62,7 +62,7 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 	}
 	req.Header.Set("Accept", ocispec.MediaTypeImageManifest)
 
-	resp, err := m.repo.do(req)
+	resp, err := m.repo.send(req)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, err
 	}
@@ -106,7 +106,7 @@ func (m *Manifests) Put(ctx context.Context, mediaType string, body []byte) (dig
 	}
 	req.Header.Set("Content-Type", mediaType)
 
-	resp, err := m.repo.do(req)
+	resp, err := m.repo.send(req)
 	if err != nil {
 		return "", err
 	}

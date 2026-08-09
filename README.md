@@ -17,9 +17,11 @@ failures — a dropped connection, a 429, or a 5xx costs a bounded number of
 retries, not the transfer. Transfers resume: an interrupted pull re-run
 fetches only the parts the partial file does not already hold, a broken
 stream is continued from the byte it reached, and a re-push skips every part
-the registry already has. Registry access is anonymous.
+the registry already has. Transfers authenticate with the credentials
+`docker login` stores — anonymous stays the zero-config default, and
+registries that demand a token for anonymous reads get the full exchange.
 
-Authentication is next. The
+Presigned-redirect handling is next. The
 [design document](https://componere.github.io/bigoci/explanation/design/) and
 the [artifact format contract](https://componere.github.io/bigoci/reference/format/)
 are settled.

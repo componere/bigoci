@@ -216,8 +216,15 @@ func sentinelExits() []sentinelExit {
 // With "-debug" off no [net/http.Client] is passed at all, so the library runs
 // on its own default one: that default path is the thing worth demonstrating,
 // and a client installed to look at it would no longer be it.
+//
+// The Docker credentials are always on and there is no flag for them. This is
+// the command every other registry tool's users already know: log in with
+// `docker login`, then run the tool. A flag would exist only to switch the
+// behavior off under test, and a test that needs a run with no credentials
+// gets one from the environment by pointing DOCKER_CONFIG at an empty
+// directory — which is what the library's own gates do.
 func newClient(c commonFlags, stderr io.Writer) (*bigoci.Client, *tap, error) {
-	var opts []bigoci.Option
+	opts := []bigoci.Option{bigoci.WithDockerCredentials()}
 	if c.plainHTTP {
 		opts = append(opts, bigoci.WithPlainHTTP())
 	}

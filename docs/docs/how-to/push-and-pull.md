@@ -41,6 +41,9 @@ registry already holds are not uploaded twice.
 For a local registry that speaks plain HTTP (a zot or Distribution container,
 for example), build the client with `bigoci.WithPlainHTTP()`.
 
+For a registry that asks for a credential, see [Authenticate to a
+registry](authenticate.md).
+
 ## Pull a file
 
 ```go
@@ -144,7 +147,9 @@ Five failures are worth branching on with `errors.Is`:
 - `bigoci.ErrNotFound` — the registry does not hold what the reference names.
 - `bigoci.ErrUnauthorized` — the registry refused the transfer. Log in to it
   (for most setups, `docker login <registry>`) and check that the account may
-  read the repository — or write it, for a push.
+  read the repository — or write it, for a push. [Authenticate to a
+  registry](authenticate.md) covers how to hand bigoci the credential and what
+  each refusal means.
 - `bigoci.ErrNotBigociArtifact` — the reference resolves to something else,
   such as a container image.
 - `bigoci.ErrDigestMismatch` — pulled bytes failed verification; nothing was
