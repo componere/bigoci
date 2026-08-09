@@ -235,22 +235,39 @@ when not.
   `Range`; detect non-honored `Range` (200 vs 206) and fall back to full part.
 - Guard rails: partial at wrong size is discarded and restarted; destination
   file only ever appears complete (rename-last invariant re-asserted).
+  *(Amended 2026-08-08, session 005: the wrong-size partial is `Truncate`d to
+  the manifest length and every part fetched, not discarded — `Discard` is
+  not on the Sink port, `Truncate` already documents shrink-to-fit, and
+  discard-then-recreate reopens the `O_NOFOLLOW` window. Observable behavior
+  is identical; see `.journal/005/DESIGN.md` Q4.)*
 - e2e: kill the process (not just cancel the context) mid-push and mid-pull,
   rerun, assert completion and integrity; assert only missing parts moved
   (request counting via proxy or registry logs).
 
 **Success criteria:**
 
-- [ ] Manual: Ctrl-C a large push at ~50%; re-run; debug output shows
+- [x] Manual: Ctrl-C a large push at ~50%; re-run; debug output shows
       completed parts skipped via HEAD and only the remainder uploads; final
       artifact pulls back byte-identical.
-- [ ] Manual: Ctrl-C a large pull at ~50%; confirm `<dest>.bigoci-partial`
+      *(2026-08-08, session 005: SIGINT after 8/16 part PUTs opened, exit
+      130, 4 parts landed; re-run `blob-check=17 (5 hit, 12 miss)
+      blob-write=12`; pull-back sha256 identical. NOTES 15:58 entry.)*
+- [x] Manual: Ctrl-C a large pull at ~50%; confirm `<dest>.bigoci-partial`
       exists and `<dest>` does **not**; re-run; observe only unfinished parts
       fetched; `<dest>` appears only at the end, correct by `sha256sum`.
-- [ ] Manual: corrupt a byte inside the partial file before resuming; the
+      *(2026-08-08, session 005: exit 130, partial 2 GiB/0600 present, dest
+      absent; re-run `blob-read=12 manifest-read=1`; sha256 identical;
+      bonus complete-partial run read `blob-read=0 manifest-read=1`.)*
+- [x] Manual: corrupt a byte inside the partial file before resuming; the
       damaged part (and only it) is re-fetched; result still verifies.
-- [ ] Automated gates: resume-bookkeeping unit tests; integration tests for
+      *(2026-08-08, session 005: XOR flip at offset 300000000; requests=2 —
+      one manifest read plus one blob read verified equal to layers[2];
+      sha256 restored.)*
+- [x] Automated gates: resume-bookkeeping unit tests; integration tests for
       partial-hash planning; kill/resume e2e green in CI.
+      *(2026-08-08, session 005: PRs #25/#26/#27 merged, master d69afc0;
+      resume/continue integration suites + 29-mutation review pass; ten-row
+      kill/resume e2e green in CI and 5x consecutive locally under -race.)*
 
 ---
 

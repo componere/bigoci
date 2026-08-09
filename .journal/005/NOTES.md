@@ -187,3 +187,47 @@ Evidence files in session scratchpad gates/: g1r1.log g1r2.log/out
 g2r1.log g2r2.log g3.log g4.log model2.sha.
 PLAN.md boxes get checked after PR 3 merges (the automated-gate box needs
 kill/resume e2e green in CI).
+
+## 2026-08-08 17:50 — PR 3 merged (#27, master d69afc0); phase 4 COMPLETE
+test(e2e): kill-and-resume coverage. Opus implementer + 2 xhigh reviewers
+(flake-hunter, provability; wf_b0ba0609-547), ~50 suite runs between them
+incl. CPU-hog perturbation and GOMAXPROCS=1, plus harness mutations (timer
+triggers, neutered guards, shared content — all fail loudly; the stamping
+mutation proved zot dedupe would starve the push triggers without per-row
+bytes). Harness highlights: TestMain self-exec child (Setpgid group, kill
+aimed at -pid, WaitStatus.Signaled asserted so a child that finished before
+the signal fails loudly), counting reverse proxy with causal triggers —
+Workers:1 makes the (N+1)th request a PROOF about parts 0..N-1 because
+fetchWorker/drain take the next job only after the previous unit returned —
+and messy rows read the intact set off the DISK after cmd.Wait, never off
+wire timing. The implementer independently derived (workers+1)×partSize as
+the messy trigger (lower bound becomes a theorem) and replaced a racy
+WaitGroup barrier with httptest.Server.Close as the settle primitive.
+Panel findings fixed by lead before merge: (1) MAJOR record-read race —
+records were filed after ReverseProxy.ServeHTTP returns, but the client
+sees the last body byte before that; an 8ms handler deschedule flipped rows
+red (measured), and the complete-partial row's blob-read=0 assertion could
+even pass vacuously; fixed with settle barriers before every record read,
+verified green with 50ms injected into record(). (2) assertCut now asserts
+the cut BIT (flag set where errCutShort returns) not that it was handed
+out. (3) Go runtime knobs (GOMAXPROCS/GODEBUG/GOTRACEBACK/GORACE)
+forwarded into the child so scheduling bugs stay reproducible. (4)
+GOOS=windows go vet regressed (SysProcAttr.Setpgid, syscall.Kill) and
+root:build-windows can't see test files — the two syscalls now live behind
+//go:build unix|windows shims; both platforms vet clean. (5)
+messyKillBytes godoc claimed "by construction" for a bound only guarded
+loudly; reworded. (6) corrupted-parts row gained a NotEmpty(intact)
+non-vacuity guard. One CI round-trip: my delay-injection cleanup left a
+stray blank line (whitespace lint) — the injected string carried a newline
+the removal string didn't.
+Learned: httptest.Server.Close IS the happens-before barrier for
+handler-side bookkeeping (it blocks until the last handler returns);
+anything asserted from proxy records needs it — "record after ServeHTTP"
+orders nothing against the client finishing. And toxiproxy bandwidth
+toxics are per-connection (already journaled at the gates).
+Phase-4 closeout: all four PLAN.md phase-4 boxes checked with dated
+evidence; the wrong-size-partial guard-rail wording amended per DESIGN Q4
+(Truncate, not discard; dated note in place). Phases 1-4 now complete;
+5 (auth) — 7 remain. Reserved seams intact: exit 6/ErrUnauthorized and the
+PHASE-5 instrument constraint (auth at request-build time, caller's
+transport outermost, clean redirect client derived from caller's client).
