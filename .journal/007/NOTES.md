@@ -51,3 +51,29 @@ under `bench/latitude/`. Target servers: two m4-metal-small ($0.81/hr,
 integration; measurement between PRs; PR 2 = measured defaults + docs.
 
 Next: implementation worktree off master, build PR 1.
+
+## 2026-08-09 13:19 — PR 1 up: the harness is built and smoke-proven
+Built the whole `bench/` module in `.wt/feat-bench-harness` and opened
+PR #32 (feat(bench): throughput harness against local registries, commit
+8a85002, signed, verified identity). Shape as designed: spec-driven matrix
+(specs/ JSON), `run`/`summarize` subcommands, JSONL rows, `-resume`,
+429/503-counting transport, latitude/ runbook + 4 scripts, moon `bench`
+project wired into root:check, CI cache keys + dependabot + release-please
+excludes updated.
+
+Proven, not just tested: smoke ran against a real zot v2.1.20 container —
+full 4-cell matrix, verify=all, warm-push measurably faster than cold
+(HEAD-skip visible: ~1.4 GB/s vs ~0.5–0.9), resume skipped all 12 rows on
+re-run, summarize rendered the grids. root:check green (after a
+golangci cache clean — the phantom-findings bite recurred exactly as
+TECH_NOTES warns).
+
+Learned the hard way (now tested): repository names must be entirely
+lowercase while cell IDs read "MiB" — repository() lowercases on the way
+in. And macOS parks AirPlay on port 5000; the zot image's default config
+refuses anonymous — both now in the READMEs. lint traps for a new module:
+nolintlint flags directives for rules that don't fire (errcheck ignores
+defers; gosec G304 seems preset-excluded), golines rewraps >120 cols,
+goconst/mnd want constants for repeated strings and bare 2s.
+
+Waiting on PR #32 CI; then the measurement session (task 2).
