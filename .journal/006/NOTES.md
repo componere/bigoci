@@ -176,3 +176,21 @@ implementer + actions-security reviewer (wf_ee6ed455-28d) in
 .wt/ci-conformance-job. After it lands: automated gates are done and the
 manual GHCR gates (T8, five of them, gate 5 BLOCKING) need Josh — docker
 login ghcr.io, a private repo, and the recipes in the design.
+
+## 2026-08-09 02:20 — PR 3 built, reviewed, fixed, opened
+wf_ee6ed455-28d: implementer + actions-security reviewer, approve-with-
+minors, all applied by hand: binary timeout raised above the 6x4m worst
+case (arithmetic tied into the constant's godoc); -v -run pins the suite so
+a skip or build-tag drift cannot read as green; if-no-files-found: error;
+cleanup's first-run 404 branch made reachable (|| true under set -e); the
+challenge= pairing control added beside class=other. Implementer decisions
+worth keeping: BIGOCI_CONFORMANCE_DOCKER_CONFIG (not DOCKER_CONFIG —
+cli/main_test.go's TestMain wipes that before tests run); run tag carries
+GITHUB_RUN_ATTEMPT (re-runs share RUN_ID); negative control targets the
+not-yet-pushed tag deliberately, with both rot modes spelled out in the
+message. README local recipe carries the empty-PATH/credsStore caveat.
+golangci stale-cache bit AGAIN (this time citing the removed
+feat-presigned-redirects worktree, and a piped tail masked root:check's
+failure so the commit landed before diagnosis — harmless, lint was clean
+after cache clean, but: never pipe the check that gates a commit).
+Commit 5b889ea (verified, G).
