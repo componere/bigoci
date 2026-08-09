@@ -14,7 +14,8 @@ source hosts.env
 SPEC="${1:?usage: run.sh <spec.json> <results.jsonl>}"
 OUT="${2:?usage: run.sh <spec.json> <results.jsonl>}"
 SSH_USER="${SSH_USER:-ubuntu}"
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+KNOWN_HOSTS="$PWD/known_hosts.$CLIENT_ID"
+SSH_OPTS=(-o UserKnownHostsFile="$KNOWN_HOSTS" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 WORKDIR="/home/$SSH_USER/bench"
 CLIENT_RUN_ID="$(printf '%s' "$CLIENT_ID" | tr '[:upper:]' '[:lower:]')"
 RUN_ID="${BENCH_RUN_ID:-latitude-${CLIENT_RUN_ID}}"

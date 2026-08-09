@@ -82,7 +82,9 @@ Everything below is ordered so the paid window stays as short as possible.
    stopped. The run ID is derived from the Latitude client ID, so retained
    output from another provisioned session is rejected. Missing work uses a
    fresh attempt namespace rather than blobs or partial files left by the
-   interrupted transfer.
+   interrupted transfer. SSH trust is also isolated in a known-host file named
+   for the client ID, so a recycled Latitude IP cannot collide with an older
+   machine's host key in the user-wide SSH history.
 
    For a GHCR-only rerun, provision one client on the same plan and site as
    the original client; no local registry box is needed. Write `PROJECT`,
