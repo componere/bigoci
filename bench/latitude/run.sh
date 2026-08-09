@@ -16,7 +16,8 @@ OUT="${2:?usage: run.sh <spec.json> <results.jsonl>}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 WORKDIR="/home/$SSH_USER/bench"
-RUN_ID="${BENCH_RUN_ID:-latitude-${CLIENT_ID}}"
+CLIENT_RUN_ID="$(printf '%s' "$CLIENT_ID" | tr '[:upper:]' '[:lower:]')"
+RUN_ID="${BENCH_RUN_ID:-latitude-${CLIENT_RUN_ID}}"
 if [[ ! "$RUN_ID" =~ ^[a-z0-9._-]+$ ]]; then
   echo "BENCH_RUN_ID must use lowercase letters, digits, dot, dash, and underscore" >&2
   exit 2
