@@ -99,3 +99,35 @@ provision-time SSH-keys fix). Measurement session started:
 
 Both boxes billing since ~13:23. Next: setup-registry.sh (docker, zot
 :5000, dist :5001, iperf3 link), then stages 1-4.
+
+## 2026-08-09 14:39 — Stage 1 complete: 225 rows, zero errors
+Registry-box saga first: the f4-metal-small created at 13:24
+(sv_BoQ45AvrraMYA) EVAPORATED server-side — status "on" with an IP, then
+404 ~15 minutes later, SSH never answered. A second f4-metal-small create
+(sv_8mop5gZx9Njxv, 206.223.227.181) deployed clean in ~7 min. Lesson for
+the runbook: poll `servers get` for not_found, not just readiness — a
+Latitude create can be accepted and then reaped.
+
+Link measured (iperf3, 4 streams): 9.42 Gbit/s aggregate ≈ 1178 MB/s
+ceiling, ~2.35 Gbit/s per stream. Saved as results/link.txt.
+
+Stage 1 (zot, 2GiB file, p{64,128,256,512M,1G} × w{1,2,4,8,16}, N=3,
+all three scenarios): 225/225 rows clean, JSONL + summary preserved in
+.journal/007/results/. Headlines:
+- cold-push peaks ~950-1070 MB/s at p64-256MiB with w>=4 (near link
+  ceiling); p512MiB caps ~800; p1GiB ~625 — but at 2GiB those are 4- and
+  2-part files, so parallelism confounds part size; stage 2 at 16GiB
+  disentangles.
+- warm-push is FLAT ~1125 MB/s at every shape with wall ~1.91s: a warm
+  push still reads+hashes the whole source, so it measures the client's
+  single-pass sha256+read floor, not the network. The "hash floor" is
+  real and worth a docs paragraph.
+- cold-pull is flat ~650 MB/s for w>=2 at every part size (w1 ~585) —
+  pull is bound by something part-shape-independent (~55% of link).
+- w1 cold-push ~620-730 MB/s: the design's 85-90 MB/s-per-connection
+  S3 expectation is far exceeded on a same-DC path; single-connection
+  is not the bottleneck story here.
+
+Stage 2 launched 14:37: 16GiB × p{64,128,256,512MiB} × w{4,8}, N=3,
+cold-push+cold-pull only (warm-push at 16GiB would just re-measure the
+hash floor). ~25-30 min expected.
