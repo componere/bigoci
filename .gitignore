@@ -81,3 +81,9 @@ docs/.venv/
 .idea/
 .vscode/
 *.swp
+
+# Benchmark harness artifacts: results are journaled, not committed, and
+# hosts.env / link.txt name live paid infrastructure.
+bench/results/
+bench/latitude/hosts.env
+bench/latitude/link.txt

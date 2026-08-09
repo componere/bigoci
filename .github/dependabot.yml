@@ -21,6 +21,16 @@ updates:
       - dependencies
       - go
 
+  - package-ecosystem: gomod
+    directory: /bench
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - go
+
   - package-ecosystem: uv
     directory: /docs
     schedule:

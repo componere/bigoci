@@ -1,5 +1,5 @@
 # Moon workspace configuration for bigoci: the root Go library, the docs
-# site, and the cli/ reference module.
+# site, the cli/ reference module, and the bench/ measurement harness.
 
 projects:
   globs: []
@@ -7,6 +7,7 @@ projects:
     root: '.'
     docs: 'docs'
     cli: 'cli'
+    bench: 'bench'
 
 defaultProject: 'root'
 

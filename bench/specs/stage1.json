@@ -1,0 +1,13 @@
+{
+  "run_id": "stage1",
+  "targets": [
+    {"name": "zot", "endpoint": "REGISTRY:5000", "plain_http": true, "repo_prefix": "bench"}
+  ],
+  "scenarios": ["cold-push", "warm-push", "cold-pull"],
+  "part_sizes": ["64MiB", "128MiB", "256MiB", "512MiB", "1GiB"],
+  "workers": [1, 2, 4, 8, 16],
+  "file_sizes": ["2GiB"],
+  "iterations": 3,
+  "verify": "first",
+  "fixture_dir": "fixtures"
+}

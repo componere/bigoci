@@ -1,0 +1,13 @@
+{
+  "run_id": "stage4",
+  "targets": [
+    {"name": "ghcr", "endpoint": "ghcr.io", "repo_prefix": "jmgilman/bigoci-bench", "auth_env": "GHCR"}
+  ],
+  "scenarios": ["cold-push", "cold-pull"],
+  "part_sizes": ["256MiB", "512MiB"],
+  "workers": [2, 4, 8],
+  "file_sizes": ["1GiB"],
+  "iterations": 2,
+  "verify": "first",
+  "fixture_dir": "fixtures"
+}
