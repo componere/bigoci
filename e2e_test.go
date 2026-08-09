@@ -261,7 +261,7 @@ func TestE2ECorruptedPartsFailThePull(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	parts := layerDigests(t, reg.rawManifest(t, repo, tag))
+	parts := partDigests(t, reg, repo)
 	require.Len(t, parts, multiParts)
 	proxy := newCorruptingProxy(t, reg.host, parts[corruptedPart])
 
@@ -275,10 +275,21 @@ func TestE2ECorruptedPartsFailThePull(t *testing.T) {
 	assert.NoFileExists(t, dest, "a pull that failed verification must publish nothing")
 	assert.FileExists(t, dest+file.PartialSuffix, "the partial file stays behind for a later attempt")
 
+	// Those bytes are what the next pull resumes from, so what it costs is
+	// exactly the parts the failed pull left wrong — which only the partial
+	// file itself can say, the corrupted part among them.
+	intact := intactParts(t, dest+file.PartialSuffix, parts, int64(multiPartSize))
+	require.NotContains(t, intact, parts[corruptedPart], "the part that was changed cannot have landed intact")
+	require.NotEmpty(t, intact, "every part re-fetched would make this row prove nothing about resume")
+
+	counted := newCountProxy(t, reg.host, proxyDamage{})
+
 	require.NoError(
-		t, client.Pull(t.Context(), reg.taggedRef(repo, tag), bigoci.ToFile(dest)),
+		t, client.Pull(t.Context(), counted.taggedRef(repo), bigoci.ToFile(dest)),
 		"a partial file left by a failed pull must not poison the next one",
 	)
+	counted.settle(t)
+	assertFetched(t, counted.digestsOf(classBlobGet), missing(parts, intact))
 	assert.Equal(t, fileDigest(t, source), fileDigest(t, dest))
 }
 
