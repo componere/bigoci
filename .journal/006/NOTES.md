@@ -241,3 +241,14 @@ class=other. Re-mint cadence measured ~60s, implying GHCR's authenticated
 token expires_in ≈ 90s (window = lifetime − 30s margin).
 Phase-5 PLAN.md boxes: ALL FIVE checked with dated evidence. Phase 5 is
 complete pending session close.
+
+## 2026-08-09 10:15 — Close
+Phase 5 complete. PRs #28 (7c71aea), #29 (9944738), #30 (521753d), #31
+(e49ce48) all squash-merged with green CI; master fast-forwarded; all
+implementation worktrees removed. Conformance run 31323351318 green against
+real GHCR; all five manual gates passed with evidence in the 09:55 entry;
+every phase-5 PLAN.md box checked. Throwaway gate package deleted.
+SUMMARY.md written; INDEX row set complete; TECH_NOTES updated (phase
+status, auth/redirect contracts, GHCR field facts, isolation layout, the
+golangci cache gotcha). Handoff: phase 6 (benchmark harness) is next;
+open threads listed in SUMMARY.md.
