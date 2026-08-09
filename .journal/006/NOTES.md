@@ -209,3 +209,35 @@ version. PLAN.md phase-5 automated-gates box checked with dated evidence.
 Remaining for phase close: the four manual PLAN.md gates plus DESIGN.md's
 gate 5 (long push outliving the token lifetime — BLOCKING). These need
 Josh: docker login ghcr.io + a private repo.
+
+## 2026-08-09 09:55 — All five manual gates PASS; phase-5 criteria complete
+Josh authorized running the gates with his keychain credential
+(docker-credential-osxkeychain — the helper-exec path proven live) against
+a throwaway private package ghcr.io/jmgilman/bigoci-gate-6765ac3e (no git
+repo needed; package auto-created private on push; deleted afterwards via
+gh api, exit 0).
+- Gate 1: 200MB at 16MiB parts, push 51.6s, pull 5.9s, sha256
+  915c428f... identical both ways. failed=4 in the push summary = the
+  four initial 401 challenges (the documented failed>=1-under-challenge
+  behavior).
+- Gate 2: 13 off-registry http> lines (one per part), ALL auth=none, to
+  pkg-containers.githubusercontent.com; 1 token exchange + 1 challenge=
+  line; 14 auth=bearer registry lines (instrument-sees-traffic control).
+- Gate 3: empty config → exit 6 + matched sentinel + actionable message
+  (401 at the token endpoint, terminal); wrong PAT → exit 6 after exactly
+  2 requests (challenged GET + one refused exchange, zero burn).
+- Gate 4: warm push reproduced digest ff8b0f51... in 2.1s (14 blob-check
+  hits incl. the shared empty-config blob); @digest pull byte-identical.
+- Gate 5 (BLOCKING): 1 GiB at 64MiB parts, 3m55.7s, exit 0, zero
+  transport failures, zero failed parts, TEN token exchanges in five
+  pairs (~every 60s, one per scope) — the proactive D9 expiry path ran
+  five full cycles against the real issuer, seamlessly. The feared
+  expired-token-as-403 case never arises because re-mints are proactive.
+Field notes: GHCR spells upload sessions /blobs/upload/ (SINGULAR), so
+session PUTs classify class=other under the frozen grammar (blob-write=0
+on GHCR pushes; they carry auth=bearer to ghcr.io itself — correct
+same-origin). Gate-5 evidence must count /token request lines, never
+class=other. Re-mint cadence measured ~60s, implying GHCR's authenticated
+token expires_in ≈ 90s (window = lifetime − 30s margin).
+Phase-5 PLAN.md boxes: ALL FIVE checked with dated evidence. Phase 5 is
+complete pending session close.

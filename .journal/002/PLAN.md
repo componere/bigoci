@@ -303,17 +303,30 @@ this phase bigoci works against GHCR with `docker login`, not just local zot.
 
 **Success criteria:**
 
-- [ ] Manual: `docker login ghcr.io`, then push a multi-part file to a
+- [x] Manual: `docker login ghcr.io`, then push a multi-part file to a
       private GHCR repo with the CLI and pull it back byte-identical —
       credentials read from Docker config, zero bigoci-side config.
-- [ ] Manual: pull from GHCR (which redirects blob GETs to object storage)
+      *(2026-08-09: 200MB at 16MiB parts to private
+      ghcr.io/jmgilman/bigoci-gate-6765ac3e, sha256 identical both ways;
+      credential resolved through docker-credential-osxkeychain — the
+      helper path live. Evidence: session 006 NOTES 09:55.)*
+- [x] Manual: pull from GHCR (which redirects blob GETs to object storage)
       succeeds — proving the clean-client redirect re-issue works against a
       real presigned URL, and no `Authorization` header leaks (verify via
       the CLI's `--debug` request-header logging).
-- [ ] Manual: with no/bad credentials, the unauthorized sentinel error
+      *(2026-08-09: 13 off-registry request lines to
+      pkg-containers.githubusercontent.com — one per part — every one
+      auth=none; token exchange + challenge visible; 14 auth=bearer lines
+      prove the instrument watched authenticated traffic.)*
+- [x] Manual: with no/bad credentials, the unauthorized sentinel error
       surfaces with an actionable message (`errors.Is` demonstrable via the
       CLI's exit path).
-- [ ] Manual: tagless (digest-only) push + pull round-trip against GHCR.
+      *(2026-08-09: empty DOCKER_CONFIG → exit 6 + matched-sentinel line;
+      wrong PAT → exit 6 after exactly two requests — zero retry burn.)*
+- [x] Manual: tagless (digest-only) push + pull round-trip against GHCR.
+      *(2026-08-09: warm push reproduced the identical manifest digest in
+      2.1s — every part HEAD-skipped — and the @sha256 pull returned
+      byte-identical content.)*
 - [x] Automated gates: auth adapter integration tests; auth-enabled e2e in
       CI; conformance workflow runs green when triggered by hand.
       *(2026-08-09: adapter/state-machine suites + htpasswd-zot and
