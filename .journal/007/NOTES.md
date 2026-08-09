@@ -131,3 +131,44 @@ all three scenarios): 225/225 rows clean, JSONL + summary preserved in
 Stage 2 launched 14:37: 16GiB × p{64,128,256,512MiB} × w{4,8}, N=3,
 cold-push+cold-pull only (warm-push at 16GiB would just re-measure the
 hash floor). ~25-30 min expected.
+
+## 2026-08-09 15:24 — Measurement complete: 333 rows, 0 errors, 0 throttles
+All four stages done; boxes destroyed at 15:20 (`lsh servers list` empty;
+~2h paid ≈ $4); all six GHCR throwaway packages deleted (verified 0
+remain). Raw JSONL + rendered summaries for every stage in
+.journal/007/results/. Stage 4 ran with the token passed via ssh stdin —
+run.sh's env interpolation would put it in the process listing; fix
+queued.
+
+Stage 2 (zot, 16GiB, the deciding matrix): cold-push medians —
+256MiB/w8 1069.5, 256MiB/w4 1067.4, 512MiB/w8 1052.8, 512MiB/w4 1040.0,
+128MiB/w8 1056.8, 64MiB/w8 948.6. Cold-pull ~897-925 everywhere (the
+~650 at 2GiB was a short-transfer artifact). 64MiB pays real per-part
+overhead at scale; w8 buys 1-3% over w4.
+
+Stage 3 (Distribution, 8GiB): cold-push 512MiB/w4 907.1 ≈ 512MiB/w8
+908.4 > 256MiB/w4 758.8 (dist favors bigger parts at low workers);
+pull flat ~720. Registry variance is real; 512/4 lands near-best on both
+local registries.
+
+Stage 4 (GHCR over the internet, 1GiB, N=2): pushes ~78-99 MB/s in every
+shape — the design's 85-90 MB/s per-connection S3 figure measured almost
+exactly; pulls 86-155, scaling with workers at 256MiB (parallel presigned
+CDN). ZERO 429/503 in every row (the counting transport proves the
+instrument: it counts 4xx generally, and GHCR's protocol 401s appear on
+anonymous probes — none here since authenticated).
+
+DECISION (for PR 2): keep 512 MiB / 4 workers, now measured — 512MiB is
+within ~2% of best at 16GiB on zot, best-at-w4 on Distribution, tied
+within noise on GHCR, and keeps the retry-cost story; w4 is within 1-3%
+of w8 everywhere and saturates ~90% of a 10G link. Adaptive workers:
+NOT warranted for v1 — zero throttles in 333 rows incl. w8 against GHCR,
+and fixed-4 lands near-best across a 40x per-connection spread
+(~90 MB/s GHCR vs ~3.7 Gbit/s single-worker same-DC). WithWorkers stays
+the escape hatch. Extra doc-worthy finding: warm-push measures the
+client's single-pass read+sha256 floor (~1125 MB/s on this box),
+network-free — the honest ceiling story for w1.
+
+Runbook fixes queued for a fix(bench) PR: provision.sh jq array bug
+(`.[0].id`), poll-for-evaporation (a create can be accepted then reaped —
+sv_BoQ45AvrraMYA), run.sh credentials via stdin, README notes. Then PR 2.
