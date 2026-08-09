@@ -239,14 +239,10 @@ it arrives, will arrive as whole lines.
 | 3 | `errors.Is(err, bigoci.ErrNotFound)` |
 | 4 | `errors.Is(err, bigoci.ErrNotBigociArtifact)` |
 | 5 | `errors.Is(err, bigoci.ErrDigestMismatch)` |
-| 6 | reserved: unauthorized |
+| 6 | `errors.Is(err, bigoci.ErrUnauthorized)` |
 | 7 | `errors.Is(err, bigoci.ErrPartTooLarge)` |
 | 130 | interrupted by SIGINT |
 | 143 | terminated by SIGTERM |
-
-Code 6 is reserved and unused. That failure cannot happen until the library
-authenticates; reserving the number now means the phase that raises it adds a
-row without renumbering anything a script already depends on.
 
 A failure always prints two lines:
 

@@ -2,6 +2,7 @@ package oci_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -254,6 +255,109 @@ func TestStatusErrorMatchesTheSentinelItsStatusStandsFor(t *testing.T) {
 			assert.NotErrorIs(t, err, tt.target)
 		})
 	}
+}
+
+// TestStatusErrorMatchesTheUnauthorizedSentinelOnBothRefusals pins the two
+// statuses a registry refuses a request with onto one sentinel, and pins what
+// they are not. The negative rows are the point of the table: a sentinel that
+// tells a caller to go and log in is only useful while nothing else reaches
+// it, and a status that means something else must keep meaning it.
+func TestStatusErrorMatchesTheUnauthorizedSentinelOnBothRefusals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		target error
+		want   bool
+	}{
+		{
+			name:   "a registry asking for credentials is unauthorized",
+			status: http.StatusUnauthorized,
+			target: oci.ErrUnauthorized,
+			want:   true,
+		},
+		{
+			name:   "a registry refusing the credentials it got is unauthorized too",
+			status: http.StatusForbidden,
+			target: oci.ErrUnauthorized,
+			want:   true,
+		},
+		{
+			name:   "a refused request is not missing",
+			status: http.StatusUnauthorized,
+			target: oci.ErrNotFound,
+		},
+		{
+			name:   "a refused request is not too large",
+			status: http.StatusUnauthorized,
+			target: oci.ErrTooLarge,
+		},
+		{
+			name:   "a forbidden request is not missing either",
+			status: http.StatusForbidden,
+			target: oci.ErrNotFound,
+		},
+		{
+			name:   "a forbidden request is not too large either",
+			status: http.StatusForbidden,
+			target: oci.ErrTooLarge,
+		},
+		{
+			name:   "a missing manifest is not a refusal",
+			status: http.StatusNotFound,
+			target: oci.ErrUnauthorized,
+		},
+		{
+			name:   "a part the registry says is too large is not a refusal",
+			status: http.StatusRequestEntityTooLarge,
+			target: oci.ErrUnauthorized,
+		},
+		{
+			name:   "a server failure is not a refusal",
+			status: http.StatusServiceUnavailable,
+			target: oci.ErrUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := &oci.StatusError{
+				Method: http.MethodGet,
+				Path:   "/v2/" + repoName + "/manifests/" + tag,
+				Status: tt.status,
+			}
+
+			if tt.want {
+				assert.ErrorIs(t, err, tt.target)
+
+				return
+			}
+
+			assert.NotErrorIs(t, err, tt.target)
+		})
+	}
+}
+
+// TestStatusErrorAnswersOnlyForTheSentinelsItStandsFor guards the default of
+// the match: a status error answers for this package's sentinels and reports
+// nothing about any other target, so adding the refusal rows widened what a
+// 401 matches and nothing else.
+func TestStatusErrorAnswersOnlyForTheSentinelsItStandsFor(t *testing.T) {
+	t.Parallel()
+
+	unrelated := errors.New("some other failure entirely")
+	err := &oci.StatusError{
+		Method: http.MethodGet,
+		Path:   "/v2/" + repoName + "/manifests/" + tag,
+		Status: http.StatusUnauthorized,
+	}
+
+	require.NotErrorIs(t, err, unrelated)
+	require.NotErrorIs(t, err, io.EOF)
+	require.NotErrorIs(t, err, context.Canceled)
 }
 
 func TestUnexpectedStatusesAreClassifiedForTheRetryPolicy(t *testing.T) {

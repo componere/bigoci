@@ -17,6 +17,18 @@ import (
 // the part read.
 var ErrNotFound = errors.New("not found")
 
+// ErrUnauthorized reports that the registry refused the transfer rather than
+// answering it. A 401 is the registry asking for credentials the transfer
+// did not present. A 403 is the registry saying the credentials it read do
+// not reach the repository the reference names. Both report here — and so
+// does a proxy or firewall in front of the registry answering 403 about
+// something else, because bigoci cannot tell those apart and does not guess.
+//
+// The fix is to log in to that registry, which for most setups is
+// "docker login <registry>", and to check that the account it logs in as may
+// read the repository — or write it, for a push.
+var ErrUnauthorized = errors.New("unauthorized")
+
 // ErrNotBigociArtifact reports that the reference resolves to something else:
 // a container image, an artifact of another kind, or a manifest whose
 // artifactType is not the one the bigoci format defines.
@@ -57,14 +69,12 @@ var ErrDigestMismatch = errors.New("digest mismatch")
 // their own sentinels and none of them may name a public one: the dependency
 // only points inward. An error that matches nothing public comes back
 // unchanged rather than being dressed up as a case it is not.
-//
-// The design also names an unauthorized case. It cannot happen yet — this
-// phase talks to registries anonymously — so it arrives with the
-// authentication phase rather than being declared empty here.
 func classify(err error) error {
 	switch {
 	case errors.Is(err, oci.ErrNotFound):
 		return fmt.Errorf("%w: %w", ErrNotFound, err)
+	case errors.Is(err, oci.ErrUnauthorized):
+		return fmt.Errorf("%w: %w", ErrUnauthorized, err)
 	case errors.Is(err, oci.ErrTooLarge):
 		return fmt.Errorf("%w: %w", ErrPartTooLarge, err)
 	case errors.Is(err, manifest.ErrNotBigociArtifact):

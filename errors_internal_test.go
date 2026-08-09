@@ -3,6 +3,7 @@ package bigoci
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -53,6 +54,44 @@ func TestClassifyKeepsTheWholeChain(t *testing.T) {
 			require.ErrorIs(t, classified, tt.want, "the public sentinel must be attached")
 			require.ErrorIs(t, classified, tt.internal, "the internal sentinel must survive classification")
 			require.ErrorContains(t, classified, "some operation detail", "the original message must survive")
+		})
+	}
+}
+
+// TestClassifyMapsARefusedRequestOntoTheUnauthorizedSentinel carries the
+// status error a refusal really arrives as, rather than the internal sentinel
+// itself, because the row this test covers rests on the adapter's own match:
+// nothing ever returns oci.ErrUnauthorized as a value, so a case that only
+// answered for the sentinel would pass while every real 401 fell through to
+// exit one.
+func TestClassifyMapsARefusedRequestOntoTheUnauthorizedSentinel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{name: "a registry asking for credentials", status: http.StatusUnauthorized},
+		{name: "a registry refusing the credentials it got", status: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			refused := fmt.Errorf("read part 3: %w", &oci.StatusError{
+				Method: http.MethodGet,
+				Path:   "/v2/team/artifact/manifests/v1",
+				Status: tt.status,
+			})
+
+			classified := classify(refused)
+
+			require.ErrorIs(t, classified, ErrUnauthorized, "the public sentinel must be attached")
+			require.ErrorIs(t, classified, oci.ErrUnauthorized, "the internal sentinel must survive classification")
+			require.NotErrorIs(t, classified, ErrNotFound, "a refusal is not a miss")
+			require.NotErrorIs(t, classified, ErrPartTooLarge)
+			require.ErrorContains(t, classified, "read part 3", "the original message must survive")
 		})
 	}
 }
