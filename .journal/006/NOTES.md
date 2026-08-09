@@ -46,3 +46,28 @@ Findings the panel must resolve:
 Next: three-lens design panel (protocol/interop, seams, failure-modes) plus
 two comparative adversarial judges, all opus/xhigh; then I synthesize
 .journal/006/DESIGN.md.
+
+## 2026-08-08 19:58 — Design panel done; DESIGN.md synthesized
+Panel wf_6f7971f2-982 (5 opus agents, ~1.03M tokens, 44 min). Both judges
+ranked [failure] > [protocol] > [seams]. The correctness judge measured GHCR
+and Docker Hub live: bad Basic at the token endpoint answers 403 DENIED (bad
+creds never reach a body-bearing request); the presigned target ACCEPTS a
+leaked bearer (200) — design.md's "S3/GCS/Azure reject" claim is false, so
+the no-leak gate must read auth=none off the -debug log, never infer from
+success; an unparseable bearer at GHCR answers 403 not 401 (nobody measured
+a real expired token → manual gate 5, long push outliving the token, is
+BLOCKING); GHCR's anonymous token has no expires_in (spec default 60s).
+Synthesis = [failure]'s architecture (no ping; request-build-time auth;
+own-the-dance + oras-go credentials store only; proven/unproven/denied 401
+state machine; GetBody-gated re-issue rule) + judge-mandated corrections:
+[seams]'s four-field Credential port (two-string Lookup collapses identity
+tokens to anonymous), ServerAddressFromHostname, [protocol]'s off-registry
+status table (401/403/404/410 transient at a presigned target, never
+ErrUnauthorized), same-origin carry + 3-hop cap, 403-with-challenge takes
+the refresh path, [seams]'s bearer gateway e2e (C9 expiry proven per-commit
+end-to-end), counting-transport C1 test, scrub() for the *url.Error
+signature leak, injected clock, numeric no-burn assertions, root TestMain
+env isolation carried into the re-exec child.
+PR shape: four PRs — PR 0 inert (ErrUnauthorized classification + exit 6),
+then the plan's three. DESIGN.md written to .journal/006/DESIGN.md.
+Panel outputs in session scratchpad phase5/ (designs + verdicts).
