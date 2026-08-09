@@ -127,3 +127,14 @@ cli/redact.go, transfer/retry/plan/manifest/file, format.md. Sequencing
 window recorded for the PR body: PR 1 puts Authorization on the wire while
 Go's auto-follow still governs redirect headers — PR 2 closes it; no
 release between them.
+
+## 2026-08-08 23:55 — PR 1 merged; PR 2 in flight
+PR #29 squash-merged (master 9944738) after green CI. PR 2 (presigned
+redirects) launched as one opus implementer + three-lens review panel
+(wf_7e0edfda-e66) in .wt/feat-presigned-redirects, carrying the two
+recorded constraints: close the PR-1 auto-follow window (derived clients,
+same-origin carry with exact scheme+host+port), and the off-registry table
+must never construct a sentinel-matching error (expired presigned signature
+is transient, not ErrUnauthorized/ErrNotFound). T7 single-use-signature e2e
+and the gateway 302 row land here; design.md sharp-edges rewrite corrects
+the measured-false S3/GCS/Azure claim.
