@@ -90,3 +90,40 @@ removal; clean before diagnosing).
 Commit 7bc8980 (verified, G), PR #28. Carry-forward recorded in the PR body:
 any 401/403 the adapter refreshes in PR 1/PR 2 must not be a bare
 *StatusError, with NotErrorIs(oci.ErrUnauthorized) tests.
+
+## 2026-08-08 22:40 — PR 0 merged; PR 1 built, reviewed, fixed
+PR #28 squash-merged (7c71aea) after green CI. PR 1 built by a three-stage
+opus pipeline (wf_e2350b83-c4d: oci machinery + unit suites; internal/auth +
+mockery mock + isolation suite; root/CLI wiring + htpasswd-zot e2e + bearer
+gateway e2e + docs) then a three-lens review panel (protocol xhigh, security
+xhigh, house high): no blockers, 7 majors, all verified with repros. I
+applied every finding by hand:
+- Multi-line WWW-Authenticate joined per RFC 9110 (challengeHeader; a
+  Basic-line-then-Bearer-line registry now picks Bearer; reproduced before).
+- New/CLI no longer hard-fail with no $HOME/$DOCKER_CONFIG (scratch
+  containers): unlocatable config = anonymous, error reserved for a
+  malformed file.
+- oras config-decode errors no longer leak the decoded auth entry (usually
+  a pasted secret) into messages: lookupError names registry+file only.
+- Username-less secrets now ride the bearer exchange as Basic ":token"
+  instead of silently downgrading to anonymous.
+- Docker Hub key fixed BOTH ways (design's own correction was wrong for the
+  reference form users write: reference.Domain gives docker.io, which only
+  ServerAddressFromRegistry maps; serverAddress composes hostname-then-
+  registry mapping and both spellings are tested).
+- token68 challenge siblings void their own challenge, not the header;
+  realm rendering redacted (userinfo password stays out of errors);
+  plain-HTTP realms restricted to the registry's own host.
+- Root TestMain isolates DOCKER_CONFIG only — HOME/USERPROFILE left alone
+  (testcontainers resolves rootless sockets + pull creds through HOME; the
+  security reviewer caught the redirect would break other machines).
+- Docs de-staled (README status, design.md sharp-edges "not yet" qualifier,
+  authenticate.md request-count claims, cli/README redirect-visibility
+  paragraph), negative controls ordered first, test godocs added,
+  scopeFor/mergeScopes tests moved to credentials_test.go.
+Full moon root:check green + fresh -count=1 runs of every suite (golangci
+cache needed a second clean). Boundary check: zero lines in cli/debug.go,
+cli/redact.go, transfer/retry/plan/manifest/file, format.md. Sequencing
+window recorded for the PR body: PR 1 puts Authorization on the wire while
+Go's auto-follow still governs redirect headers — PR 2 closes it; no
+release between them.
