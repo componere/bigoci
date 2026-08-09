@@ -77,3 +77,25 @@ defers; gosec G304 seems preset-excluded), golines rewraps >120 cols,
 goconst/mnd want constants for repeated strings and bare 2s.
 
 Waiting on PR #32 CI; then the measurement session (task 2).
+
+## 2026-08-09 13:25 — PR #32 merged; boxes provisioned (billing running)
+PR #32 squash-merged as 92e7d52 (CI green on 962f63c, which added the
+provision-time SSH-keys fix). Measurement session started:
+
+- Client: sv_bBmw0K2Mra9VR, m4-metal-small, DAL, 162.43.191.111 (SSH ok,
+  12 threads, 879G NVMe root).
+- Registry: sv_BoQ45AvrraMYA, f4-metal-small, DAL, 207.188.7.141 — DAL ran
+  OUT OF m4-metal-small stock between the two creates (422
+  SERVERS_OUT_OF_STOCK); same-site sibling plan chosen over
+  destroy-and-move since the client is the measured side.
+- provision.sh bug found live: `lsh servers create --json` returns an
+  ARRAY, so `jq '.id'` dies (client was created, script aborted before the
+  registry). Registry created by hand; hosts.env written by hand. Fix
+  queued for a follow-up PR with the rest of the session's runbook
+  learnings.
+- GHCR stage will use the gh CLI token (scopes verified: write:packages +
+  delete:packages) against the throwaway package, per the approved plan's
+  session-006-style gate.
+
+Both boxes billing since ~13:23. Next: setup-registry.sh (docker, zot
+:5000, dist :5001, iperf3 link), then stages 1-4.
