@@ -13,9 +13,9 @@ func TestWriteFixtureIsDeterministicPerIdentity(t *testing.T) {
 
 	const size = 256 << 10
 
-	first, err := writeFixture(t.TempDir(), "run", "cell", 0, size)
+	first, err := writeFixture(t.TempDir(), "run", "attempt", "cell", 0, size)
 	require.NoError(t, err)
-	again, err := writeFixture(t.TempDir(), "run", "cell", 0, size)
+	again, err := writeFixture(t.TempDir(), "run", "attempt", "cell", 0, size)
 	require.NoError(t, err)
 
 	assert.Equal(t, first.digest, again.digest,
@@ -31,25 +31,27 @@ func TestWriteFixtureVariesAcrossIdentity(t *testing.T) {
 
 	const size = 64 << 10
 
-	base, err := writeFixture(t.TempDir(), "run", "cell", 0, size)
+	base, err := writeFixture(t.TempDir(), "run", "attempt", "cell", 0, size)
 	require.NoError(t, err)
 
 	tests := []struct {
 		name      string
 		runID     string
+		attemptID string
 		cellID    string
 		iteration int
 	}{
-		{name: "different iteration", runID: "run", cellID: "cell", iteration: 1},
-		{name: "different cell", runID: "run", cellID: "other", iteration: 0},
-		{name: "different run", runID: "other", cellID: "cell", iteration: 0},
+		{name: "different iteration", runID: "run", attemptID: "attempt", cellID: "cell", iteration: 1},
+		{name: "different cell", runID: "run", attemptID: "attempt", cellID: "other", iteration: 0},
+		{name: "different attempt", runID: "run", attemptID: "other", cellID: "cell", iteration: 0},
+		{name: "different run", runID: "other", attemptID: "attempt", cellID: "cell", iteration: 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			variant, err := writeFixture(t.TempDir(), tt.runID, tt.cellID, tt.iteration, size)
+			variant, err := writeFixture(t.TempDir(), tt.runID, tt.attemptID, tt.cellID, tt.iteration, size)
 			require.NoError(t, err)
 			assert.NotEqual(t, base.digest, variant.digest,
 				"any identity change must change the bytes, or a deduplicating registry skips the upload")
@@ -60,7 +62,7 @@ func TestWriteFixtureVariesAcrossIdentity(t *testing.T) {
 func TestWriteFixtureDigestMatchesTheFileOnDisk(t *testing.T) {
 	t.Parallel()
 
-	fx, err := writeFixture(t.TempDir(), "run", "cell", 0, 128<<10)
+	fx, err := writeFixture(t.TempDir(), "run", "attempt", "cell", 0, 128<<10)
 	require.NoError(t, err)
 
 	hashed, err := hashFile(fx.path)
@@ -72,9 +74,9 @@ func TestWriteFixtureRefusesToOverwrite(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	_, err := writeFixture(dir, "run", "cell", 0, 1<<10)
+	_, err := writeFixture(dir, "run", "attempt", "cell", 0, 1<<10)
 	require.NoError(t, err)
 
-	_, err = writeFixture(dir, "run", "cell", 0, 1<<10)
+	_, err = writeFixture(dir, "run", "attempt", "cell", 0, 1<<10)
 	require.Error(t, err, "a fixture path collision must fail loudly, not silently truncate")
 }

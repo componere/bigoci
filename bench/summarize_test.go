@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,18 +13,59 @@ import (
 // and speed.
 func speedRow(registry string, partSize int64, workers int, speed float64) row {
 	return row{
-		Schema:   rowSchema,
-		RunID:    "unit-run",
-		CellID:   cellID(registry, partSize, workers, 16<<20),
-		Registry: registry,
-		Scenario: scenarioColdPush,
-		PartSize: partSize,
-		Workers:  workers,
-		FileSize: 16 << 20,
-		Parts:    (16 << 20) / partSize,
-		WallMS:   100,
-		MBPerS:   speed,
+		Schema:    rowSchema,
+		RunID:     "unit-run",
+		AttemptID: "attempt",
+		CellID:    cellID(registry, partSize, workers, 16<<20),
+		Registry:  registry,
+		Scenario:  scenarioColdPush,
+		PartSize:  partSize,
+		Workers:   workers,
+		FileSize:  16 << 20,
+		Parts:     (16 << 20) / partSize,
+		WallMS:    100,
+		MBPerS:    speed,
 	}
+}
+
+// TestSummarizeShowsConfiguredAndMaxActiveWorkers makes a capped worker cell
+// explicit without changing the archived meaning of the workers field.
+func TestSummarizeShowsConfiguredAndMaxActiveWorkers(t *testing.T) {
+	t.Parallel()
+
+	uncapped := speedRow("ghcr", 4<<20, 4, 90)
+	capped := speedRow("ghcr", 4<<20, 8, 100)
+
+	var out strings.Builder
+	summarize([]row{uncapped, capped}, &out)
+	text := out.String()
+
+	assert.Contains(t, text, "Columns are configured workers")
+	assert.Contains(t, text, "| 4MiB | 90.0 | 100.0 (4 max) |")
+	assert.Contains(t, text, "| configured | max active |")
+	assert.Contains(t, text, "| 8 | 4 | 16MiB |")
+}
+
+// TestRunSummarizeRejectsMixedRuns checks the command boundary before rows
+// from two measurement sessions can enter one population.
+func TestRunSummarizeRejectsMixedRuns(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "mixed.jsonl")
+	writer, err := newRowWriter(path)
+	require.NoError(t, err)
+	first := speedRow("zot", 4<<20, 1, 100)
+	second := speedRow("zot", 8<<20, 1, 200)
+	second.RunID = "other-run"
+	require.NoError(t, writer.write(first))
+	require.NoError(t, writer.write(second))
+	require.NoError(t, writer.close())
+
+	var stdout, stderr strings.Builder
+	code := runSummarize([]string{"-in", path}, &stdout, &stderr)
+	assert.Equal(t, exitFailure, code)
+	assert.Contains(t, stderr.String(), "multiple run_ids")
+	assert.Empty(t, stdout.String())
 }
 
 func TestSummarizeRendersMedianGrids(t *testing.T) {
@@ -62,7 +104,7 @@ func TestSummarizeMarksFailuresAndAbsences(t *testing.T) {
 	text := out.String()
 
 	assert.Contains(t, text, "| 4MiB | FAIL | — |", "an all-failed cell reads FAIL; an unvisited point reads a dash")
-	assert.Contains(t, text, "| 8MiB | 250.0* | 500.0 |", "a partly failed cell is starred")
+	assert.Contains(t, text, "| 8MiB | 250.0* | 500.0 (2 max) |", "a partly failed cell is starred")
 }
 
 func TestSummarizeCountsThrottles(t *testing.T) {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +16,7 @@ import (
 
 // rowSchema versions the result row shape. Bump it when a field changes
 // meaning, so old JSONL files cannot be summarized as if they were new.
-const rowSchema = 1
+const rowSchema = 2
 
 // row is one measurement: one timed scenario of one iteration of one cell.
 // Rows are self-contained on purpose — a JSONL file needs no spec beside it
@@ -24,6 +26,10 @@ type row struct {
 	Schema int `json:"schema"`
 	// RunID names the run the row belongs to.
 	RunID string `json:"run_id"`
+	// AttemptID names the process attempt that produced the row. A resumed
+	// process gets a fresh attempt and therefore fresh fixture bytes and
+	// repository paths.
+	AttemptID string `json:"attempt_id,omitempty"`
 	// Timestamp is when the measurement finished, in UTC.
 	Timestamp time.Time `json:"ts"`
 	// CellID is the cell the row measures.
@@ -44,8 +50,7 @@ type row struct {
 	Iteration int `json:"iteration"`
 	// WallMS is the phase's wall-clock time in milliseconds.
 	WallMS int64 `json:"wall_ms"`
-	// MBPerS is the derived throughput in decimal megabytes per second,
-	// the unit the design's per-connection expectations are quoted in.
+	// MBPerS is aggregate file throughput in decimal megabytes per second.
 	MBPerS float64 `json:"mb_per_s"`
 	// HTTPStatus counts responses outside the 2xx and 3xx families during
 	// the phase, keyed by status code. Empty means a clean phase.
@@ -61,7 +66,13 @@ type row struct {
 // key returns the identity resume bookkeeping uses: a scenario of an
 // iteration of a cell, measured at most once per output file.
 func (r row) key() string {
-	return r.CellID + "|" + r.Scenario + "|" + strconv.Itoa(r.Iteration)
+	return measurementKey(r.CellID, r.Scenario, r.Iteration)
+}
+
+// measurementKey returns the within-run identity of one measured scenario.
+// Result-set validation supplies the run boundary before this key is used.
+func measurementKey(cellID, scenario string, iteration int) string {
+	return cellID + "|" + scenario + "|" + strconv.Itoa(iteration)
 }
 
 // rowWriter appends rows to a JSONL file, flushing each one, so a killed
@@ -143,16 +154,48 @@ func readRows(path string) ([]row, error) {
 	return rows, nil
 }
 
+// prepareOutput enforces the append boundary and returns the successful rows
+// a validated resume may skip. A missing or empty path starts a fresh file.
+func prepareOutput(path string, resume bool, runID string) (map[string]bool, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect results: %w", err)
+	}
+	if info.Size() == 0 {
+		return map[string]bool{}, nil
+	}
+	if !resume {
+		return nil, fmt.Errorf("results %s is not empty; use -resume or a new -out path", path)
+	}
+
+	return completedKeys(path, runID)
+}
+
 // completedKeys returns the identity of every successful row already in the
-// output file at path, which is what -resume skips. Failed rows are left
-// out, so a re-run measures them again. A missing file means a fresh run.
-func completedKeys(path string) (map[string]bool, error) {
+// output file at path, after proving every row belongs to runID. Failed rows
+// are left out, so a re-run measures them again.
+func completedKeys(path, runID string) (map[string]bool, error) {
 	rows, err := readRows(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]bool{}, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	if err := validateResultRows(rows); err != nil {
+		return nil, err
+	}
+	if len(rows) > 0 && rows[0].RunID != runID {
+		return nil, fmt.Errorf(
+			"results %s belongs to run_id %q, not %q; use a new -out path",
+			path,
+			rows[0].RunID,
+			runID,
+		)
 	}
 
 	keys := make(map[string]bool, len(rows))
@@ -163,6 +206,58 @@ func completedKeys(path string) (map[string]bool, error) {
 	}
 
 	return keys, nil
+}
+
+// validateResultRows proves rows form one run and contain at most one
+// successful measurement per key. Failed attempts may precede one success.
+func validateResultRows(rows []row) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	runID := rows[0].RunID
+	if runID == "" {
+		return errors.New("results row 1 has an empty run_id")
+	}
+
+	successes := make(map[string]int, len(rows))
+	for index, r := range rows {
+		rowNumber := index + 1
+		if r.RunID != runID {
+			return fmt.Errorf(
+				"results contain multiple run_ids: row 1 is %q, row %d is %q",
+				runID,
+				rowNumber,
+				r.RunID,
+			)
+		}
+		if r.Error != "" {
+			continue
+		}
+		if first, found := successes[r.key()]; found {
+			return fmt.Errorf(
+				"results contain duplicate successful measurement %s at rows %d and %d",
+				r.key(),
+				first,
+				rowNumber,
+			)
+		}
+		successes[r.key()] = rowNumber
+	}
+
+	return nil
+}
+
+// newAttemptID returns a random path-safe identifier for one process attempt.
+// Its repository and fixture namespace prevents interrupted uploads from
+// contaminating a later cold measurement.
+func newAttemptID() (string, error) {
+	const bytes = 8
+	raw := make([]byte, bytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate attempt id: %w", err)
+	}
+
+	return hex.EncodeToString(raw), nil
 }
 
 // buildCommit returns the short VCS revision baked into the build, or empty

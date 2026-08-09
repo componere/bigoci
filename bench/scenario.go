@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,9 @@ type iteration struct {
 	cell cell
 	// number is the repeat, starting at zero.
 	number int
+	// attemptID names this process attempt's fresh fixture and repository
+	// namespace.
+	attemptID string
 	// client is the library client for the cell's target.
 	client *bigoci.Client
 	// counter watches the client's traffic per timed phase.
@@ -59,7 +63,14 @@ func (it *iteration) run(ctx context.Context) error {
 		fixtureDir = os.TempDir()
 	}
 
-	src, err := writeFixture(fixtureDir, it.spec.RunID, it.cell.id, it.number, it.cell.fileSize)
+	src, err := writeFixture(
+		fixtureDir,
+		it.spec.RunID,
+		it.attemptID,
+		it.cell.id,
+		it.number,
+		it.cell.fileSize,
+	)
 	if err != nil {
 		return err
 	}
@@ -76,18 +87,16 @@ func (it *iteration) run(ctx context.Context) error {
 	return it.pull(ctx, src, coldRef)
 }
 
-// push performs the cold push and returns the pushed reference, or an
-// empty reference when the push failed and the iteration cannot continue.
+// push performs one push and returns its reference. A previously recorded
+// cold push still executes as an unrecorded prerequisite when a downstream
+// scenario is missing, using this process attempt's fresh namespace.
 func (it *iteration) push(ctx context.Context, src fixture, scenario string) (bigoci.Reference, error) {
 	ref := it.reference(tagOf(scenario, it.number))
 
 	selected := it.selected(scenario)
-	if it.skip[it.rowKey(scenario)] && selected {
-		// Already measured by an earlier run. The artifact it pushed is
-		// still in the registry, so the phases behind it stay serviceable.
-		it.log("cell %s i%d %s: already recorded, skipping", it.cell.id, it.number, scenario)
-
-		return ref, nil
+	record := selected && !it.skip[it.rowKey(scenario)]
+	if selected && !record {
+		it.log("cell %s i%d %s: already recorded; running fresh prerequisite", it.cell.id, it.number, scenario)
 	}
 
 	timing, pushErr := it.timed(ctx, func(ctx context.Context) error {
@@ -99,15 +108,18 @@ func (it *iteration) push(ctx context.Context, src fixture, scenario string) (bi
 		return err
 	})
 
-	if selected {
+	if record {
 		if err := it.emitRow(scenario, timing, pushErr); err != nil {
 			return "", err
 		}
 	}
 	if pushErr != nil {
 		it.log("cell %s i%d %s FAILED: %v", it.cell.id, it.number, scenario, pushErr)
+		if record {
+			return "", nil
+		}
 
-		return "", nil
+		return "", fmt.Errorf("unrecorded %s prerequisite failed: %w", scenario, pushErr)
 	}
 
 	return ref, nil
@@ -118,6 +130,11 @@ func (it *iteration) push(ctx context.Context, src fixture, scenario string) (bi
 // transfer is the per-part existence checks and a manifest write.
 func (it *iteration) warmPush(ctx context.Context, src fixture) error {
 	if !it.selected(scenarioWarmPush) {
+		return nil
+	}
+	if it.skip[it.rowKey(scenarioWarmPush)] {
+		it.log("cell %s i%d %s: already recorded, skipping", it.cell.id, it.number, scenarioWarmPush)
+
 		return nil
 	}
 
@@ -138,8 +155,18 @@ func (it *iteration) pull(ctx context.Context, src fixture, ref bigoci.Reference
 		return nil
 	}
 
-	dest := filepath.Join(filepath.Dir(src.path), it.cell.id+"-i"+strconv.Itoa(it.number)+".pulled")
-	defer os.Remove(dest)
+	dest := filepath.Join(
+		filepath.Dir(src.path),
+		it.cell.id+"-"+it.attemptID+"-i"+strconv.Itoa(it.number)+".pulled",
+	)
+	if err := clearPullFiles(dest); err != nil {
+		return err
+	}
+	defer func() {
+		if err := clearPullFiles(dest); err != nil {
+			it.log("cell %s i%d %s cleanup FAILED: %v", it.cell.id, it.number, scenarioColdPull, err)
+		}
+	}()
 
 	timing, pullErr := it.timed(ctx, func(ctx context.Context) error {
 		err := it.client.Pull(ctx, ref, bigoci.ToFile(dest), bigoci.WithWorkers(it.cell.workers))
@@ -211,6 +238,7 @@ func (it *iteration) emitRow(scenario string, t timing, phaseErr error) error {
 	r := row{
 		Schema:     rowSchema,
 		RunID:      it.spec.RunID,
+		AttemptID:  it.attemptID,
 		Timestamp:  time.Now().UTC(),
 		CellID:     it.cell.id,
 		Registry:   it.cell.target.Name,
@@ -261,12 +289,30 @@ func (it *iteration) allRecorded() bool {
 
 // rowKey is the resume identity of one scenario of this iteration.
 func (it *iteration) rowKey(scenario string) string {
-	return it.cell.id + "|" + scenario + "|" + strconv.Itoa(it.number)
+	return measurementKey(it.cell.id, scenario, it.number)
 }
 
 // reference builds the full reference for tag in this cell's repository.
 func (it *iteration) reference(tag string) bigoci.Reference {
-	return bigoci.Reference(it.cell.target.Endpoint + "/" + it.cell.repository(it.spec.RunID) + ":" + tag)
+	return bigoci.Reference(
+		it.cell.target.Endpoint + "/" + it.cell.repository(it.spec.RunID, it.attemptID) + ":" + tag,
+	)
+}
+
+// pullPartialSuffix is the sibling suffix documented by bigoci.ToFile.
+// The benchmark removes it because a cold measurement must never resume.
+const pullPartialSuffix = ".bigoci-partial"
+
+// clearPullFiles removes both the published destination and bigoci's resumable
+// partial. Missing paths are already clean and do not fail the benchmark.
+func clearPullFiles(dest string) error {
+	for _, path := range []string{dest, dest + pullPartialSuffix} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale pull file %s: %w", path, err)
+		}
+	}
+
+	return nil
 }
 
 // throughput derives decimal megabytes per second from a byte count and a

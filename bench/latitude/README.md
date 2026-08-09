@@ -74,13 +74,22 @@ Everything below is ordered so the paid window stays as short as possible.
    Edit `specs/stage2.json`'s `part_sizes` to the stage-1 winners, then run
    stage2, stage3-dist, and stage4-ghcr the same way. The GHCR stage needs
    the credentials exported (see prerequisites) and pushes to a throwaway
-   private package.
+   private package. Its corrected targeted matrix uses a 4 GiB file, so both
+   256 MiB and 512 MiB parts can keep all eight configured workers active.
 
    An interrupted stage is not lost: `run.sh` ships the collected rows back
    up and passes `-resume`, so re-running the script continues where it
-   stopped. Resume assumes the registry box still holds what earlier
-   iterations pushed — it is valid within one provisioned session, not
-   across sessions.
+   stopped. The run ID is derived from the Latitude client ID, so retained
+   output from another provisioned session is rejected. Missing work uses a
+   fresh attempt namespace rather than blobs or partial files left by the
+   interrupted transfer.
+
+   For a GHCR-only rerun, provision one client on the same plan and site as
+   the original client; no local registry box is needed. Write `PROJECT`,
+   `CLIENT_ID`, and `CLIENT_IP` to `hosts.env`, run only stage 4, then destroy
+   that exact client ID with `lsh servers destroy --id=... --no-input` and
+   verify it is absent from the project inventory. Do not use the pair-based
+   `destroy.sh` with a client-only `hosts.env`.
 
 5. **Sanity-check before teardown.** Compare the fastest grid cells against
    `link.txt`; a cell that beats the link is a bug, not a result. Confirm
@@ -98,7 +107,8 @@ Everything below is ordered so the paid window stays as short as possible.
 
 ## Costs and expectations
 
-Two `m4-metal-small` boxes are about $1.62/hour combined. The full staged
+Two `m4-metal-small` boxes are about $1.62/hour combined; a GHCR-only client
+is about $0.81/hour. The full staged
 matrix fits in one afternoon: roughly 30 minutes for stage 1, 50 for
 stage 2, 15 for stage 3, and up to 40 for the GHCR stage, plus provisioning
 and setup overhead. Registry disk grows to roughly 700 GiB across the run;

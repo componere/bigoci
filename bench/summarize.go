@@ -37,6 +37,11 @@ func runSummarize(args []string, stdout, stderr io.Writer) int {
 
 		return exitFailure
 	}
+	if err := validateResultRows(rows); err != nil {
+		fmt.Fprintf(stderr, "bench summarize: %v\n", err)
+
+		return exitFailure
+	}
 
 	summarize(rows, stdout)
 
@@ -47,13 +52,14 @@ func runSummarize(args []string, stdout, stderr io.Writer) int {
 // registry, scenario, and full transfer shape.
 type group struct {
 	// registry, scenario, partSize, workers, fileSize, and parts identify
-	// the population; they mirror the row fields of the same names.
-	registry string
-	scenario string
-	partSize int64
-	workers  int
-	fileSize int64
-	parts    int64
+	// the population; maxActive is derived from workers and parts.
+	registry  string
+	scenario  string
+	partSize  int64
+	workers   int
+	maxActive int
+	fileSize  int64
+	parts     int64
 	// speeds holds the successful measurements' throughput, in MB/s.
 	speeds []float64
 	// failures counts the error rows.
@@ -93,12 +99,13 @@ func groupRows(rows []row) []*group {
 		g, ok := index[key]
 		if !ok {
 			g = &group{
-				registry: r.Registry,
-				scenario: r.Scenario,
-				partSize: r.PartSize,
-				workers:  r.Workers,
-				fileSize: r.FileSize,
-				parts:    r.Parts,
+				registry:  r.Registry,
+				scenario:  r.Scenario,
+				partSize:  r.PartSize,
+				workers:   r.Workers,
+				maxActive: maxActiveWorkers(r.Workers, r.Parts),
+				fileSize:  r.FileSize,
+				parts:     r.Parts,
 			}
 			index[key] = g
 			groups = append(groups, g)
@@ -183,7 +190,10 @@ func writeGrid(w io.Writer, key gridKey, groups []*group) {
 	workers := axisValues(cells, func(g *group) int { return g.workers })
 
 	fmt.Fprintf(w, "## %s — %s — %s file\n\n", key.registry, key.scenario, formatSize(key.fileSize))
-	fmt.Fprintf(w, "Median MB/s.\n\n")
+	fmt.Fprintf(
+		w,
+		"Median aggregate MB/s. Columns are configured workers; capped cells show their maximum active workers.\n\n",
+	)
 
 	var header, rule strings.Builder
 	header.WriteString("| part \\ workers |")
@@ -215,17 +225,27 @@ func gridCell(cells []*group, partSize int64, workers int) string {
 			continue
 		}
 		if len(g.speeds) == 0 {
-			return "FAIL"
+			return cappedCell("FAIL", g)
 		}
 		text := strconv.FormatFloat(median(g.speeds), 'f', 1, 64)
 		if g.failures > 0 {
 			text += "*"
 		}
 
-		return text
+		return cappedCell(text, g)
 	}
 
 	return "—"
+}
+
+// cappedCell annotates a grid cell when the requested worker count exceeds
+// the number of parts available to schedule.
+func cappedCell(text string, g *group) string {
+	if g.maxActive < g.workers {
+		return text + " (" + strconv.Itoa(g.maxActive) + " max)"
+	}
+
+	return text
 }
 
 // writeStats renders the long-form table over every population.
@@ -234,13 +254,13 @@ func writeStats(w io.Writer, groups []*group) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(
 		w,
-		"| registry | scenario | part | workers | file | parts | n | median | mean | stddev | min | max | fail | 429/503 |",
+		"| registry | scenario | part | configured | max active | file | parts | n | median | mean | stddev | min | max | fail | 429/503 |",
 	)
-	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 
 	for _, g := range groups {
-		fmt.Fprintf(w, "| %s | %s | %s | %d | %s | %d | %d | %s | %s | %s | %s | %s | %d | %d |\n",
-			g.registry, g.scenario, formatSize(g.partSize), g.workers, formatSize(g.fileSize), g.parts,
+		fmt.Fprintf(w, "| %s | %s | %s | %d | %d | %s | %d | %d | %s | %s | %s | %s | %s | %d | %d |\n",
+			g.registry, g.scenario, formatSize(g.partSize), g.workers, g.maxActive, formatSize(g.fileSize), g.parts,
 			len(g.speeds), mbs(median(g.speeds)), mbs(mean(g.speeds)), mbs(stddev(g.speeds)),
 			mbs(slices.Min(orZero(g.speeds))), mbs(slices.Max(orZero(g.speeds))), g.failures, g.throttles,
 		)

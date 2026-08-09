@@ -52,10 +52,20 @@ func TestCellRepositoryIsolatesRunsAndCells(t *testing.T) {
 
 	cells := expand(matrixSpec(t))
 
-	assert.Equal(t, "bench/unit-run/zot-p4mib-w1-f16mib", cells[0].repository("unit-run"),
+	assert.Equal(t, "bench/unit-run/attempt/zot-p4mib-w1-f16mib", cells[0].repository("unit-run", "attempt"),
 		"a repository name must be entirely lowercase, whatever the cell ID reads")
-	assert.NotEqual(t, cells[0].repository("run-a"), cells[0].repository("run-b"),
+	assert.NotEqual(t, cells[0].repository("run-a", "attempt"), cells[0].repository("run-b", "attempt"),
 		"two runs must never share a repository")
+	assert.NotEqual(t, cells[0].repository("run", "attempt-a"), cells[0].repository("run", "attempt-b"),
+		"a resumed process must not share a repository with an interrupted push")
+}
+
+// TestMaxActiveWorkersIsCappedByParts checks both capped and uncapped shapes.
+func TestMaxActiveWorkersIsCappedByParts(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, 4, maxActiveWorkers(4, 16))
+	assert.Equal(t, 4, maxActiveWorkers(8, 4))
 }
 
 func TestCellPartsIsACeilingDivision(t *testing.T) {

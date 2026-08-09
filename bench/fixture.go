@@ -28,14 +28,12 @@ type fixture struct {
 // cell and returns it with its content digest.
 //
 // The bytes are a seeded ChaCha8 stream, so generation moves at disk speed
-// and a run can be reproduced exactly. The seed folds in the run ID, the
-// cell ID, and the iteration, which is the property the whole harness
-// leans on: every iteration pushes bytes no registry has seen, so a
-// deduplicating registry can never quietly turn a cold push into a no-op.
-// Random content also makes a misplaced part visible — repeated bytes
-// would reassemble correctly even if two parts swapped places.
-func writeFixture(dir, runID, cellID string, iteration int, size int64) (fixture, error) {
-	path := filepath.Join(dir, cellID+"-i"+strconv.Itoa(iteration)+".src")
+// and an attempt can be reproduced exactly. The seed folds in the run,
+// attempt, cell, and iteration identities. A new process attempt therefore
+// cannot reuse blobs an interrupted push retained. Random content also makes
+// a misplaced part visible; repeated bytes would hide swapped parts.
+func writeFixture(dir, runID, attemptID, cellID string, iteration int, size int64) (fixture, error) {
+	path := filepath.Join(dir, cellID+"-"+attemptID+"-i"+strconv.Itoa(iteration)+".src")
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fixturePerm)
 	if err != nil {
@@ -43,7 +41,11 @@ func writeFixture(dir, runID, cellID string, iteration int, size int64) (fixture
 	}
 
 	hasher := sha256.New()
-	written, err := io.CopyN(io.MultiWriter(f, hasher), fixtureStream(runID, cellID, iteration), size)
+	written, err := io.CopyN(
+		io.MultiWriter(f, hasher),
+		fixtureStream(runID, attemptID, cellID, iteration),
+		size,
+	)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -55,9 +57,9 @@ func writeFixture(dir, runID, cellID string, iteration int, size int64) (fixture
 }
 
 // fixtureStream returns the generator an iteration's fixture is filled
-// from, seeded from the identifiers that make the iteration unique.
-func fixtureStream(runID, cellID string, iteration int) io.Reader {
-	seed := sha256.Sum256([]byte(runID + "|" + cellID + "|" + strconv.Itoa(iteration)))
+// from, seeded from the identifiers that make the attempt unique.
+func fixtureStream(runID, attemptID, cellID string, iteration int) io.Reader {
+	seed := sha256.Sum256([]byte(runID + "|" + attemptID + "|" + cellID + "|" + strconv.Itoa(iteration)))
 
 	return rand.NewChaCha8(seed)
 }

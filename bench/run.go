@@ -62,7 +62,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `bench measures bigoci transfer throughput.
 
 Commands:
-  bench run -spec <spec.json> -out <results.jsonl> [-resume] [-endpoint name=host:port]
+  bench run -spec <spec.json> -out <results.jsonl> [-resume] [-run-id id] [-endpoint name=host:port]
   bench summarize -in <results.jsonl>
 
 run walks the matrix a spec describes and appends one JSONL row per timed
@@ -105,6 +105,7 @@ func runBench(ctx context.Context, args []string, stderr io.Writer) int {
 	specPath := flags.String("spec", "", "path to the run-spec JSON file (required)")
 	outPath := flags.String("out", "", "path of the JSONL results file to append to (required)")
 	resume := flags.Bool("resume", false, "skip measurements already recorded in the output file")
+	runID := flags.String("run-id", "", "override the spec run_id for this measurement session")
 	endpoints := endpointFlag{}
 	flags.Var(endpoints, "endpoint", "override a target's endpoint as name=host:port (repeatable)")
 
@@ -128,6 +129,11 @@ func runBench(ctx context.Context, args []string, stderr io.Writer) int {
 
 		return exitUsage
 	}
+	if runIDErr := applyRunID(spec, *runID); runIDErr != nil {
+		fmt.Fprintf(stderr, "bench run: %v\n", runIDErr)
+
+		return exitUsage
+	}
 
 	failed, err := runMatrix(ctx, spec, *outPath, *resume, stderr)
 	if err != nil {
@@ -142,6 +148,20 @@ func runBench(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 
 	return exitOK
+}
+
+// applyRunID substitutes a nonempty command-line run ID after validating it
+// with the same repository-path grammar as the spec.
+func applyRunID(spec *Spec, runID string) error {
+	if runID == "" {
+		return nil
+	}
+	if !validPathSegment(runID) {
+		return fmt.Errorf("-run-id %q: use lowercase letters, digits, dot, dash, and underscore", runID)
+	}
+	spec.RunID = runID
+
+	return nil
 }
 
 // applyEndpoints substitutes the -endpoint overrides into the spec,
@@ -171,17 +191,18 @@ func applyEndpoints(spec *Spec, endpoints endpointFlag) error {
 // should never sit idle because one cell went bad. Only a context
 // cancellation or a failure to record results stops the walk.
 func runMatrix(ctx context.Context, spec *Spec, outPath string, resume bool, stderr io.Writer) (int, error) {
-	skip := map[string]bool{}
-	if resume {
-		var err error
-		if skip, err = completedKeys(outPath); err != nil {
-			return 0, err
-		}
+	skip, err := prepareOutput(outPath, resume, spec.RunID)
+	if err != nil {
+		return 0, err
+	}
+	attemptID, err := newAttemptID()
+	if err != nil {
+		return 0, err
 	}
 
 	if spec.FixtureDir != "" {
-		if err := os.MkdirAll(spec.FixtureDir, 0o750); err != nil {
-			return 0, fmt.Errorf("create fixture dir: %w", err)
+		if mkdirErr := os.MkdirAll(spec.FixtureDir, 0o750); mkdirErr != nil {
+			return 0, fmt.Errorf("create fixture dir: %w", mkdirErr)
 		}
 	}
 
@@ -193,9 +214,10 @@ func runMatrix(ctx context.Context, spec *Spec, outPath string, resume bool, std
 
 	cells := expand(spec)
 	walk := &matrixWalk{
-		spec:   spec,
-		skip:   skip,
-		writer: writer,
+		spec:      spec,
+		attemptID: attemptID,
+		skip:      skip,
+		writer:    writer,
 		log: func(format string, args ...any) {
 			fmt.Fprintf(stderr, format+"\n", args...)
 		},
@@ -217,6 +239,8 @@ func runMatrix(ctx context.Context, spec *Spec, outPath string, resume bool, std
 type matrixWalk struct {
 	// spec is the run's spec.
 	spec *Spec
+	// attemptID isolates this process attempt's fixtures and repositories.
+	attemptID string
 	// skip is the resume set of already-measured rows.
 	skip map[string]bool
 	// writer records finished rows.
@@ -240,12 +264,13 @@ func (w *matrixWalk) cell(ctx context.Context, c cell) error {
 		}
 
 		it := &iteration{
-			spec:    w.spec,
-			cell:    c,
-			number:  number,
-			client:  client,
-			counter: counter,
-			skip:    w.skip,
+			spec:      w.spec,
+			cell:      c,
+			number:    number,
+			attemptID: w.attemptID,
+			client:    client,
+			counter:   counter,
+			skip:      w.skip,
 			emit: func(r row) error {
 				if r.Error != "" {
 					w.failed++
