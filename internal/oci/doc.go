@@ -32,7 +32,22 @@
 // connections exist, and the attempt budget it spends is the only one there
 // is.
 //
-// This phase talks to registries anonymously. Authentication, and the
-// redirect handling a blob read needs on registries that offload content to
-// presigned object storage, arrive in later phases.
+// Authentication is a pre-condition of a request rather than a recovery from
+// one. A repository holds what the registry challenged with and the token
+// acquired for each scope, the request builder stamps the Authorization
+// header while it builds a request, and every request — the ordinary ones and
+// the token exchanges alike — goes out through the caller's client, so
+// nothing watching that client is blind to any of them. A registry that never
+// challenges costs nothing at all: no probe, no header, and not one extra
+// request.
+//
+// A refusal is the only thing that makes this package send a request a second
+// time, and only when answering the challenge changed what that request would
+// carry and the standard library says the body can be produced again. A blob
+// upload's body cannot, by construction, so a refusal in the middle of one
+// comes back marked worth repeating and the orchestrator opens the file
+// again. Nothing else here is ever repeated.
+//
+// The redirect handling a blob read needs on registries that offload their
+// content to presigned object storage arrives in a later phase.
 package oci

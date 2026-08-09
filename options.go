@@ -3,6 +3,9 @@ package bigoci
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/componere/bigoci/internal/auth"
+	"github.com/componere/bigoci/internal/oci"
 )
 
 // PartSize is the size in bytes of the parts a file is split into: the P of
@@ -85,11 +88,66 @@ func WithHTTPClient(client *http.Client) Option {
 
 // WithPlainHTTP talks http:// to the registry instead of https://.
 //
+// Everything a transfer sends rides unencrypted under it, credentials and
+// token exchanges included, which is one more reason it is for local
+// registries only. A token endpoint a plain-HTTP registry names is refused
+// unless it is the registry's own host.
+//
 // Local registries — zot or CNCF Distribution in a container, a test fixture
 // — serve plain HTTP. Nothing else should.
 func WithPlainHTTP() Option {
 	return func(s *clientSettings) {
 		s.plainHTTP = true
+	}
+}
+
+// WithDockerCredentials authenticates with the credentials `docker login`
+// stores: the entries in the Docker configuration file, and whatever the
+// credential helpers that file names print for a registry.
+//
+// It is opt-in, and the opt is the point. Reading a user's configuration is
+// one thing; a configuration that names a credential helper makes a lookup
+// into running someone else's program, and a library that did that because it
+// was linked in would be a surprise with a security dimension. Naming this
+// option is the consent for both.
+//
+// The file is $DOCKER_CONFIG/config.json where that variable is set, and
+// .docker/config.json under the user's home otherwise. [New] reads it, so a
+// file that cannot be parsed fails there rather than in the middle of a
+// transfer, and a file that is not there is not a failure at all: that is a
+// machine nobody has logged in on, and every registry resolves to the
+// anonymous credential. Helpers are asked afresh at every lookup, but the file
+// itself is read once, so a `docker login` run during a transfer does not
+// reach it.
+//
+// bigoci only ever reads. No transfer writes a credential anywhere.
+func WithDockerCredentials() Option {
+	return func(s *clientSettings) {
+		s.credentials = dockerCredentials
+	}
+}
+
+// WithCredentials presents username and secret to whatever registry a transfer
+// dials.
+//
+// It is the direct route, for a caller who already holds the secret: a CI job
+// with a registry token in its environment, or a program that reads its own
+// configuration. Nothing is looked up, no file is read, and no program is run.
+// secret is a password, or — at most registries today — a personal access
+// token.
+//
+// Every registry is the deliberate part. The credential goes to whatever host
+// the reference names, so the caller, who chose both the secret and the
+// reference, is the one deciding who sees it.
+// [WithDockerCredentials] is the other shape: it answers only for the hosts a
+// login was stored under.
+//
+// Naming both options leaves the last one named in effect.
+func WithCredentials(username, secret string) Option {
+	return func(s *clientSettings) {
+		s.credentials = func() (oci.Credentials, error) {
+			return auth.NewStatic(oci.Credential{Username: username, Password: secret}), nil
+		}
 	}
 }
 
@@ -139,6 +197,30 @@ type clientSettings struct {
 	httpClient *http.Client
 	// plainHTTP talks http:// to the registry instead of https://.
 	plainHTTP bool
+	// credentials builds the source a transfer resolves credentials through,
+	// nil when no option named one. It is a builder rather than a built source
+	// because building one can fail — reading the Docker configuration is the
+	// case — and [New] is where a caller can still be told about it.
+	credentials func() (oci.Credentials, error)
+}
+
+// dockerCredentials builds the credential source [WithDockerCredentials]
+// names: the Docker configuration file wherever this machine keeps it.
+//
+// A machine that cannot say where its configuration would be — no home
+// directory and no $DOCKER_CONFIG, the shape of a scratch container — has no
+// configuration, which is the same answer as a configuration file that does
+// not exist: no source is installed and every registry resolves anonymously.
+// The error [New] reports is reserved for a configuration that exists and
+// cannot be read, because that is the one case where failing quietly would
+// hide a credential the user meant to be used.
+func dockerCredentials() (oci.Credentials, error) {
+	path, err := auth.DefaultConfigPath()
+	if err != nil {
+		return nil, nil //nolint:nilnil,nilerr // no locatable configuration is the anonymous case, not a failure
+	}
+
+	return auth.NewStore(path)
 }
 
 // pushSettings are the knobs one push runs with, once the defaults and the

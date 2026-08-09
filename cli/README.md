@@ -434,6 +434,14 @@ transport error, or any other status of 400 or more, is a failure. A blob check
 that failed outright is counted under `blob-check=` and under `failed=`, and
 shows up in neither the hits nor the misses.
 
+A 401 is counted the same way, which has one consequence worth stating up
+front: **against a registry that asks for a credential, a healthy transfer
+reports `failed>=1`.** The 401 that carries the challenge is how the protocol
+starts, and this instrument counts statuses rather than reading intent. So
+`failed=0` is a gate only against a registry that never challenges; against one
+that does, read the exit code and the counts of the classes you care about.
+Each token exchange lands in `other=`.
+
 ## Reading the output
 
 Everything below assumes a local registry. zot is the one the library's own
@@ -634,13 +642,51 @@ echo "exit=$?"   # 3
 The second failure line names the sentinel. That is `errors.Is` demonstrated
 from a shell.
 
-### No credential in the log (phase 5)
+### A transfer nobody may make exits 6
 
-Once the library authenticates, run a push against a registry that requires a
-credential and grep for it:
+Every run uses the credentials `docker login` stores, with no flag to switch
+that off. The way to prove a run carried none is to give it a configuration
+directory with nothing in it:
 
 ```
-./bin/bigoci push -debug /tmp/model.bin reg.example.com/team/model:v1 2>auth.log
+DOCKER_CONFIG=$(mktemp -d) ./bin/bigoci pull ghcr.io/you/private:v1 /tmp/x.bin
+echo "exit=$?"   # 6
+```
+
+```
+bigoci: unauthorized: pull ghcr.io/you/private:v1 to /tmp/x.bin: fetch the manifest: …
+bigoci: matched sentinel bigoci.ErrUnauthorized (exit 6)
+```
+
+That is the whole authentication story from a shell: the environment says what
+the run may see, and the exit code says what came of it. The same recipe with a
+wrong token in the configuration exits 6 as well, and the `-debug` log shows one
+token request and no waiting — a refused credential is not worth another
+attempt.
+
+### An authenticated push
+
+This one needs a registry that authenticates, so it is written against GHCR
+rather than the local zot every other recipe uses. Nothing about the command
+line changes:
+
+```
+docker login ghcr.io
+./bin/bigoci push -part-size 16MiB -debug /tmp/model.bin \
+  ghcr.io/you/model:v1 2>auth.log
+grep '^bigoci: http ' auth.log
+```
+
+Two things read differently than they do against zot. The summary line reports
+`failed=1` or more — the 401 that carries the challenge is the protocol working
+— and `other=` counts the token exchanges rather than zero.
+
+### No credential in the log
+
+The `-debug` log renders the *scheme* a request authenticated with and never
+the credential itself. Prove it on the log the recipe above wrote:
+
+```
 grep -c "$TOKEN" auth.log                    # must be 0
 grep -o 'auth=[a-z]*' auth.log | sort -u     # the positive control
 ```
@@ -648,7 +694,7 @@ grep -o 'auth=[a-z]*' auth.log | sort -u     # the positive control
 The first grep proves the credential is absent. The second is the control that
 proves the grep would have found something: `auth=bearer` on the lines that
 carried one means the instrument was looking at authenticated requests, not at
-an empty log.
+an empty log. A log where every line reads `auth=none` proves nothing at all.
 
 ### Resuming an interrupted pull
 
@@ -744,9 +790,10 @@ part was refetched over the damage.
 
 ### Forward pointers
 
-- **Authentication (phase 5).** Watch for `class=other` lines around a `401`
-  with a `challenge=` field, and for the `auth=` column changing from `none` to
-  `bearer`.
+- **Redirects to object storage.** Registries that offload blob content answer
+  a blob read with a `307` and a `loc=` field naming signed storage. The hops
+  are visible today because the standard library re-issues them through the
+  same transport; the caveat below says what that does and does not prove.
 
 ## Honest caveats
 
@@ -757,11 +804,12 @@ body. The two are not comparable, and neither is a throughput measurement.
 
 **Redirect hops are visible today, and that is contingent.** A registry that
 redirects blob reads to storage shows both hops, because the standard library
-re-issues the redirected request through the same transport. After the library
-grows authentication, this only stays true if it keeps the caller's transport
-outermost and derives its clean redirect client from it. A log with a `307` and
-no follow-up request line does not prove that no credential leaked — it proves
-the instrument went blind.
+re-issues the redirected request through the same transport. The library now
+authenticates and keeps the caller's transport outermost — token exchanges
+show up as `class=other` lines — but what a redirect hop carries is still the
+standard library's decision until the redirect phase derives its clean client
+from the caller's. A log with a `307` and no follow-up request line does not
+prove that no credential leaked — it proves the instrument went blind.
 
 **The counters are HTTP-level inference, not library truth.** They are what an
 observer outside the library can honestly say. A count that disagrees with the
@@ -788,8 +836,10 @@ which build ran, not as proof of which source it was built from.
 
 ## Limits
 
-- No authentication and no progress output. Each arrives with the library phase
-  that implements it.
+- No progress output. It arrives with the library phase that implements it.
+- No credentials flag. Authentication is the library's `docker login`
+  credentials, always, and the way to run without them is an empty
+  `DOCKER_CONFIG`.
 - No environment variables, no configuration file, no shell completions. Flags
   are the whole interface.
 - No `-` operands for standard input or standard output, and there cannot be.

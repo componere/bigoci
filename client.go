@@ -40,21 +40,48 @@ type Client struct {
 	// settings are the transport settings the options collected; the fields
 	// are documented on clientSettings, their one home.
 	settings clientSettings
+	// creds resolves what a transfer presents to a registry that asks, nil
+	// when no option named a source. Built once, by [New], and shared by every
+	// transfer the client carries.
+	creds oci.Credentials
 }
 
 // New returns a client configured by opts.
 //
-// It reports an error when an option cannot be applied. None can today; the
-// error is in the signature because the options that will are known — loading
-// credentials from the Docker configuration is the case the design names —
-// and adding it later would break every caller.
+// It reports an error when an option cannot be applied, which today is one
+// case: [WithDockerCredentials] records the intent to use the credentials
+// `docker login` stores, and this is where they are read. A configuration file
+// that is not there — or a machine that cannot even name where one would be,
+// with no home directory and no $DOCKER_CONFIG — is not an error: that is a
+// machine nobody has logged in on, and every registry resolves to the
+// anonymous credential. A file that exists but cannot be read as a
+// configuration is, because a caller who asked bigoci to use their
+// credentials would otherwise watch it transfer without them and fail
+// somewhere less obvious.
+//
+// A client built with no credential option is not a client with
+// authentication turned off. A registry that asks for a token still gets the
+// full exchange, made anonymously, which is what registries that hand out
+// public-read tokens expect. It only means bigoci has no user name or secret
+// to offer when the exchange asks for one.
 func New(opts ...Option) (*Client, error) {
 	var applied clientSettings
 	for _, opt := range opts {
 		opt(&applied)
 	}
 
-	return &Client{settings: applied}, nil
+	client := &Client{settings: applied}
+
+	if applied.credentials != nil {
+		creds, err := applied.credentials()
+		if err != nil {
+			return nil, err
+		}
+
+		client.creds = creds
+	}
+
+	return client, nil
 }
 
 // Push uploads the file src names to ref and returns the descriptor of the
@@ -256,7 +283,10 @@ func discardEmptyPartial(sink *file.Sink) {
 // transport settings. Reference grammar lives in the adapter, so this is
 // where a malformed reference is reported.
 func (c *Client) repository(ref Reference) (*oci.Repository, error) {
-	options := []oci.Option{oci.WithHTTPClient(c.settings.httpClient)}
+	options := []oci.Option{
+		oci.WithHTTPClient(c.settings.httpClient),
+		oci.WithCredentials(c.creds),
+	}
 	if c.settings.plainHTTP {
 		options = append(options, oci.WithPlainHTTP())
 	}

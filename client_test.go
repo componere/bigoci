@@ -2,6 +2,7 @@ package bigoci_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	digest "github.com/opencontainers/go-digest"
@@ -127,6 +128,40 @@ func TestNewIgnoresANilHTTPClient(t *testing.T) {
 	)
 
 	require.NoError(t, err, "a nil client must leave the default transport in place")
+}
+
+// TestNewReadsTheDockerConfiguration pins where a credential source is built
+// and what it costs to build a broken one.
+//
+// [bigoci.New] returns an error for exactly one reason today, and this is it:
+// the caller asked for the credentials a login stored, so the configuration is
+// read while a client is being built rather than in the middle of a transfer.
+// A file nobody wrote is not a failure — that is a machine nobody has logged
+// in on — and a file that is not a configuration is, because the alternative
+// is transferring without the credentials the caller asked for and failing
+// somewhere that does not mention them.
+//
+// It runs sequentially: DOCKER_CONFIG belongs to the process, not to the test.
+func TestNewReadsTheDockerConfiguration(t *testing.T) {
+	t.Run("a directory holding no configuration is the anonymous machine", func(t *testing.T) {
+		t.Setenv(dockerConfigEnv, t.TempDir())
+
+		client, err := bigoci.New(bigoci.WithDockerCredentials())
+
+		require.NoError(t, err)
+		assert.NotNil(t, client)
+	})
+
+	t.Run("a configuration that cannot be read fails while the client is built", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, dockerConfigName), []byte("{not json"), fixturePerm))
+		t.Setenv(dockerConfigEnv, dir)
+
+		_, err := bigoci.New(bigoci.WithDockerCredentials())
+
+		require.Error(t, err, "a malformed configuration must be reported before any transfer starts")
+		assert.Contains(t, err.Error(), dir, "the failure must name the file it could not read")
+	})
 }
 
 func TestPushSkipsPartsTheRegistryAlreadyHolds(t *testing.T) {

@@ -152,21 +152,44 @@ larger structures — a standard OCI image index that references several
 artifacts under one tag, for example — without bigoci knowing about the
 composition.
 
-## Decision: reuse the auth ecosystem behind a port
+## Decision: borrow the credential store, own the token dance
 
-Authentication is where from-scratch would be waste. The interop point that
-matters is Docker's config file and credential-helper protocol. Hooking into
-it means `docker login`, cloud credential helpers (ECR, ACR, Artifact
-Registry), and CI registry setups work with zero per-provider code in bigoci.
+Authentication splits into two halves, and they have opposite answers.
 
-The core defines one port: given a registry and a scope, return an
-authenticated `http.RoundTripper`. The default adapter wraps oras-go v2's
-`registry/remote/auth` and `credentials` packages, which read Docker config,
-call credential helpers, run the bearer token exchange, and cache tokens, in
-a module whose dependencies are the OCI spec types and go-digest.
-go-containerregistry's `authn` keychain is the documented alternative for
-callers who want in-process cloud keychains (ECR, ACR, GCR without helper
-binaries). The port makes the swap invisible to the core.
+**Reading credentials is interop, so it is borrowed.** The point that matters
+is Docker's configuration file and the credential-helper protocol. Hooking
+into it means `docker login`, cloud credential helpers (ECR, ACR, Artifact
+Registry), and CI registry setups work with no per-provider code in bigoci.
+oras-go v2's `credentials` package does exactly that — the `auths` keys, the
+base64 `auth` field, the helper protocol, Docker Hub's odd server address —
+and it costs one new module whose own requirements bigoci already has. That
+package is the whole of what `internal/auth` wraps.
+
+**Performing the exchange is transport, so bigoci owns it.** oras-go's
+`auth.Client` refreshes a credential by *resending the request that failed*,
+and its token cache has no notion of expiry precisely because the resend is
+its refresh strategy. bigoci's largest request is a blob `PUT` streaming a
+section of a file, whose body cannot be produced twice — the standard library
+says so, by leaving `GetBody` nil — so a client that recovers by resending
+cannot be the one sending it. Authentication is therefore treated as a
+**pre-condition of a request, not a recovery from one**: what a request must
+carry is worked out before it is built, the header is stamped as it is built,
+and everything goes out through the caller's own client, token exchanges
+included, so a caller watching that client is never blind to a request bigoci
+made.
+
+The port is one method wide: given a registry, return the credential to
+present. It deliberately does not return a `RoundTripper`. A transport-shaped
+port would replace the caller's client (or hide requests from it), would stamp
+`Authorization` on every request that passed through it — including one
+re-issued to signed object storage, where the credential does not belong — and
+could not express either of the two things the dance actually needs to say:
+"resolve this before a body that can only be sent once goes out", and "the
+credential you presented was refused".
+
+go-containerregistry's `authn` keychain stays the documented alternative for
+callers who want in-process cloud keychains, through `WithHTTPClient`, with the
+leak warning the [authentication how-to](../how-to/authenticate.md) spells out.
 
 ## Push path
 
@@ -267,6 +290,84 @@ it during pull would require a second sequential read of the assembled file,
 so it is off by default. Callers who want the independent check can turn it
 on.
 
+## Authentication
+
+A registry states its requirement by refusing a request, so bigoci waits to be
+asked. The first request of a transfer goes out carrying nothing; a registry
+that never challenges is never authenticated against, costs no extra request,
+and produces exactly the traffic it did before bigoci learned any of this. That
+inertness is a gate, not a hope: the end-to-end suites assert the request counts
+of an unchallenged transfer to the number.
+
+A challenge is answered before the next request is built. bigoci resolves the
+credential for the host it dialed — never for the name the challenge offers in
+its `service` parameter, which is the registry choosing which secret leaves the
+machine — asks the token endpoint the challenge named, and stamps the result on
+requests as they are built. Token exchanges ride the caller's own client, like
+every other request.
+
+**Scope is a function of the method:** `pull` for `GET` and `HEAD`,
+`pull,push` for everything else. That holds a repository's token cache to two
+entries and keeps a pull from ever asking for write access — an anonymous
+request for `pull,push` is refused outright at some registries, which would
+break every anonymous pull. A challenge that names its own scope widens what
+the exchange asks for; it does not change which entry the answer is filed
+under.
+
+### What a refusal is worth
+
+The rule underneath the table: **a refusal is worth acting on only when acting
+on it changes what the next request will present.** Otherwise it is terminal.
+A credential that was itself a refresh and has never carried a successful
+request has had its chance.
+
+| Situation | What happens | Attempts spent |
+|---|---|---|
+| Wrong credential (the token endpoint refuses it) | terminal `ErrUnauthorized`, naming the access that was refused | 0 |
+| Anonymous against a private repository | the anonymous token is refused in turn; terminal | 0 |
+| Token expired, request replayable | refreshed and re-issued inside the same call | 0 |
+| Token expired, request is a blob `PUT` | refreshed, and the part comes back worth repeating: the orchestrator re-streams it from disk | 1 of 4 |
+| A 403 carrying a challenge | the same one refresh a 401 gets | ≤1 |
+| A 403 carrying no challenge | terminal: a permission answer, or a firewall in front of the registry | 0 |
+| A challenge bigoci cannot read or cannot answer | terminal, quoting what arrived | 0 |
+
+Two consequences worth stating. A blob `PUT` that meets an expired token costs
+the part one of its four attempts even though nothing was wrong — the
+alternative is resending a body that has already been read off the disk, which
+is the one thing the transport must never do. And a 403 from a proxy or a web
+application firewall reports as unauthorized, which is admitted the same way a
+413 answering a manifest write is admitted: sniffing bodies to tell them apart
+would be a table of vendor behaviors in another shape.
+
+Failures of the token endpoint itself classify through the ordinary table: a
+429 or a 5xx there is transient with the same `Retry-After` floor a blob
+request gets, and a 200 carrying no token is terminal and deliberately *not*
+`ErrUnauthorized` — that is the registry misbehaving, not your credentials.
+
+### Expiry is read off the monotonic clock
+
+A token is used while `now - acquired < lifetime - margin`, where `lifetime` is
+the `expires_in` the endpoint stated (60 seconds when it states none, which is
+the spec's own default and what GHCR does) and the margin is 30 seconds, or
+half of a shorter lifetime. The registry's `issued_at` is ignored: it is the
+registry's wall clock, and it is the only place clock skew could enter.
+`time.Since` reads Go's monotonic clock, so an NTP step cannot make a live
+token look dead, and a registry that disagrees anyway answers 401 and gets one
+refresh. Skew costs an extra exchange, never a transfer.
+
+The margin rests on one assumption, stated because it is load-bearing: a
+registry authorizes a request when it reads the headers, not when it finishes
+reading the body. At a 512 MiB part size a single `PUT` outlives a 60-second
+token on any real link, so nothing else could make the arithmetic work. The
+manual conformance gate against a real registry is what de-risks it.
+
+### What is not supported
+
+An `identitytoken` in the configuration — the OAuth2 refresh token some logins
+store in place of a password — is refused out loud rather than silently
+downgraded to anonymous. Exchanging one is a named follow-up. A
+`registrytoken` is presented verbatim, with no exchange.
+
 ## Defaults
 
 Part size and worker count are starting points, not measured optima. The
@@ -355,9 +456,23 @@ type Manifests interface {
     Put(ctx context.Context, mediaType string, body []byte) (Digest, error)
 }
 
-// Auth returns a RoundTripper that authenticates requests to one registry scope.
-type Auth interface {
-    RoundTripper(ctx context.Context, registry string, scope Scope) (http.RoundTripper, error)
+// Credentials resolves what to present to one registry. A registry the
+// resolver knows nothing about is the zero Credential and a nil error:
+// anonymous is an answer, not a failure. It is declared by internal/oci,
+// which is the only package that knows a credential exists.
+type Credentials interface {
+    Credential(ctx context.Context, registry Registry) (Credential, error)
+}
+
+// Credential mirrors what a Docker configuration file stores. Four fields
+// rather than two: a native credential store returns an identity token in
+// place of a password, and a pair of strings would collapse that to "no
+// credential" and downgrade the transfer to anonymous.
+type Credential struct {
+    Username      string
+    Password      string
+    IdentityToken string // refused loudly; bigoci cannot exchange one
+    RegistryToken string // presented verbatim, no exchange
 }
 
 // Source and Sink are the file ends of a transfer.
@@ -384,8 +499,8 @@ behind the ports parses, validates, or renders
 
 **Adapters, one purpose each:** the `net/http` distribution client
 (implements `Blobs` and `Manifests`), the oras-go credentials wrapper
-(`Auth`), and the OS filesystem (`Source` and `Sink`). Every adapter gets a
-mockery-generated mock in a `mocks/` subpackage.
+(`Credentials`), and the OS filesystem (`Source` and `Sink`). Every adapter
+gets a mockery-generated mock in a `mocks/` subpackage.
 
 **Package layout:**
 
@@ -395,15 +510,20 @@ bigoci/              public API: Client, options, sentinel errors
 ├── internal/manifest  format encode and decode
 ├── internal/transfer  orchestrator: workers, retries, progress
 ├── internal/retry     what is worth another attempt, and how long to wait
-├── internal/oci       net/http distribution client (Blobs, Manifests)
-├── internal/auth      oras-go credentials adapter (Auth)
+├── internal/oci       net/http distribution client (Blobs, Manifests), and
+│                      the token dance behind the Credentials port
+├── internal/auth      credential sources: the Docker configuration and its
+│                      helpers (oras-go), and one credential passed in
 └── internal/file      OS filesystem adapter (Source, Sink)
 ```
 
 Only the root package is importable; the thin API below is the whole exported
 surface.
 
-**Transport sharp edges**, owned by `internal/oci`:
+**Transport sharp edges**, owned by `internal/oci` (the redirect edges are
+the redirect phase's contract and are not built yet — until they land, the
+standard library's own following governs, and its rule forwards a credential
+to any same-domain-or-subdomain target):
 
 - A blob `GET` that redirects to presigned object storage must not forward
   the `Authorization` header; S3, GCS, and Azure all reject presigned
@@ -458,8 +578,9 @@ money to exercise at size.
 
 The walking skeleton, in order: push and pull one file against zot in
 testcontainers, with small fixed parts, no retries, no resume, anonymous
-auth. Then retries. Then resume. Then auth. Then the benchmark harness, which
-sets the real defaults. Each step ships behind the end-to-end gate above.
+auth. Then retries, then resume, then auth — each shipped behind the
+end-to-end gate above. The benchmark harness, which sets the real defaults,
+is what remains.
 
 ## Open questions
 
