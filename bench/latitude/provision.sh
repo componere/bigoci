@@ -14,6 +14,14 @@ SITE="${2:?usage: provision.sh <project> <site> [plan]}"
 PLAN="${3:-m4-metal-small}"
 OS="ubuntu_24_04_x64_lts"
 
+# Without an SSH key on the server there is no way in, and a box nobody can
+# reach still bills by the hour. Attach every key the project has.
+SSH_KEYS="$(lsh ssh_keys list --project="$PROJECT" --json | jq -r '[.[].id] | join(",")')"
+if [[ -z "$SSH_KEYS" ]]; then
+  echo "the project has no SSH keys registered; add one before provisioning" >&2
+  exit 1
+fi
+
 create() {
   local hostname="$1"
   lsh servers create \
@@ -22,6 +30,7 @@ create() {
     --plan="$PLAN" \
     --operating_system="$OS" \
     --hostname="$hostname" \
+    --ssh_keys="$SSH_KEYS" \
     --billing=hourly \
     --json | jq -r '.id // empty'
 }
