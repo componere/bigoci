@@ -196,3 +196,19 @@ packages on GHCR. Total measured spend: ~2h × two boxes ≈ $4.
 
 Phase 7 (progress reporting, error-contract audit, docs set, v0.1.0) is
 all that remains.
+
+## 2026-08-09 16:04 — Close
+Session closed. Four PRs merged, all squash, all CI-green: #32 (harness,
+92e7d52), #37 (runbook hardening, f98a380), #38 (measured defaults,
+1070793), #39 (stage-2 spec as run, 3b82229 — the close-out catch Josh
+reviewed and approved). Local master fast-forwarded to 3b82229; all
+implementation worktrees removed; `git ls-files .journal` empty on
+master.
+
+Hand-off state: phase 6 complete and boxed off in PLAN.md with dated
+evidence; defaults measured and documented; adaptive-concurrency closed
+with data; Latitude servers destroyed and GHCR packages deleted
+(verified). SUMMARY.md written; TECH_NOTES updated (phase status, closed
+seam, benchmark/Latitude durables). Next session starts phase 7 —
+`.journal/002/PLAN.md` has the task list, and release PR #11 waits for
+the deliberate v0.1.0 cut at its end.
