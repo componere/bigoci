@@ -168,3 +168,11 @@ Full root:check + fresh -count=1 root e2e (25.8s) green including the
 previously-unexecuted rows. Commit 1aa6e99 (verified, G).
 Known stale text deliberately left: cli/redact.go:80 future-tense comment
 (C6 freezes the file) — noted in the PR body.
+
+## 2026-08-09 01:35 — PR 2 merged; PR 3 in flight
+PR #30 squash-merged (master 521753d) after green CI. The PR-1 auto-follow
+window is closed. PR 3 (conformance workflow + tagged CLI test) launched as
+implementer + actions-security reviewer (wf_ee6ed455-28d) in
+.wt/ci-conformance-job. After it lands: automated gates are done and the
+manual GHCR gates (T8, five of them, gate 5 BLOCKING) need Josh — docker
+login ghcr.io, a private repo, and the recipes in the design.
