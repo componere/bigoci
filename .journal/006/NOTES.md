@@ -71,3 +71,22 @@ env isolation carried into the re-exec child.
 PR shape: four PRs — PR 0 inert (ErrUnauthorized classification + exit 6),
 then the plan's three. DESIGN.md written to .journal/006/DESIGN.md.
 Panel outputs in session scratchpad phase5/ (designs + verdicts).
+
+## 2026-08-08 20:35 — PR 0 open (#28)
+Opus implementer (wf_1fd0a54e-c5c) built the inert classification change in
+.wt/feat-oci-unauthorized; two-lens review panel said fix-then-ship. I
+reviewed the full diff line-by-line and applied all findings myself: deleted
+doc.go's twin "cannot happen" paragraph (and fixed its stale
+pulls-don't-resume claim from phase 4), added ErrUnauthorized to the
+Push/Pull godoc and how-to sentinel lists ("Four failures" → five), rewrote
+the public sentinel godoc as two plain sentences + the WAF admission, made
+the fake registry's challenge realm point at its own server (hermetic when
+PR 1 starts following challenges), tightened the sentinelExits comment, and
+named unparam in refusedTag's godoc. Implementer proved non-vacuity by
+removing the classify row (both tests fail exit 1). Local moon root:check
+green after clearing a stale golangci-lint cache that referenced the deleted
+phase-4 worktree (.wt/test-kill-resume-e2e — lint caches survive worktree
+removal; clean before diagnosing).
+Commit 7bc8980 (verified, G), PR #28. Carry-forward recorded in the PR body:
+any 401/403 the adapter refreshes in PR 1/PR 2 must not be a bare
+*StatusError, with NotErrorIs(oci.ErrUnauthorized) tests.
