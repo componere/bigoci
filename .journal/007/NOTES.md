@@ -31,3 +31,23 @@ change. Manual gates: harness reproduced on a real machine outside CI with
 sanity-checked numbers; chosen defaults demonstrably beating the naive
 alternatives in the recorded matrix; the adaptive-concurrency decision
 recorded with data in design.md's Open Questions.
+
+## 2026-08-09 13:00 — Design approved
+Explored the repo (design doc spec, defaults at options.go:24/:32, moon/CI
+patterns, e2e zot scaffolding) and the `lsh` CLI surface (plans, pricing,
+SSH keys, create/destroy). Josh decided three methodology questions: two
+servers in ONE site (client box + registry box running zot AND CNCF
+Distribution); GHCR subset rows from the client box (throwaway private
+package, PAT at run time, session-006 style); NO nightly CI job — manual
+only, PLAN.md's nightly criterion gets a dated amendment.
+
+Governing design preserved as `.journal/007/DESIGN.md` (approved plan).
+Shape: third module `bench/` mirroring `cli/` (stdlib flag, local replace,
+never released), one binary with `run`/`summarize`, checked-in JSON specs
+as the matrix, JSONL rows out, `-resume` for paid runs, status-counting
+transport for the 429/503 open question, thin operator-run lsh/ssh scripts
+under `bench/latitude/`. Target servers: two m4-metal-small ($0.81/hr,
+2×960GB NVMe, Ubuntu 24.04), ~3–4 h total ≈ $5–7. PR 1 = harness +
+integration; measurement between PRs; PR 2 = measured defaults + docs.
+
+Next: implementation worktree off master, build PR 1.
