@@ -362,15 +362,34 @@ for the design's one open question (adaptive worker count).
 
 **Success criteria:**
 
-- [ ] Manual: harness run reproduced on at least one real machine outside CI;
+- [x] Manual: harness run reproduced on at least one real machine outside CI;
       numbers recorded and sanity-checked (e.g. 4 workers ≈ saturating the
       link per the design's 85–90 MB/s-per-connection expectation).
-- [ ] Manual: chosen defaults demonstrably beat at least the naive
+      *(2026-08-09: two-box Latitude Dallas session, link measured 9.42
+      Gbit/s by iperf3; 4 workers pushed ~1040 MB/s ≈ 88% of link at the
+      default shape; GHCR measured 78–99 MB/s per push — the design's
+      85–90 MB/s expectation observed directly. Evidence:
+      `.journal/007/results/`, NOTES 15:24 entry.)*
+- [x] Manual: chosen defaults demonstrably beat at least the naive
       alternatives in the recorded matrix (not hand-waved).
-- [ ] Decision recorded for the open question (adaptive worker count) with
+      *(2026-08-09: 512 MiB beats 64 MiB by 11% at 16 GiB on zot and beats
+      256 MiB on Distribution at 4 workers; 4 workers within 1–3% of 8
+      everywhere, far above 1–2; the extremes (1 GiB parts, 1 worker) lose
+      15–45% in the recorded grids. Stage summaries in
+      `.journal/007/results/`.)*
+- [x] Decision recorded for the open question (adaptive worker count) with
       data attached, in the design doc's Open Questions section.
-- [ ] Automated gates: nightly volume benchmark job green; per-commit CI
-      unaffected (runtime budget respected).
+      *(2026-08-09: decided NO for v1 — zero 429/503 across all 333
+      recorded transfers including 8 workers against GHCR; design.md Open
+      Questions updated in PR #38 with the data.)*
+- [x] Automated gates: per-commit CI unaffected (runtime budget respected —
+      `bench:check` adds lint/build/unit-tests only; measurement never runs
+      in CI).
+      *(Amended 2026-08-09: the nightly volume benchmark job was dropped by
+      decision — benchmarks are manual-only, run via the `bench/latitude/`
+      runbook; GH-runner numbers would be noise and recurring cost without
+      measurement value. The per-commit-CI half of the criterion holds: PR
+      #32's CI ran within the usual budget.)*
 
 ---
 
