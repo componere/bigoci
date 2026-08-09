@@ -3,7 +3,6 @@ package bigoci_test
 import (
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -274,20 +273,7 @@ func pushRidesThrough(t *testing.T, reg flaky, repo string, backstop time.Durati
 func newRowFile(t *testing.T, repo string) string {
 	t.Helper()
 
-	path := newRandomFile(t, multiSize)
-	stamp := []byte(digest.FromString(repo).Encoded()[:stampLength])
-
-	f, err := os.OpenFile(path, os.O_WRONLY, fixturePerm)
-	require.NoError(t, err)
-
-	defer func() { require.NoError(t, f.Close()) }()
-
-	for part := range multiParts {
-		_, err := f.WriteAt(stamp, int64(part)*int64(multiPartSize))
-		require.NoError(t, err, "stamp %s into part %d", repo, part)
-	}
-
-	return path
+	return newStampedFile(t, repo, multiSize, multiPartSize)
 }
 
 // assertRestored pulls what repo holds back over the direct address and checks
