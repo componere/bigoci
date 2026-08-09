@@ -1,0 +1,166 @@
+name: Conformance
+
+# Hand-triggered, and nothing else triggers it. Every row of this suite talks
+# to a real registry with this repository's own token: it pushes packages,
+# reads them back, and deletes them again. That belongs behind a person's
+# deliberate click, not on a pull request, a push, or a schedule.
+#
+# There is no concurrency group on purpose. Two runs cannot collide — every
+# reference the suite writes carries the run id and the attempt number — and
+# cancelling a run part way through a push would leave unreferenced blobs
+# behind for no gain.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  conformance:
+    # A fork has no package of ours to push to, and dispatching this workflow
+    # from one must not try.
+    if: github.repository == 'componere/bigoci'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Pushing to GHCR under this repository's owner, and deleting again what
+      # the run pushed. Nothing here writes to the repository itself.
+      packages: write
+    env:
+      # Never auto-download a Go toolchain other than the mise-pinned one
+      # (mise [env] is not carried by the action's shims, so set it on the job).
+      GOTOOLCHAIN: local
+      # The repository every row transfers to. It is spelled out rather than
+      # assembled from the context because the guard above already pins which
+      # repository may run this, and one literal reads better than three
+      # expressions naming the same thing.
+      BIGOCI_CONFORMANCE_REPO: ghcr.io/componere/bigoci/conformance
+      # The same package as the packages API names it: everything after the
+      # owner, URL-encoded, because a container package name may hold slashes.
+      CONFORMANCE_PACKAGE: bigoci%2Fconformance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          version: 2026.6.14
+          cache: true
+          # Installs every tool from mise.toml honoring mise.lock (locked →
+          # fail closed) and prepends the shim dir to PATH. This job needs Go
+          # and nothing else, so it caches Go's two directories below and none
+          # of the caches ci.yml keeps for linting and the docs build.
+
+      - name: Cache Go modules
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-mod-${{ hashFiles('go.sum', 'cli/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-mod-
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('mise.lock', 'go.sum', 'cli/go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-${{ hashFiles('mise.lock', 'go.sum', 'cli/go.sum') }}-
+            ${{ runner.os }}-go-build-
+
+      - name: Write the registry credential
+        env:
+          # The repository's own token, scoped by the `packages: write` above.
+          # It is read into a shell variable and written into a file, and
+          # nothing in this step prints either one: no `set -x`, no echo, and
+          # no command whose output could carry it. GitHub masks the value in
+          # the log as well, but that is a backstop, not the mechanism.
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "${RUNNER_TEMP}/docker"
+          auth=$(printf '%s' "x-access-token:${REGISTRY_TOKEN}" | base64 -w0)
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "${auth}" >"${RUNNER_TEMP}/docker/config.json"
+
+      - name: Run the conformance suite
+        working-directory: cli
+        env:
+          # Not DOCKER_CONFIG. The CLI package's TestMain empties that variable
+          # for every test in the package, so that no test can reach whatever
+          # credential the machine running it happens to hold. This suite is
+          # the one test that needs one, so it is handed the directory under
+          # its own name and points DOCKER_CONFIG at it for the rows that
+          # authenticate — and at an empty directory for the row that must not.
+          BIGOCI_CONFORMANCE_DOCKER_CONFIG: ${{ runner.temp }}/docker
+          BIGOCI_CONFORMANCE_LOG_DIR: ${{ runner.temp }}/conformance-logs
+        # -v so a skip or a vanished test is visible in the job log instead of a
+        # silent green tick; -run pins the suite so build-tag drift surfaces as
+        # "no tests to run". The 30m bound sits above the worst case the test
+        # can spend on transfers (six CLI runs, 4m each) so a wedged transfer
+        # dies by its own budget with its log written, never by a binary
+        # timeout that panics the evidence away.
+        run: go test -race -count=1 -tags conformance -timeout 30m -v -run 'TestConformance' ./...
+
+      - name: Upload the request logs
+        # Uploaded whether the suite passed or failed: a failed row's log is
+        # what says why, and the suite writes each log before it asserts
+        # anything about the run that produced it.
+        #
+        # Publishing these is safe by construction rather than by review. The
+        # -debug tap logs no body in either direction; it renders an
+        # Authorization header as its scheme alone, with no prefix, no length,
+        # and no fingerprint; it elides the value of every query parameter but
+        # a verified digest, so a presigned `sig=` cannot appear; and it drops
+        # userinfo from every URL. There is no code path from a credential or a
+        # signature to a line in these files.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-debug-logs
+          path: ${{ runner.temp }}/conformance-logs
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Delete the package versions this run created
+        # Best effort, and it says so. The run is over either way, and a
+        # version left behind is untidy rather than wrong: every reference the
+        # suite writes carries this run's id, so what it created stays
+        # identifiable by hand.
+        #
+        # It may well not be able to. GITHUB_TOKEN's `packages: write` is write
+        # access to a package, and package deletion has wanted a delete scope a
+        # workflow token does not carry. The first hand-run of this workflow is
+        # what says which it is here — as it is for every other assumption this
+        # job makes about what the repository's own token may do.
+        #
+        # Deleting a package's last version deletes the package, which is fine:
+        # nothing points at it, and the suite's negative control assumes only
+        # that the registry refuses an anonymous caller — as true of a package
+        # that does not exist as of one that is private.
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export TAG_PREFIX="run-${GITHUB_RUN_ID}-"
+          # The || true keeps the benign first-run case readable: a package
+          # that does not exist yet answers 404, which set -e would otherwise
+          # turn into a silent step failure before the message below prints.
+          versions=$(gh api --paginate \
+            "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${CONFORMANCE_PACKAGE}/versions" \
+            --jq '.[] | select(any(.metadata.container.tags[]?; startswith(env.TAG_PREFIX))) | .id' || true)
+
+          if [ -z "${versions}" ]; then
+            echo "no package version is tagged ${TAG_PREFIX}*"
+            exit 0
+          fi
+
+          while read -r id; do
+            echo "deleting package version ${id}"
+            gh api --method DELETE \
+              "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${CONFORMANCE_PACKAGE}/versions/${id}"
+          done <<<"${versions}"
