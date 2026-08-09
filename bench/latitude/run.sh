@@ -23,7 +23,13 @@ if [[ ! "$RUN_ID" =~ ^[a-z0-9._-]+$ ]]; then
 fi
 
 echo "== cross-compiling the harness for linux/amd64 =="
-(cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/bench-linux .)
+if ! git -C .. diff --quiet || ! git -C .. diff --cached --quiet; then
+  echo "tracked changes are present; commit them before a provenance-bearing benchmark build" >&2
+  exit 1
+fi
+HARNESS_COMMIT="$(git -C .. rev-parse --short=12 HEAD)"
+(cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+  go build -ldflags "-X main.injectedCommit=$HARNESS_COMMIT" -o bin/bench-linux .)
 
 echo "== shipping binary and spec =="
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$CLIENT_IP" "mkdir -p $WORKDIR"

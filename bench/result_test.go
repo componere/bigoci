@@ -177,6 +177,16 @@ func TestNewAttemptIDIsPathSafe(t *testing.T) {
 	assert.True(t, validPathSegment(id))
 }
 
+// TestBuildCommitPrefersTheInjectedRevision guards the paid-run provenance
+// override against the VCS revision Go can take from the main worktree.
+func TestBuildCommitPrefersTheInjectedRevision(t *testing.T) {
+	previous := injectedCommit
+	injectedCommit = "abcdef123456"
+	t.Cleanup(func() { injectedCommit = previous })
+
+	assert.Equal(t, "abcdef123456", buildCommit())
+}
+
 func TestReadRowsRefusesANewerSchema(t *testing.T) {
 	t.Parallel()
 

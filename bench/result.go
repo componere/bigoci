@@ -18,6 +18,12 @@ import (
 // meaning, so old JSONL files cannot be summarized as if they were new.
 const rowSchema = 2
 
+// injectedCommit is set by the Latitude build script because Go can report
+// the main checkout's revision when building from a linked worktree.
+//
+//nolint:gochecknoglobals // Linker-injected build provenance must live at package scope.
+var injectedCommit string
+
 // row is one measurement: one timed scenario of one iteration of one cell.
 // Rows are self-contained on purpose — a JSONL file needs no spec beside it
 // to be read.
@@ -263,6 +269,10 @@ func newAttemptID() (string, error) {
 // buildCommit returns the short VCS revision baked into the build, or empty
 // when the build carries none. A "+" suffix marks a dirty working tree.
 func buildCommit() string {
+	if injectedCommit != "" {
+		return injectedCommit
+	}
+
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return ""
