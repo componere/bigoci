@@ -48,13 +48,14 @@
 //	130  interrupted by SIGINT
 //	143  terminated by SIGTERM
 //
-// A failure always prints two lines. The first is the library's error verbatim,
-// never re-wrapped and never re-phrased. The second is unconditional, because
-// it is how a shell script watches the library's error classification work, and
-// it takes one of three forms: the sentinel [errors.Is] matched and the code it
-// maps to, the statement that none matched, or the signal that stopped the run,
-// written "interrupted by SIGINT (exit 130)" or "terminated by SIGTERM
-// (exit 143)".
+// A failure always prints two lines. The first preserves the library's graphic
+// error text without re-wrapping or re-phrasing it, and visibly escapes every
+// non-graphic rune so peer-controlled detail cannot create another log record
+// or terminal control. The second is unconditional, because it is how a shell
+// script watches the library's error classification work, and it takes one of
+// three forms: the sentinel [errors.Is] matched and the code it maps to, the
+// statement that none matched, or the signal that stopped the run, written
+// "interrupted by SIGINT (exit 130)" or "terminated by SIGTERM (exit 143)".
 //
 // A recorded signal outranks the error's shape. Cancelling a transfer surfaces
 // as whatever unwound first — a cancelled context, a closed file, a reset
@@ -84,11 +85,16 @@
 // The observer never touches a request, never reads a body in either
 // direction, and renders only the headers it names one by one. A credential is
 // unrepresentable in the output: the Authorization header shows its scheme and
-// nothing else. Query parameter values are elided and their names escaped
-// again on the way out; the one value that passes through is a "digest" whose
-// bytes verifiably are a sha256 digest, which is checked on the value and never
-// on the parameter's name. See README.md for the whole grammar and the recipes
-// that read it.
+// nothing else, request Range and peer response headers show presence only,
+// response lengths show only known or unknown, and arbitrary transport error
+// detail is replaced by a fixed marker. The first request fixes the registry
+// origin. Distribution URLs at that origin retain their repository and endpoint
+// shape but replace blob digests, manifest references, and every query value.
+// Same-origin token endpoints lose their path and query even when their
+// peer-chosen path mimics a distribution endpoint, and every off-origin target
+// becomes a stable URL under the reserved off-origin.invalid host. Every
+// server-issued Location is hidden and remembered so its followed request stays
+// hidden too. See README.md for the whole grammar and the recipes that read it.
 //
 // # Extraction trigger
 //

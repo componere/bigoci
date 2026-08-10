@@ -233,9 +233,9 @@ bigoci: progress push transferring pct=40 parts=17/40 skipped=0 bytes=8589934592
 | `pct` | `bytes` placed over `bytes` total, floored; `100` only when every byte is placed |
 | `parts` | parts provably in place, over the parts the file splits into |
 | `skipped` | parts of those that cost no bytes of their own |
-| `bytes` | bytes provably in place, over the file size |
-| `wire` | bytes of the file that crossed the registry boundary, every attempt counted |
-| `hashed` | bytes read off the local disk and hashed |
+| `bytes` | bytes provably in place over the local source size for a push; a pull shows `?/?` |
+| `wire` | bytes of a push that crossed the registry boundary, every attempt counted; a pull shows `?` |
+| `hashed` | bytes read off the local disk and hashed for a push; a pull shows `?` |
 | `retries` | re-entries into a retry budget, across the whole transfer |
 | `elapsed` | wall time since the transfer started, to a tenth of a second |
 
@@ -247,8 +247,11 @@ the run. Divide the change in `wire` by the change in `elapsed` across two
 lines for throughput; there is deliberately no rate and no estimate on the
 line, because every one this CLI could compute would be wrong somewhere.
 
-The byte counts are exact, so `bytes=` compares directly against the preflight
-line's own count.
+Push byte counts are exact, and `bytes=` compares directly against the
+preflight line's local-file count. Pull byte fields are `?`: its manifest and
+response bodies are untrusted, and a registry can choose an all-decimal bearer
+then make the total, completed, or wire count equal that credential. The
+in-process percentage still uses the validated counters.
 
 The phase is what says a transfer finished, never the counters: `pct=100` with
 `finalizing` is a push whose parts are all in the registry and whose manifest
@@ -280,15 +283,18 @@ bigoci: push /data/model.bin (204800 bytes) -> 127.0.0.1:5050/team/model:v1 (par
 bigoci: pushed sha256:829c96af3ccd… in 12.4s
 
 bigoci: pull 127.0.0.1:5050/team/model:v1 -> /data/out.bin (workers=8, plain-http)
-bigoci: pulled 204800 bytes in 9.1s
+bigoci: pulled in 9.1s
 ```
 
 The preflight line reports the values the transfer will really run with: the
 flags where they were set, the library's own defaults where they were not.
 `plain-http` appears only when the flag is set. The push line's byte count comes
 from a stat of the file; if that fails the whole line is left out, because the
-library is the one that reports an unreadable file. A pull's byte count is read
-back from the file it published.
+library is the one that reports an unreadable file. Pull output omits the file
+size because a registry selects it. User-supplied source, reference, and
+destination operands preserve graphic text and visibly escape every
+non-graphic rune or invalid UTF-8 byte, so an operand cannot add a log record or
+terminal control.
 
 There is no terminal detection, no color, no progress bar, and no line
 rewriting. The output is byte-identical piped and interactive. Progress
@@ -312,15 +318,18 @@ arrives as whole lines, and only when `-progress` asks for it.
 A failure always prints two lines:
 
 ```
-bigoci: not found: pull 127.0.0.1:5050/team/model:absent to /data/x.bin: fetch the
-manifest: GET /v2/team/model/manifests/absent: registry returned 404 Not Found
+bigoci: not found: pull 127.0.0.1:5050/team/model:absent to /data/x.bin: fetch the manifest: GET /v2/team/model/manifests/absent: registry returned 404 Not Found
 bigoci: matched sentinel bigoci.ErrNotFound (exit 3)
 ```
 
-The first line is the library's error verbatim, never re-wrapped and never
-re-phrased. The second line is unconditional, because it is how a shell script
-watches the library's error classification work from outside Go. It takes one of
-three forms:
+The first line preserves the library's graphic error text without re-wrapping
+or re-phrasing it. Every non-graphic rune is rendered with a visible Go escape,
+such as `\n`, `\x1b`, or `\u2028`, so registry-controlled error detail cannot
+create another log record or execute a terminal control. Classification still
+uses the original error, so this presentation rule changes no sentinel match or
+exit code. The second line is unconditional, because it is how a shell script
+watches the library's error classification work from outside Go. It takes one
+of three forms:
 
 | Second line | When |
 |---|---|
@@ -388,9 +397,9 @@ demonstrating, and a client installed to watch it would no longer be it.
 
 With `-debug` on, the library is given a client whose transport observes and
 forwards. The observer never changes a request, never wraps or reads a body in
-either direction, never sets a timeout, and never sets a redirect policy. Sizes
-come from `Content-Length` alone. No body is ever logged, in either direction,
-not even truncated.
+either direction, never sets a timeout, and never sets a redirect policy.
+Request sizes come from `Content-Length`; response lengths retain only whether
+Go knew one. No body is ever logged, in either direction, not even truncated.
 
 ### The three line kinds
 
@@ -409,21 +418,25 @@ arrive. `http!` is written when the request never got a response.
 | `<seq>` | request counter, zero-padded to four digits and growing wider past 9999; pairs an `http>` line with its `http<` or `http!` |
 | `<t>` | `+%.3fs` since the log opened; a backoff gap reads straight off the page |
 | `<METHOD>` | padded to four columns so the URLs line up |
-| `<URL>` | the absolute URL, redacted (below) |
+| `<URL>` | a parseable absolute URL, redacted against the first registry origin (below) |
 | `class` | what kind of request it is, inferred from the URL shape (below) |
 | `auth` | exactly one of `none`, `bearer`, `basic`, `other` |
 | `status` | the HTTP status code |
 | `dur` | time to response headers, rounded to 100µs |
-| `clen` | `Content-Length` of the request or the response; `-1` means it said none |
-| `err` | the transport error, quoted, so one failure is always one line |
+| `clen` | exact request `Content-Length`; on a response, `-2` means known and `-1` means unknown, with no peer numeric value retained |
+| `err` | the fixed quoted marker `"transport failure detail redacted"`; arbitrary transport detail is never rendered |
 
-Every other field is a header. A header that was present is quoted; a header
-that was absent is a bare `-`, so a header whose value happens to be a dash is
-still distinguishable.
+Every other field represents a header. Request `type` and `accept` keep their
+quoted values; `range` is `"present"` or `-`. A response field is `"present"`
+or `-`, except for the separately redacted `loc` URL. A registry sees each
+request credential and can reflect it into any ordinary response header, so
+peer header bytes are not safe diagnostic text even when the field name itself
+is allow-listed.
 
-A `clen=-1` on a blob upload would mean a chunked `PUT`, which would be a
-regression of the library's explicit Content-Length invariant. That is the kind
-of thing this line exists to make visible.
+An `http> clen=-1` on a blob upload would mean a chunked `PUT`, which would be a
+regression of the library's explicit Content-Length invariant. Response lines
+use only the fixed `-2` or `-1` markers because an all-decimal bearer can be a
+valid credential and a peer can copy it exactly into `Content-Length`.
 
 ### Header allow-lists
 
@@ -432,42 +445,80 @@ no way to add one at runtime — a header not on the list has no code path to th
 log, so a private header or a cookie a later phase starts sending cannot leak
 by being forgotten.
 
-Requests: `Authorization` (scheme only), `Content-Type` as `type`, `Range` as
-`range`, `Accept` as `accept`.
+Requests: `Authorization` (scheme only), `Content-Type` as `type`, the presence
+of `Range` as `range`, and `Accept` as `accept`.
 
-Responses: `Content-Type` as `ctype`, `Content-Range` as `crange`, `Location`
-as `loc`, `Docker-Content-Digest` as `ddigest`, `Retry-After` as
-`retry-after`, `WWW-Authenticate` as `challenge`.
+Responses: the presence of `Content-Type` as `ctype`, `Content-Range` as
+`crange`, `Docker-Content-Digest` as `ddigest`, `Retry-After` as
+`retry-after`, and `WWW-Authenticate` as `challenge`; plus the redacted
+`Location` target as `loc`. No raw peer response header value is rendered.
 
 ### Redaction
 
 - `auth=` is the scheme of the credential and nothing else. The credential
   itself is unrepresentable: no prefix, no length, no fingerprint.
-- URLs lose their userinfo outright.
-- Query parameter values are replaced with `…`. Parameter names are kept and
-  sorted, so two runs of the same transfer produce the same text.
+- Every `http! err=` uses one fixed marker. Go transport errors can contain a
+  target URL or raw malformed response bytes, including a peer reflection of
+  the request's `Authorization` header.
+- Ordinary response headers retain presence only. A peer that copies a bearer
+  into `Content-Type`, `Content-Range`, `Docker-Content-Digest`, or
+  `Retry-After` therefore changes no logged value.
+- Request `Range` retains presence only. The offset comes from bytes a peer
+  delivered before interrupting a response, so it can equal a numeric bearer.
+- Response `Content-Length` retains only the fixed known or unknown marker. An
+  authenticated peer therefore cannot expose a high-entropy decimal bearer
+  through the numeric `clen=` field.
+- The first request fixes the registry origin. A normal distribution request
+  to that origin keeps its repository and endpoint shape, while the terminal
+  blob digest or manifest reference becomes `_digest` or `_reference`. A
+  non-distribution request to the same origin, including a token exchange,
+  renders as `<scheme>://<registry>/_redacted`.
+- Every same-origin target carrying the `scope` query parameter is also replaced
+  whole. bigoci adds that parameter to each bearer exchange, so a peer cannot
+  expose a realm credential by making its token path look like `/v2/.../blobs/...`.
+- Every off-origin target renders as
+  `https://off-origin.invalid/_redacted`. The reserved host is the stable proof
+  that a request left the registry without exposing a signed storage host,
+  path, or query.
+- Every server-issued `Location` is resolved, replaced whole, and remembered by
+  origin and path. A later request that follows it stays replaced even when the
+  target is on the registry itself and looks like an ordinary blob, manifest,
+  or upload-session path. The remembered identity is a fixed-size SHA-256 of
+  the normalized origin and escaped path, not retained peer URL bytes; query
+  changes therefore still match. A collision can only hide an additional URL,
+  never reveal a remembered one. Direct distribution requests retain only
+  their origin, repository, and endpoint shape.
+- Preserved registry URLs lose their userinfo outright. Their query parameter
+  values are replaced with `…`; parameter names are kept and sorted, so two
+  runs of the same transfer produce the same text.
 - Parameter names are escaped again on the way out. Every byte of a name was
   chosen by the peer being logged, and a name that decodes to a newline would
   otherwise forge a second log line.
-- One value passes through: a `digest` whose value verifiably **is** a sha256
-  digest, meaning `sha256:` and 64 lowercase hex bytes. That value is public and
-  is the key that correlates a line with a blob. The check is on the value and
-  never on the name, so a host that calls its signed token `digest` still sees it
-  elided.
+- No query value passes through, including a syntactically valid `digest`.
+  Syntax does not establish that bytes are public: an authentication service
+  can issue a reusable bearer shaped exactly like `sha256:` plus 64 hex bytes.
 - A query Go cannot parse renders as a single `…` in place of the whole query,
   rather than as the parameters that happened to parse. A line never shows a
   shorter query than the request carried.
-- Paths are printed as they stand, digests and all. Being able to grep a digest
-  out of the log beats a shorter line.
+- Same-registry blob and manifest paths retain the repository and endpoint but
+  replace the final value. For example, `/v2/team/model/blobs/sha256:...`
+  renders as `/v2/team/model/blobs/_digest`, and any tag or digest after
+  `/manifests/` renders as `_reference`.
 - `Location` is resolved against the URL of the request that got it, then
-  redacted like any other URL.
-- `challenge` is kept as it came, truncated to 200 bytes plus `…`. A challenge
-  names a realm and a scope and carries no secret.
+  rendered only as the registry placeholder or the off-origin placeholder. The
+  followed request uses the same placeholder.
+- `challenge` is `"present"` when one or more `WWW-Authenticate` values exist,
+  and `-` otherwise. Its contents are never rendered: a peer controls the realm,
+  and a realm URL can carry a credential or other redeemable state.
 
 ### Classification
 
-Pure URL shape, first match wins. The CLI learns nothing about the bigoci
-format from it — these are the shapes of the OCI distribution API.
+Pure URL shape before redaction, first match wins. The CLI learns nothing about
+the bigoci format from it — these are the shapes of the OCI distribution API.
+A placeholder can therefore retain the `blob-read` class of an off-origin or
+same-origin redirected request without retaining that request's target.
+Likewise, a maliciously distribution-shaped token realm retains its inferred
+class while its `scope` parameter causes the complete target to be redacted.
 
 | Path contains | Method | class |
 |---|---|---|
@@ -628,17 +679,17 @@ blobs at all.
 echo "exit=$?"
 ```
 
-Every request that goes out gets an `http!` line with `err="dial tcp …:
-connect: connection refused"`. A refused connection is worth another attempt,
-so the digest whose worker runs out of attempts first shows exactly four
-`http!` lines. The other digests show fewer — between one and four — because
-that first exhaustion cancels the peers mid-backoff, which is itself the
-behavior worth seeing: nobody waits out a schedule for a transfer that is
-already over. The total is at most four per worker (sixteen here), eight to
-thirteen on a typical run. Then `failed=` matching whatever was sent, then
-exit 1 with `no sentinel matched`.
+Every request that goes out gets an `http!` line with
+`err="transport failure detail redacted"`. A refused connection is worth
+another attempt, so the operation whose worker runs out of attempts first shows
+exactly four `http!` lines. Peer-selected digests are intentionally not present,
+but `seq`, `<t>`, `class`, and the summary still show how many requests ran and
+when the transfer stopped. The total is at most four per worker (sixteen here),
+eight to thirteen on a typical run. Then `failed=` matches whatever was sent,
+and the CLI exits 1 with `no sentinel matched`.
 
-The first failure line says how many attempts it took:
+The ordinary final error, separately from the debug record, says how many
+attempts the operation took and gives the safe failure context:
 
 ```
 bigoci: push /tmp/model.bin to 127.0.0.1:5999/team/model:v1: after 4 attempts: check
@@ -657,9 +708,9 @@ got an answer is neither.
 
 ### A broken connection is retried, and you can see it
 
-Put something between the client and the registry that breaks connections, and
-read the log for the same digest twice. toxiproxy is what the library's own
-end-to-end tests use:
+Put something between the client and the registry that breaks connections.
+toxiproxy is what the library's own end-to-end tests use. Run one worker so a
+failed operation must retry before another part can start:
 
 ```
 docker network create bigoci-gate
@@ -671,31 +722,26 @@ curl -s -XPOST localhost:8474/proxies \
 curl -s -XPOST localhost:8474/proxies/zot/toxics \
   -d '{"name":"cut","type":"limit_data","stream":"upstream","toxicity":0.3,"attributes":{"bytes":2000000}}'
 
-./bin/bigoci push -plain-http -part-size 16MiB -debug /tmp/model.bin \
+./bin/bigoci push -plain-http -workers 1 -part-size 16MiB -debug /tmp/model.bin \
   127.0.0.1:8666/gate/model:v1 2>push.log
 echo "exit=$?"
 ```
 
 A retried request is a fresh request: it gets a new `http>` line with a **new**
-`seq` and the same URL, never a second line under the old one. So the evidence
-is a digest that shows up more than once:
+`seq`, never a second line under the old one. With one worker, an `http!` for a
+blob operation followed by another `http>` of the same class is its retry:
 
 ```
-# part digests that were uploaded more than once
-grep 'http> .*class=blob-write' push.log \
-  | grep -o 'digest=sha256:[0-9a-f]\{64\}' | sort | uniq -d
-
-# part digests that were checked more than once
-grep 'http> .*class=blob-check' push.log \
-  | grep -o 'blobs/sha256:[0-9a-f]\{64\}' | sort | uniq -d
+grep -E '^http[>!].*class=(blob-check|blob-write)' push.log
 ```
 
-Take the `http>` lines for one duplicated digest and read the `<t>` column:
-the gap between them is the wait the library took. The waits are drawn from a
-window that doubles with each attempt — one second, then two, then four — so
-they grow as a part runs out of attempts, though any single one may be short.
-`grep -c '^http!' push.log` counts the failures that caused them, the summary
-line's `failed=` agrees with that count, and the push still exits 0.
+Read the `<t>` column around a failure and its next send: the gap is the wait the
+library took. The waits are drawn from a window that doubles with each attempt
+— one second, then two, then four — so they grow as an operation runs out of
+attempts, though any single one may be short. `grep -c '^http!' push.log` counts
+the failures that caused them, the summary line's `failed=` agrees with that
+count, and the push still exits 0. The log deliberately proves the retry without
+identifying the peer-selected digest that was retried.
 
 ### Nothing named is nothing found
 
@@ -764,7 +810,8 @@ an empty log. A log where every line reads `auth=none` proves nothing at all.
 ### No credential leaves for storage
 
 GHCR answers a blob read with a `307` at signed object storage, so a pull makes
-two requests per part: one to `ghcr.io`, and one to whatever host it named.
+two requests per part: one to `ghcr.io`, and one to the off-origin target shown
+as `https://off-origin.invalid/_redacted`.
 The second is the one that matters, and **a pull that works says nothing about
 it** — that storage answers `200` to a request carrying the registry's bearer
 token exactly as happily as to a clean one. Docker Hub's CloudFront does the
@@ -786,19 +833,20 @@ Three counts, and all three have to hold:
   count of zero is a pull that never left the registry, and every line below it
   is then about nothing.
 - **Universality.** No off-registry line reads anything but `auth=none`. The
-  key is the host and the `auth=` field, never `class=`: what a storage URL's
-  path looks like is the storage provider's choice, so the same request lands
-  in `blob-read` at one registry and in `other` at the next. `class=` is
-  corroboration here, not the key.
+  key is the host and the `auth=` field, never `class=`: the real registry host
+  is preserved and every host outside it becomes the reserved `.invalid`
+  placeholder. What a storage URL's path looks like is the storage provider's
+  choice, so the same request lands in `blob-read` at one registry and in
+  `other` at the next. `class=` is corroboration here, not the key.
 - **The instrument sees traffic.** At least one `class=other` request line
-  exists, which is the token exchange. Together with the `challenge=` field on
+  exists, which is the token exchange. Together with `challenge="present"` on
   the `http<` line before it, that is the proof the tap is watching the
   authenticated path — the same reason the recipe above wants one `auth=bearer`
   line.
 
-Nothing in that log can carry a signature: the query of every URL is rendered
-with its values elided, and the library builds no error that names a signed
-location either.
+Nothing in that log can carry a signature: off-origin targets and token
+endpoints are replaced whole, preserved distribution queries have their values
+elided, and the library builds no error that names a signed location either.
 
 ### The same gates, run by CI
 
@@ -819,7 +867,7 @@ Three things to know before reading a run:
   its evidence too — and the job uploads all of them as one artifact. Those
   files are what a journal entry quotes. Uploading them is safe for the reason
   this whole section is: the tap renders schemes and never credentials, elides
-  every query value but a verified digest, and logs no body at all.
+  every query value and terminal digest or reference, and logs no body at all.
 - **The refusal runs first, and it is the whole argument.** Every row after it
   differs only in which directory `DOCKER_CONFIG` names. If the target
   repository ever stops being private, that first row fails and the run stops,
@@ -900,15 +948,10 @@ checked against, so it is fetched before anything can be verified. A cold pull
 of this file reads four blobs, so `blob-read=2` means two parts came off the
 disk.
 
-Which two is the digest grep, the same idiom the retry recipe uses:
-
-```
-grep 'http> .*class=blob-read' resume.log \
-  | grep -o 'blobs/sha256:[0-9a-f]\{64\}' | sort
-```
-
-Those digests are a subset of the manifest's layers, in whatever order the
-workers got to them.
+The debug log intentionally does not identify which two digests were missing.
+A manifest can select a syntactically valid digest that is also a reusable
+credential, so `blob-read=2` proves the amount of resumed work without exposing
+the peer-selected layer values.
 
 The gate at the other end is a partial that is already complete. Pull once to
 get a good file, then put it back under the partial name and pull again:
@@ -1005,7 +1048,8 @@ which build ran, not as proof of which source it was built from.
 ## Limits
 
 - No progress bar, no rate, and no estimate. `-progress` prints whole lines
-  with exact counts; see [Progress output](#progress-output).
+  with exact push counts; pull byte counters are `?`. See
+  [Progress output](#progress-output).
 - No credentials flag. Authentication is the library's `docker login`
   credentials, always, and the way to run without them is an empty
   `DOCKER_CONFIG`.

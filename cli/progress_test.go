@@ -62,7 +62,7 @@ func TestRenderProgressLine(t *testing.T) {
 			p:       bigoci.Progress{Direction: bigoci.DirectionPull, Phase: bigoci.PhaseResolving, Retries: 2},
 			elapsed: 4 * time.Second,
 			want: "bigoci: progress pull resolving pct=0 parts=0/0 skipped=0 " +
-				"bytes=0/0 wire=0 hashed=0 retries=2 elapsed=4s\n",
+				"bytes=?/? wire=? hashed=? retries=2 elapsed=4s\n",
 		},
 		{
 			name: "a warm re-push, every part skipped",
@@ -105,7 +105,7 @@ func TestRenderProgressLine(t *testing.T) {
 			},
 			elapsed: 2 * time.Minute,
 			want: "bigoci: progress pull failed pct=33 parts=1/3 skipped=0 " +
-				"bytes=1000/3000 wire=1400 hashed=0 retries=0 elapsed=2m0s\n",
+				"bytes=?/? wire=? hashed=? retries=0 elapsed=2m0s\n",
 		},
 	}
 
@@ -264,7 +264,7 @@ func TestProgressReportsAPull(t *testing.T) {
 
 	assert.Equal(t, []string{
 		"bigoci: progress pull done pct=100 parts=4/4 skipped=0 " +
-			"bytes=204800/204800 wire=204800 hashed=0 retries=0 elapsed=900ms",
+			"bytes=?/? wire=? hashed=? retries=0 elapsed=900ms",
 	}, progressLines(got.stderr))
 }
 

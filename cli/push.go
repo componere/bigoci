@@ -160,7 +160,8 @@ func (p *pushFlags) effectivePartSize(set map[string]bool) bigoci.PartSize {
 //
 // The byte count comes from [os.Stat]. When that fails the whole line is left
 // out: the library is the one that reports an unreadable file, and a preflight
-// line is no place to guess at why.
+// line is no place to guess at why. Both operands visibly escape non-graphic
+// bytes so a file name or reference cannot create another terminal record.
 func (p *pushFlags) preflight(set map[string]bool, src, ref string) string {
 	info, err := os.Stat(src)
 	if err != nil {
@@ -169,6 +170,7 @@ func (p *pushFlags) preflight(set map[string]bool, src, ref string) string {
 
 	return fmt.Sprintf(
 		"bigoci: push %s (%d bytes) -> %s (part-size=%s, %s)\n",
-		src, info.Size(), ref, formatSize(p.effectivePartSize(set)), p.common.settings(set),
+		terminalSafeLine(src), info.Size(), terminalSafeLine(ref),
+		formatSize(p.effectivePartSize(set)), p.common.settings(set),
 	)
 }

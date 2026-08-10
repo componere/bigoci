@@ -112,10 +112,10 @@ jobs:
         # Publishing these is safe by construction rather than by review. The
         # -debug tap logs no body in either direction; it renders an
         # Authorization header as its scheme alone, with no prefix, no length,
-        # and no fingerprint; it elides the value of every query parameter but
-        # a verified digest, so a presigned `sig=` cannot appear; and it drops
-        # userinfo from every URL. There is no code path from a credential or a
-        # signature to a line in these files.
+        # and no fingerprint; it elides every query value and replaces terminal
+        # distribution digests and references, so a presigned `sig=` cannot
+        # appear; and it drops userinfo from every URL. There is no code path
+        # from a credential or a signature to a line in these files.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

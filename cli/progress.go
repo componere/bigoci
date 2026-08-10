@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +18,10 @@ const (
 	// percentScale turns a fraction of the file into the integer a progress
 	// line prints.
 	percentScale = 100
+	// unknownProgressValue replaces every pull byte counter. A registry can
+	// choose an all-decimal bearer token and reflect it through the manifest and
+	// response body sizes, so the CLI never renders those values verbatim.
+	unknownProgressValue = "?"
 )
 
 // lineWriter serializes whole lines onto a writer two goroutines share.
@@ -182,22 +187,39 @@ func (w *watcher) writeLine() {
 //
 // A fixed shape is what makes the line greppable. A gate reads a column out
 // of it without knowing which phase the run was in, and two lines are
-// comparable field by field. The byte counts are exact rather than rounded to
-// units, so `bytes=` compares directly against the preflight line's count.
+// comparable field by field. A push's byte counters describe the local source
+// and remain exact. A pull's byte counters are influenced by its registry and
+// render as unknown so peer-selected digits cannot become a credential leak.
 //
 // There is no rate and no estimate. Every honest one needs a window this CLI
 // does not keep, and every dishonest one is worse than none on an instrument
 // whose whole job is to show what really happened: `wire=` across two lines
 // and their `elapsed=` is the throughput, computed by whoever wants it.
 func render(p bigoci.Progress, elapsed time.Duration) string {
+	byteProgress, wireBytes, hashedBytes := progressByteFields(p)
+
 	return fmt.Sprintf(
-		"bigoci: progress %s %s pct=%d parts=%d/%d skipped=%d bytes=%d/%d wire=%d hashed=%d retries=%d elapsed=%s\n",
+		"bigoci: progress %s %s pct=%d parts=%d/%d skipped=%d bytes=%s wire=%s hashed=%s retries=%d elapsed=%s\n",
 		p.Direction, p.Phase, percent(p),
 		p.CompletedParts, p.TotalParts, p.SkippedParts,
-		p.CompletedBytes, p.TotalBytes,
-		p.WireBytes, p.HashedBytes, p.Retries,
+		byteProgress, wireBytes, hashedBytes, p.Retries,
 		elapsed.Round(progressPrecision),
 	)
+}
+
+// progressByteFields renders local push measurements exactly and withholds all
+// pull byte measurements. A pull's manifest, response bodies, and resume state
+// can each make one of these numbers match a peer-selected credential.
+func progressByteFields(p bigoci.Progress) (string, string, string) {
+	if p.Direction == bigoci.DirectionPull {
+		return unknownProgressValue + "/" + unknownProgressValue,
+			unknownProgressValue,
+			unknownProgressValue
+	}
+
+	return strconv.FormatInt(p.CompletedBytes, 10) + "/" + strconv.FormatInt(p.TotalBytes, 10),
+		strconv.FormatInt(p.WireBytes, 10),
+		strconv.FormatInt(p.HashedBytes, 10)
 }
 
 // percent is how much of the file is in place, floored to a whole number.

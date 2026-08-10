@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -104,6 +107,7 @@ func TestRedactURL(t *testing.T) {
 	tests := []struct {
 		name        string
 		target      string
+		kind        class
 		want        string
 		notContains []string
 	}{
@@ -118,11 +122,10 @@ func TestRedactURL(t *testing.T) {
 			want:   "https://reg.example.com/v2/team/m/blobs/uploads/9f?alpha=…&state=…&zeta=…",
 		},
 		{
-			name: "the digest parameter keeps its value",
+			name: "a valid digest parameter is still elided",
 			target: "https://reg.example.com/v2/team/m/blobs/uploads/9f?state=" + secret +
 				"&digest=sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-			want: "https://reg.example.com/v2/team/m/blobs/uploads/9f?digest=sha256:" +
-				"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08&state=…",
+			want: "https://reg.example.com/v2/team/m/blobs/uploads/9f?digest=…&state=…",
 		},
 		{
 			name:   "a digest parameter whose value is not a digest",
@@ -151,11 +154,23 @@ func TestRedactURL(t *testing.T) {
 			want:   "https://reg.example.com/v2/team/m/blobs/uploads/9f?…",
 		},
 		{
-			name: "a digest in the path is never shortened",
+			name: "a digest-shaped blob value is replaced",
 			target: "https://reg.example.com/v2/team/m/blobs/sha256:" +
 				"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-			want: "https://reg.example.com/v2/team/m/blobs/sha256:" +
-				"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+			kind: classBlobRead,
+			want: "https://reg.example.com/v2/team/m/blobs/" + redactedDigestSegment,
+		},
+		{
+			name:   "a manifest reference is replaced",
+			target: "https://reg.example.com/v2/team/m/manifests/redeemable-reference",
+			kind:   classManifestRead,
+			want:   "https://reg.example.com/v2/team/m/manifests/" + redactedReferenceSegment,
+		},
+		{
+			name:   "endpoint-like repository components are preserved",
+			target: "https://reg.example.com/v2/blobs/manifests/team/blobs/redeemable-digest",
+			kind:   classBlobRead,
+			want:   "https://reg.example.com/v2/blobs/manifests/team/blobs/" + redactedDigestSegment,
 		},
 		{
 			name:   "nothing to redact",
@@ -171,7 +186,7 @@ func TestRedactURL(t *testing.T) {
 			parsed, err := url.Parse(tt.target)
 			require.NoError(t, err)
 
-			got := redactURL(parsed)
+			got := redactURL(parsed, tt.kind)
 			assert.Equal(t, tt.want, got)
 			assert.NotContains(t, got, secret)
 			assert.NotContains(t, got, secret[:8])
@@ -184,7 +199,7 @@ func TestRedactURL(t *testing.T) {
 func TestRedactURLOfNothing(t *testing.T) {
 	t.Parallel()
 
-	assert.Empty(t, redactURL(nil))
+	assert.Empty(t, redactURL(nil, classBlobRead))
 }
 
 // TestRedactURLReescapesParameterNames is the injection check. A parameter name is
@@ -201,7 +216,7 @@ func TestRedactURLReescapesParameterNames(t *testing.T) {
 	parsed, err := url.Parse(target)
 	require.NoError(t, err)
 
-	got := redactURL(parsed)
+	got := redactURL(parsed, classBlobWrite)
 	assert.Equal(t, "https://reg.example.com/v2/team/m/blobs/uploads/9f?%0Ahttp%3C+forged=…", got)
 
 	_, query, found := strings.Cut(got, "?")
@@ -218,9 +233,8 @@ func TestRedactURLReescapesParameterNames(t *testing.T) {
 	assert.NotContains(t, line, "http< ", "a forged line prefix must not survive into the log")
 }
 
-// TestIsDigest checks the gate on the one query value that passes through. The
-// check is on the value and never on the parameter's name, because the name is
-// the peer's to choose.
+// TestIsDigest checks the syntax helper used for CLI and conformance outputs.
+// Redaction never trusts this syntax as proof that a value is public.
 func TestIsDigest(t *testing.T) {
 	t.Parallel()
 
@@ -251,9 +265,9 @@ func TestIsDigest(t *testing.T) {
 	}
 }
 
-// TestRedactLocation checks that a relative redirect target is resolved against
-// the request that got it before it is redacted, so the line names a real place.
-func TestRedactLocation(t *testing.T) {
+// TestRenderLocation checks that every server-issued target is resolved,
+// replaced, and remembered for the request that follows it.
+func TestRenderLocation(t *testing.T) {
 	t.Parallel()
 
 	base, err := url.Parse("https://reg.example.com/v2/team/m/blobs/uploads/")
@@ -268,17 +282,22 @@ func TestRedactLocation(t *testing.T) {
 		{
 			name:     "relative to the request",
 			location: "/v2/team/m/blobs/uploads/9f?state=" + secret,
-			want:     "https://reg.example.com/v2/team/m/blobs/uploads/9f?state=…",
+			want:     "https://reg.example.com" + redactedTargetPath,
 		},
 		{
 			name:     "relative to the request path",
 			location: "9f?state=" + secret,
-			want:     "https://reg.example.com/v2/team/m/blobs/uploads/9f?state=…",
+			want:     "https://reg.example.com" + redactedTargetPath,
 		},
 		{
 			name:     "another host entirely",
-			location: "https://cdn.example.net/parts/9f?token=" + secret,
-			want:     "https://cdn.example.net/parts/9f?token=…",
+			location: "https://" + secret + ".example/parts/" + secret + "?token=" + secret,
+			want:     offOriginTarget,
+		},
+		{
+			name:     "same-registry token endpoint",
+			location: "https://reg.example.com/token/" + secret + "?digest=" + secret,
+			want:     "https://reg.example.com" + redactedTargetPath,
 		},
 	}
 
@@ -286,10 +305,71 @@ func TestRedactLocation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := redactLocation(base, tt.location)
+			probe := newTap(&bytes.Buffer{}, nil)
+			_ = probe.renderTargetURL(base, classBlobWrite)
+			got := probe.renderLocation(base, tt.location)
 			assert.Equal(t, tt.want, got)
 			assert.NotContains(t, got, secret)
+			if tt.location == "" {
+				return
+			}
+
+			target, err := url.Parse(tt.location)
+			require.NoError(t, err)
+			target = base.ResolveReference(target)
+			query := target.Query()
+			query.Set("digest", "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+			target.RawQuery = query.Encode()
+			kind := locationClass(target.Path)
+			assert.Equal(t, tt.want, probe.renderTargetURL(target, kind))
+			req := requestFor(t, target.String(), nil)
+			failed := probe.errorLine(2, req, kind, 0, fmt.Errorf("request %s failed", target))
+			assert.Contains(t, failed, tt.want)
+			assert.Contains(t, failed, `err="`+redactedTargetError+`"`)
+			assert.NotContains(t, failed, secret)
 		})
+	}
+}
+
+// TestLocationTrackingRetainsFixedSizeIdentities checks both the structural
+// bound and the live heap after many maximum-practical peer Location paths.
+func TestLocationTrackingRetainsFixedSizeIdentities(t *testing.T) {
+	const (
+		locationCount = 512
+		locationSize  = 256 << 10
+		maxLiveGrowth = 8 << 20
+	)
+
+	base, err := url.Parse("https://reg.example.com/v2/team/m/blobs/sha256:ab")
+	require.NoError(t, err)
+	probe := newTap(&bytes.Buffer{}, nil)
+	_ = probe.renderTargetURL(base, classBlobRead)
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	recordLargeLocationTargets(probe, base, locationCount, locationSize)
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+
+	probe.locationsMu.RLock()
+	retained := len(probe.locationTargets)
+	probe.locationsMu.RUnlock()
+	runtime.KeepAlive(probe)
+
+	assert.Len(t, locationTarget{}, sha256.Size, "one map key must remain fixed-size")
+	assert.Equal(t, locationCount, retained)
+	assert.Less(t, int64(after.HeapAlloc)-int64(before.HeapAlloc), int64(maxLiveGrowth),
+		"Location tracking retained peer path bytes")
+}
+
+// recordLargeLocationTargets feeds count distinct Location paths of size bytes
+// into probe and returns without retaining its generated strings.
+func recordLargeLocationTargets(probe *tap, base *url.URL, count, size int) {
+	padding := strings.Repeat("x", size)
+	for i := range count {
+		probe.renderLocation(base, fmt.Sprintf("https://reg.example.com/capability/%d/%s", i, padding))
 	}
 }
 
@@ -304,16 +384,71 @@ func TestQuoteOrAbsent(t *testing.T) {
 	assert.Equal(t, `"one\nline"`, quoteOrAbsent("one\nline"))
 }
 
-// TestTruncateChallenge checks that a long authentication challenge is cut and
-// marked, and a short one is left exactly as it came.
-func TestTruncateChallenge(t *testing.T) {
+// TestChallengeFieldReportsOnlyPresence checks that the log distinguishes an
+// absent challenge from any present challenge without rendering its contents.
+func TestChallengeFieldReportsOnlyPresence(t *testing.T) {
 	t.Parallel()
 
-	short := `Bearer realm="https://auth.example.com/token",service="reg.example.com"`
-	assert.Equal(t, short, truncateChallenge(short))
+	tests := []struct {
+		name   string
+		values []string
+		want   string
+	}{
+		{name: "absent", want: absent},
+		{name: "present but empty", values: []string{""}, want: `"present"`},
+		{
+			name:   "realm with a redeemable ticket",
+			values: []string{`Bearer realm="https://auth.example/token?ticket=` + secret + `"`},
+			want:   `"present"`,
+		},
+		{
+			name:   "multiple challenge lines",
+			values: []string{`Basic realm="one"`, `Bearer realm="two"`},
+			want:   `"present"`,
+		},
+	}
 
-	long := "Bearer " + strings.Repeat("a", 500)
-	got := truncateChallenge(long)
-	assert.Len(t, got, challengeLimit+len(elided))
-	assert.True(t, strings.HasSuffix(got, elided))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			headers := make(http.Header)
+			for _, value := range tt.values {
+				headers.Add("Www-Authenticate", value)
+			}
+
+			got := challengeField(headers)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, secret)
+		})
+	}
+}
+
+// TestResponseHeaderFieldsRevealPresenceOnly pins the default-deny boundary
+// for every peer response field. Any ordinary header can reflect a request
+// credential, so only Location's separately redacted placeholder carries a
+// value.
+func TestResponseHeaderFieldsRevealPresenceOnly(t *testing.T) {
+	t.Parallel()
+
+	base, err := url.Parse("https://reg.example.com/v2/team/m/blobs/sha256:ab")
+	require.NoError(t, err)
+	headers := http.Header{
+		"Content-Type":          []string{"Bearer " + secret},
+		"Content-Range":         []string{secret},
+		"Location":              []string{"/v2/team/m/blobs/" + secret},
+		"Docker-Content-Digest": []string{secret},
+		"Retry-After":           []string{secret},
+		"Www-Authenticate":      []string{secret},
+	}
+	probe := newTap(&bytes.Buffer{}, nil)
+	_ = probe.renderTargetURL(base, classBlobRead)
+
+	got := probe.responseHeaderFields(base, headers)
+	assert.Equal(t,
+		`ctype="present" crange="present" loc="https://reg.example.com/_redacted" `+
+			`ddigest="present" retry-after="present" challenge="present"`,
+		got,
+	)
+	assert.NotContains(t, got, secret)
 }
