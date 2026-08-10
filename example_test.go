@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/componere/bigoci"
 )
@@ -64,4 +66,81 @@ func Example_authentication() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+// The callback stores the snapshot and returns; rendering happens somewhere
+// else, on the consumer's own clock. That split is the whole pattern. The
+// callback runs on the transfer's goroutines and blocks them for as long as
+// it takes, so a channel send, a network call, or a call back into the
+// client belongs in the render loop, never here.
+//
+// Percent comes from [bigoci.Progress.Fraction] (completed bytes), and a
+// throughput reading would come from the change in
+// [bigoci.Progress.WireBytes] between two renders — the two counters answer
+// different questions, and only [bigoci.PhaseDone] means the transfer
+// finished.
+//
+//nolint:testableexamples // Running would need a live registry; the example exists to be compiled, not executed.
+func Example_progress() {
+	client, err := bigoci.New()
+	if err != nil {
+		panic(err)
+	}
+
+	// The library serializes the callback's calls, so the callback itself
+	// needs no lock. The mutex is for the render loop below, which reads
+	// from a goroutine of its own.
+	var mu sync.Mutex
+	var last bigoci.Progress
+
+	// The renderer stops when the transfer call returns, never by waiting
+	// for a terminal snapshot: a push that fails before it begins — a file
+	// that will not open, a reference that will not parse — delivers no
+	// snapshot at all.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+
+			mu.Lock()
+			p := last
+			mu.Unlock()
+			// The zero Progress describes no transfer: nothing has been
+			// reported yet, so there is nothing to draw.
+			if p.Phase == 0 {
+				continue
+			}
+
+			fmt.Printf("%s %s: %3.0f%% (%d/%d parts, %d retries)\n",
+				p.Direction, p.Phase, 100*p.Fraction(), p.CompletedParts, p.TotalParts, p.Retries)
+		}
+	}()
+
+	_, err = client.Push(context.Background(), "registry.example.com/team/models:v1",
+		bigoci.FromFile("/data/model.bin"),
+		bigoci.WithProgress(func(p bigoci.Progress) {
+			mu.Lock()
+			last = p
+			mu.Unlock()
+		}),
+	)
+	close(stop)
+	<-done
+	if err != nil {
+		panic(err)
+	}
+
+	// Only the phase says whether the transfer finished — every byte counter
+	// can read complete while the manifest is still being written.
+	mu.Lock()
+	fmt.Println("final phase:", last.Phase)
+	mu.Unlock()
 }

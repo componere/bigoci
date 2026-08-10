@@ -106,8 +106,8 @@ type TransferOption interface {
 // back exactly as it handed it over. The copies keep the transport and the
 // timeout, and set a redirect policy of their own — bigoci decides what a
 // re-issued request may carry, which is the whole of the paragraph above. The
-// copy that follows a redirect also carries no cookie jar, so nothing a
-// registry set in one reaches the host it redirected to.
+// copy bigoci re-issues a redirect's request with also carries no cookie jar,
+// so nothing a registry set in one reaches the host it redirected to.
 func WithHTTPClient(client *http.Client) Option {
 	return func(s *clientSettings) {
 		if client != nil {

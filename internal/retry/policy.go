@@ -8,7 +8,8 @@ import (
 
 // The policy the design fixes, and the value every unset [Policy] field
 // takes. The numbers are documented for users in
-// docs/docs/explanation/design.md, which has to move whenever they do.
+// docs/docs/explanation/design.md and docs/docs/reference/api.md, which have
+// to move whenever they do.
 const (
 	// DefaultAttempts is how many times an operation is tried in total,
 	// counting the first. Four covers the transient failures registries

@@ -129,7 +129,7 @@ Downloads the artifact `ref` names into the file `dest` names.
 - **Validation.** The worker count is checked before the partial file is
   created. It must be positive.
 - **Retries.** A part whose fetch breaks in a way worth repeating is fetched
-  again, up to four times, on the same schedule a push uses. Those attempts
+  again, up to four attempts in total, on the same schedule a push uses. Those attempts
   carry on from the byte the broken one reached, unless the registry will not
   serve a byte range, in which case it answers with the whole blob and the
   part is written again from its first byte. A part that arrives whole and
@@ -259,7 +259,7 @@ Three consequences:
 
 bigoci copies this client rather than using it, and never writes to the
 original. The copies keep the transport and the timeout and set a redirect
-policy of their own. The copy that follows a redirect carries no cookie jar,
+policy of their own. The copy a redirect's request is re-issued with carries no cookie jar,
 so nothing a registry set in one reaches the host it redirected to.
 
 ### WithPlainHTTP
