@@ -746,10 +746,10 @@ func TestTheCallersClientIsNeverMutated(t *testing.T) {
 
 	assert.NotNil(t, repo.client.CheckRedirect, "the registry client decides for itself what a 3xx means")
 	assert.Equal(t, jar, repo.client.Jar, "and still carries the caller's cookies to the registry")
-	assert.NotNil(t, repo.redirect.CheckRedirect)
-	assert.Nil(t, repo.redirect.Jar, "the redirect client carries none anywhere")
+	assert.NotNil(t, repo.external.CheckRedirect)
+	assert.Nil(t, repo.external.Jar, "the external client carries none anywhere")
 
-	for _, derived := range []*http.Client{repo.client, repo.redirect} {
+	for _, derived := range []*http.Client{repo.client, repo.external} {
 		assert.Equal(t, caller.Transport, derived.Transport, "every request still crosses the caller's transport")
 		assert.Equal(t, caller.Timeout, derived.Timeout)
 	}

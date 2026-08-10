@@ -190,24 +190,35 @@ func (b *Blobs) completeUpload(
 	size int64,
 	r io.Reader,
 ) error {
-	req, err := b.repo.newRequest(ctx, http.MethodPut, withDigest(session, dgst), uploadBody(size, r))
-	if err != nil {
-		return err
-	}
+	target := withDigest(session, dgst)
+	offOrigin := !sameOrigin(b.repo.registryURL(), target)
 
-	// A session on another origin is a presigned location: the registry
-	// handed the upload to a party its credential means nothing to, and the
-	// same-origin rule that governs a followed redirect governs this
-	// registry-chosen Location the same way. The URL's own signed query is
-	// what authenticates the write there.
-	if !sameOrigin(b.repo.registryURL(), session) {
-		req.Header.Del(headerAuthorization)
+	var (
+		req *http.Request
+		err error
+	)
+	if offOrigin {
+		req, err = http.NewRequestWithContext(ctx, http.MethodPut, target.String(), uploadBody(size, r))
+	} else {
+		req, err = b.repo.newRequest(ctx, http.MethodPut, target, uploadBody(size, r))
+	}
+	if err != nil {
+		return fmt.Errorf("build PUT request for upload on %s: %w", target.Host, scrub(err))
 	}
 
 	req.ContentLength = size
 	req.Header.Set("Content-Type", mediaTypeBlob)
 
-	resp, err := b.repo.send(req)
+	var resp *http.Response
+	if offOrigin {
+		at := origin{method: http.MethodPut, path: b.repo.endpoint(uploadsPath).Path}
+		resp, err = b.repo.hop(at, req)
+		if err == nil {
+			resp, err = offOriginUploadResponse(at, target.Host, resp)
+		}
+	} else {
+		resp, err = b.repo.send(req)
+	}
 	if err != nil {
 		return err
 	}

@@ -260,16 +260,16 @@ func (r *Repository) checkSession(session *url.URL) error {
 	}
 }
 
-// hop sends one re-issued request through the repository's redirect client and
-// reports a transport failure against the registry request that started the
-// chain.
+// hop sends one request through the repository's cookie-free external client
+// and reports a transport failure against the registry operation that named
+// the target.
 //
 // The failure is scrubbed on the way out. Everything else is the verdict
 // [Repository.do] reaches for the same reasons: a network that failed once is
 // worth another attempt, and a context the caller ended is the transfer
 // stopping rather than the network failing.
 func (r *Repository) hop(at origin, req *http.Request) (*http.Response, error) {
-	resp, err := r.redirect.Do(req)
+	resp, err := r.external.Do(req)
 	if err != nil {
 		failure := fmt.Errorf("%s: the request to %s failed: %w", at, req.URL.Host, scrub(err))
 		if req.Context().Err() != nil {
@@ -402,6 +402,26 @@ func offOriginResponse(at origin, host string, resp *http.Response) (*http.Respo
 		return resp, nil
 	}
 
+	return nil, offOriginFailure(at, host, resp)
+}
+
+// offOriginUploadResponse decides what a response from an upload session
+// beyond the registry means. Only Created completes the write; every other
+// status is classified as an external failure without interpreting a
+// challenge or exposing the session response.
+func offOriginUploadResponse(at origin, host string, resp *http.Response) (*http.Response, error) {
+	if resp.StatusCode == http.StatusCreated {
+		return resp, nil
+	}
+
+	return nil, offOriginFailure(at, host, resp)
+}
+
+// offOriginFailure closes an unsuccessful response from a host the registry
+// named and reports only the original registry operation, the host, and its
+// status. Its body and URL may contain a live signed capability and never
+// become part of the returned error.
+func offOriginFailure(at origin, host string, resp *http.Response) error {
 	drain(resp.Body)
 	_ = resp.Body.Close()
 
@@ -413,10 +433,10 @@ func offOriginResponse(at origin, host string, resp *http.Response) (*http.Respo
 	}
 
 	if offOriginTransient(failure.status) {
-		return nil, retry.Transient(failure, failure.retryAfter)
+		return retry.Transient(failure, failure.retryAfter)
 	}
 
-	return nil, failure
+	return failure
 }
 
 // offOriginTransient reports whether a status from beyond the registry is
