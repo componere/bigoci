@@ -76,6 +76,13 @@ func TestLoadSpecRejectsBrokenSpecs(t *testing.T) {
 			wantIn: "hot-push",
 		},
 		{
+			name: "duplicate scenario",
+			content: `{"run_id": "x", "targets": [{"name": "zot", "endpoint": "e", "repo_prefix": "b"}],
+			  "scenarios": ["cold-push", "cold-push"], "part_sizes": ["1MiB"], "workers": [1],
+			  "file_sizes": ["1MiB"], "iterations": 1}`,
+			wantIn: "appears twice",
+		},
+		{
 			name: "duplicate target name",
 			content: `{"run_id": "x", "targets": [
 			    {"name": "zot", "endpoint": "e", "repo_prefix": "b"},
@@ -97,6 +104,13 @@ func TestLoadSpecRejectsBrokenSpecs(t *testing.T) {
 			  "scenarios": ["cold-push"], "part_sizes": ["1MiB"], "workers": [0], "file_sizes": ["1MiB"],
 			  "iterations": 1}`,
 			wantIn: "workers",
+		},
+		{
+			name: "duplicate workers",
+			content: `{"run_id": "x", "targets": [{"name": "zot", "endpoint": "e", "repo_prefix": "b"}],
+			  "scenarios": ["cold-push"], "part_sizes": ["1MiB"], "workers": [2, 2],
+			  "file_sizes": ["1MiB"], "iterations": 1}`,
+			wantIn: "appears twice",
 		},
 		{
 			name: "zero iterations",
@@ -136,6 +150,19 @@ func TestLoadSpecRejectsBrokenSpecs(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantIn)
 		})
+	}
+}
+
+// TestStage4GHCRDoesNotCapConfiguredWorkers guards the real-registry matrix
+// against labeling a capped cell as an eight-worker measurement again.
+func TestStage4GHCRDoesNotCapConfiguredWorkers(t *testing.T) {
+	t.Parallel()
+
+	spec, err := loadSpec("specs/stage4-ghcr.json")
+	require.NoError(t, err)
+
+	for _, c := range expand(spec) {
+		assert.Equal(t, c.workers, maxActiveWorkers(c.workers, c.parts()), c.id)
 	}
 }
 

@@ -86,4 +86,5 @@ docs/.venv/
 # hosts.env / link.txt name live paid infrastructure.
 bench/results/
 bench/latitude/hosts.env
+bench/latitude/known_hosts.*
 bench/latitude/link.txt

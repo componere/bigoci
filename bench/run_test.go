@@ -53,6 +53,21 @@ func TestApplyEndpoints(t *testing.T) {
 	assert.Contains(t, err.Error(), "typo")
 }
 
+// TestApplyRunIDOverridesOnlyWithAPathSafeValue checks the remote runbook can
+// bind a result cohort to one provisioned client without accepting shell or
+// repository separators.
+func TestApplyRunIDOverridesOnlyWithAPathSafeValue(t *testing.T) {
+	t.Parallel()
+
+	spec := &Spec{RunID: "from-spec"}
+	require.NoError(t, applyRunID(spec, "latitude-client-123"))
+	assert.Equal(t, "latitude-client-123", spec.RunID)
+
+	err := applyRunID(spec, "unsafe/value")
+	require.Error(t, err)
+	assert.Equal(t, "latitude-client-123", spec.RunID)
+}
+
 func TestEndpointFlagParsing(t *testing.T) {
 	t.Parallel()
 

@@ -168,12 +168,17 @@ func (s *Spec) validateNames() error {
 	if len(s.Scenarios) == 0 {
 		return errors.New("scenarios is empty; list at least one of cold-push, warm-push, cold-pull")
 	}
+	seen := make(map[string]bool, len(s.Scenarios))
 	for _, name := range s.Scenarios {
 		switch name {
 		case scenarioColdPush, scenarioWarmPush, scenarioColdPull:
 		default:
 			return fmt.Errorf("scenario %q: known scenarios are cold-push, warm-push, cold-pull", name)
 		}
+		if seen[name] {
+			return fmt.Errorf("scenario %q appears twice", name)
+		}
+		seen[name] = true
 	}
 
 	switch s.Verify {
@@ -217,10 +222,15 @@ func (s *Spec) validateMatrix() error {
 	if len(s.PartSizes) == 0 || len(s.Workers) == 0 || len(s.FileSizes) == 0 {
 		return errors.New("part_sizes, workers, and file_sizes must each list at least one value")
 	}
+	seen := make(map[int]bool, len(s.Workers))
 	for _, count := range s.Workers {
 		if count <= 0 {
 			return fmt.Errorf("workers %d: must be positive", count)
 		}
+		if seen[count] {
+			return fmt.Errorf("workers %d appears twice", count)
+		}
+		seen[count] = true
 	}
 	if s.Iterations <= 0 {
 		return fmt.Errorf("iterations %d: must be positive", s.Iterations)

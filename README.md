@@ -25,7 +25,7 @@ with a clean request that carries no credential.
 
 The defaults are measured, not guessed: a benchmark matrix run on bare
 metal against zot, CNCF Distribution, and GHCR confirmed the 512 MiB part
-size and 4 workers, and closed the design's one open question — worker
+size and 8 workers, and closed the design's one open question — worker
 count does not self-tune (zero throttling observed; `WithWorkers` is the
 escape hatch). The numbers live in the
 [benchmarks reference](https://componere.github.io/bigoci/reference/benchmarks/).

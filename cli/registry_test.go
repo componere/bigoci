@@ -444,7 +444,7 @@ func TestEndToEndPushAndPull(t *testing.T) {
 	assert.True(t, isDigest(dgst), "the one line a push writes must be a manifest digest, got %q", dgst)
 
 	assert.Contains(t, cold.stderr, fmt.Sprintf(
-		"bigoci: push %s (%d bytes) -> %s (part-size=%s, workers=4, plain-http)\n",
+		"bigoci: push %s (%d bytes) -> %s (part-size=%s, workers=8, plain-http)\n",
 		src, fixtureSize, reg.taggedRef(fakeTag), fixturePartSize,
 	))
 	assert.Contains(t, cold.stderr,
@@ -471,7 +471,7 @@ func TestEndToEndPushAndPull(t *testing.T) {
 
 	assert.Empty(t, pull.stdout, "a pull writes nothing to stdout either way")
 	assert.Contains(t, pull.stderr, fmt.Sprintf(
-		"bigoci: pull %s -> %s (workers=4, plain-http)\n", reg.digestRef(dgst), dest,
+		"bigoci: pull %s -> %s (workers=8, plain-http)\n", reg.digestRef(dgst), dest,
 	))
 	assert.Contains(t, pull.stderr,
 		"bigoci: http requests=5 failed=0 blob-check=0 (0 hit, 0 miss) blob-write=0 upload-open=0 "+

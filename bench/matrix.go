@@ -53,16 +53,26 @@ func cellID(target string, partSize int64, workers int, fileSize int64) string {
 	return target + "-p" + formatSize(partSize) + "-w" + strconv.Itoa(workers) + "-f" + formatSize(fileSize)
 }
 
-// repository returns the repository path this cell transfers to under
-// runID: the target's prefix, the run, and the cell, each its own path
-// segment. The cell ID is lowercased on the way in — its size units read
-// "MiB" for humans, but a repository name must be entirely lowercase.
-func (c cell) repository(runID string) string {
-	return c.target.RepoPrefix + "/" + runID + "/" + strings.ToLower(c.id)
+// repository returns the repository path this cell transfers to under one
+// run attempt. The attempt keeps a resumed measurement away from blobs an
+// interrupted push may have retained. The cell ID is lowercased on the way
+// in because repository names must be lowercase.
+func (c cell) repository(runID, attemptID string) string {
+	return c.target.RepoPrefix + "/" + runID + "/" + attemptID + "/" + strings.ToLower(c.id)
 }
 
 // parts returns how many parts the cell's file splits into: the split rule
 // is a ceiling division, matching the library's plan.
 func (c cell) parts() int64 {
 	return (c.fileSize + c.partSize - 1) / c.partSize
+}
+
+// maxActiveWorkers returns the most transfer workers this cell can use.
+// A transfer cannot give more goroutines work than it has parts.
+func maxActiveWorkers(workers int, parts int64) int {
+	if parts < int64(workers) {
+		return int(parts)
+	}
+
+	return workers
 }
