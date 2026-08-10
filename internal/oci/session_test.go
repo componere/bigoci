@@ -1,8 +1,13 @@
 package oci
 
 import (
+	"fmt"
 	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,16 +30,7 @@ func TestAnUploadSessionOnAnotherOriginCarriesNoCredential(t *testing.T) {
 	store.serveAs = func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	}
-	fake.answerAs = func(w http.ResponseWriter, r *http.Request) bool {
-		if r.Method != http.MethodPost {
-			return false
-		}
-
-		w.Header().Set(headerLocation, store.server.URL+storagePrefix+"/up?state=signed-state")
-		w.WriteHeader(http.StatusAccepted)
-
-		return true
-	}
+	fake.answerAs = openUploadAt(store)
 
 	creds := &staticCredentials{cred: Credential{Username: "someone", Password: "the-secret"}}
 	repo := fake.repository(t, WithCredentials(creds))
@@ -59,6 +55,151 @@ func TestAnUploadSessionOnAnotherOriginCarriesNoCredential(t *testing.T) {
 		}
 	}
 	assert.True(t, authenticated, "the session-opening POST must have authenticated to the registry")
+}
+
+// TestAnOffOriginUploadCannotReplayRegistryAuthentication pins the trust
+// boundary after the initial header has been stripped. A storage refusal is
+// not a registry challenge and cannot cause the live repository bearer to be
+// replayed to the upload session.
+func TestAnOffOriginUploadCannotReplayRegistryAuthentication(t *testing.T) {
+	t.Parallel()
+
+	fake := newAuthRegistry(t)
+	store := newBlobStore(t)
+	store.serveAs = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(headerAuthorization) == "" {
+			w.Header().Set(headerChallenge, fake.challenge())
+			w.WriteHeader(http.StatusUnauthorized)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+	}
+	fake.answerAs = openUploadAt(store)
+
+	repo := fake.repository(t)
+	err := repo.Blobs().Put(t.Context(), authDigest(), 0, strings.NewReader(""))
+	require.Error(t, err)
+
+	_, transient := retry.IsTransient(err)
+	assert.True(t, transient, "an expired or refused signed upload session earns a fresh attempt")
+	require.NotErrorIs(t, err, ErrUnauthorized, "storage did not judge the registry credential")
+
+	requests := store.all()
+	require.Len(t, requests, 1, "the storage request must never be replayed")
+	assert.Empty(t, requests[0].header.Get(headerAuthorization))
+}
+
+// TestAnOffOriginUploadCannotReplaceTheRegistryChallenge proves a refusal of
+// a non-replayable upload body has no effect on the next registry request. In
+// particular, a storage-selected Bearer realm is never contacted and cannot
+// harvest the credential used by the registry's legitimate realm.
+func TestAnOffOriginUploadCannotReplaceTheRegistryChallenge(t *testing.T) {
+	t.Parallel()
+
+	fake := newAuthRegistry(t)
+	fake.wantUser = "someone"
+	fake.wantPass = "the-secret"
+
+	var harvestRequests atomic.Int64
+	harvest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		harvestRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"storage-token"}`))
+	}))
+	t.Cleanup(harvest.Close)
+
+	store := newBlobStore(t)
+	store.serveAs = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(
+			headerChallenge,
+			fmt.Sprintf(`Bearer realm=%q,service="storage"`, harvest.URL+"/token"),
+		)
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	fake.answerAs = openUploadAt(store)
+
+	creds := &staticCredentials{cred: Credential{Username: "someone", Password: "the-secret"}}
+	repo := fake.repository(t, WithCredentials(creds))
+
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	require.Error(t, err)
+
+	exists, err := repo.Blobs().Exists(t.Context(), authDigest())
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Zero(t, harvestRequests.Load(), "an upload refusal cannot initiate a token exchange")
+
+	legitimate := fake.tokenRequests()
+	require.NotEmpty(t, legitimate, "the registry's own realm must exercise the configured credential")
+	assert.NotEmpty(t, legitimate[0].authorization)
+
+	for _, request := range fake.repositoryRequests() {
+		assert.NotContains(t, request.authorization, "Basic ",
+			"a storage challenge cannot replace the registry's Bearer challenge")
+	}
+}
+
+// TestAnOffOriginUploadCarriesNoAmbientCookie pins the other authority an
+// [http.Client] can add after request construction. Registry requests retain
+// the caller's jar, while the separate client for an upload session has none.
+func TestAnOffOriginUploadCarriesNoAmbientCookie(t *testing.T) {
+	t.Parallel()
+
+	fake := newAuthRegistry(t)
+	store := newBlobStore(t)
+	store.serveAs = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}
+	fake.answerAs = openUploadAt(store)
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	registryURL, err := url.Parse(fake.server.URL)
+	require.NoError(t, err)
+	jar.SetCookies(registryURL, []*http.Cookie{{Name: "session", Value: storageSecret, Path: "/"}})
+
+	client := *fake.server.Client()
+	client.Jar = jar
+	repo := fake.repository(t, WithHTTPClient(&client))
+
+	err = repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	require.NoError(t, err)
+
+	repositoryRequests := fake.repositoryRequests()
+	require.NotEmpty(t, repositoryRequests)
+	assert.Contains(t, repositoryRequests[0].cookie, storageSecret,
+		"the positive control proves the caller's jar is active for the registry")
+
+	storageRequests := store.all()
+	require.Len(t, storageRequests, 1)
+	assert.Empty(t, storageRequests[0].header.Get("Cookie"))
+}
+
+// TestAnOffOriginUploadFailureCarriesNoSignedCapability proves a storage
+// error document cannot copy the live upload URL into the public error. The
+// status is also not a registry StatusError or an authorization verdict.
+func TestAnOffOriginUploadFailureCarriesNoSignedCapability(t *testing.T) {
+	t.Parallel()
+
+	fake := newAuthRegistry(t)
+	store := newBlobStore(t)
+	store.serveAs = func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, storageDetail, http.StatusForbidden)
+	}
+	fake.answerAs = openUploadAt(store)
+
+	repo := fake.repository(t)
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	require.Error(t, err)
+
+	var status *StatusError
+	assert.NotErrorAs(t, err, &status, "an object store did not return a registry status")
+	require.NotErrorIs(t, err, ErrUnauthorized)
+	assert.NotContains(t, err.Error(), signatureValue)
+	assert.NotContains(t, err.Error(), storageDetail)
+	assert.NotContains(t, err.Error(), storagePrefix)
 }
 
 // TestAnUploadSessionCarryingUserinfoIsRefused pins the guard on the other
@@ -89,4 +230,19 @@ func TestAnUploadSessionCarryingUserinfoIsRefused(t *testing.T) {
 	assert.False(t, transient, "a registry naming a hostile session will name it again")
 	assert.NotContains(t, err.Error(), storageSecret, "the password inside the location stays out of the message")
 	assert.NotContains(t, err.Error(), "harvest.example/up", "and so does the location's path")
+}
+
+// openUploadAt returns registry behavior that opens every blob upload at
+// store, carrying a query value that stands in for a signed capability.
+func openUploadAt(store *blobStore) func(http.ResponseWriter, *http.Request) bool {
+	return func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPost {
+			return false
+		}
+
+		w.Header().Set(headerLocation, store.server.URL+storagePrefix+"/up?state=signed-state")
+		w.WriteHeader(http.StatusAccepted)
+
+		return true
+	}
 }

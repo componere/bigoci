@@ -527,11 +527,11 @@ surface.
 - Automatic redirect following is off for every request. The adapter derives
   two clients from the caller's by copying the struct — `http.Client` is four
   exported fields and no hidden state, so the caller's own client is never
-  touched — and follows a redirect itself, up to three hops, for a `GET` or a
-  `HEAD` and nothing else. Every hop is a fresh request carrying two headers,
-  `Range` and `Accept` — plus the credential in the one same-origin case the
-  next bullet names, and nothing else. The second client also drops the
-  cookie jar.
+  touched. The external client also drops the cookie jar. It follows a
+  redirect itself, up to three hops, for a `GET` or a `HEAD` and nothing else.
+  Every hop is a fresh request carrying two headers, `Range` and `Accept` —
+  plus the credential in the one same-origin case the next bullet names, and
+  nothing else.
 - A blob `GET` that redirects to presigned object storage does not forward the
   `Authorization` header. This is a confidentiality requirement, not a
   compatibility one: the header is not rejected by the storage those
@@ -551,6 +551,13 @@ surface.
   that reason, and none of them reports as `ErrUnauthorized` or `ErrNotFound`
   — an expired signature is neither a credential problem nor a missing
   artifact.
+- An upload session on another origin uses that same external client, but is
+  not treated as a redirect or as part of the registry authentication
+  exchange. Its `PUT` is built without repository authorization, carries no
+  ambient cookie, and is never replayed. A `401` or `403` from storage asks the
+  registry for a fresh session on the next transfer attempt; it cannot replace
+  the registry's challenge or mint a credential. The response body is dropped
+  because object-store errors can echo the still-live signed upload URL.
 - No error carries a signed URL. Every failure is reported against the
   registry method and path the request started as, and where naming the far
   end helps, only its host appears.

@@ -170,10 +170,10 @@ type Repository struct {
 	// comes back to be decided on here rather than being followed by rules
 	// this package did not write.
 	client *http.Client
-	// redirect sends the re-issue of a request a redirect moved. It is the
-	// same client again with no cookie jar, so nothing the registry set in one
-	// travels to a host the registry named.
-	redirect *http.Client
+	// external sends requests to a host the registry named. It is the same
+	// client again with no cookie jar, so nothing the registry set in one
+	// travels to a redirect target or an off-origin upload session.
+	external *http.Client
 	// scheme is the URL scheme, "https" or "http".
 	scheme string
 	// host is the registry, with a port when the reference named one.
@@ -211,9 +211,10 @@ type Repository struct {
 // is never touched: [net/http.Client] is four exported fields and no hidden
 // state, so copying the struct copies all of it. One turns redirect following
 // off, which is how this package rather than [net/http] decides what a
-// re-issued request may carry; the other drops the cookie jar as well, and
-// sends the re-issues. Everything still goes out through the caller's
-// transport, so a tap on it sees every request bigoci makes.
+// re-issued request may carry; the other drops the cookie jar as well and
+// sends requests to redirect targets and off-origin upload sessions.
+// Everything still goes out through the caller's transport, so a tap on it
+// sees every request bigoci makes.
 func NewRepository(ref string, opts ...Option) (*Repository, error) {
 	named, err := reference.ParseNamed(ref)
 	if err != nil {
@@ -237,12 +238,12 @@ func NewRepository(ref string, opts ...Option) (*Repository, error) {
 	request := *applied.client
 	request.CheckRedirect = refuseRedirect
 
-	redirect := request
-	redirect.Jar = nil
+	external := request
+	external.Jar = nil
 
 	repo := &Repository{
 		client:   &request,
-		redirect: &redirect,
+		external: &external,
 		scheme:   applied.scheme,
 		host:     reference.Domain(named),
 		name:     reference.Path(named),
