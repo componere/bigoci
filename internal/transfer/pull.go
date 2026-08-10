@@ -78,7 +78,8 @@ type PullSpec struct {
 // between runs: the file on disk is the whole of the state. A partial of any
 // other length belongs to some other artifact, and every part is fetched.
 //
-// A cancelled ctx stops the workers and cuts short any wait in progress.
+// A cancelled ctx stops the workers, cuts short any wait in progress, and
+// interrupts a resume hash at its next bounded file read.
 func Pull(ctx context.Context, spec PullSpec) error {
 	if err := spec.validate(); err != nil {
 		return err
@@ -182,9 +183,9 @@ func (s PullSpec) validate() error {
 // Every job is queued before the first worker starts, into a channel with
 // room for all of them, so no send can block and the channel is closed before
 // anything reads it. A worker leaves when the queue runs dry, or at the next
-// part boundary it reaches once the group's context is cancelled, or as soon
-// as a backoff sleep is interrupted, which is why a failed or cancelled pull
-// cannot leave a worker behind.
+// bounded read or part boundary it reaches once the group's context is
+// cancelled, or as soon as a backoff sleep is interrupted, which is why a
+// failed or cancelled pull cannot leave a worker behind.
 //
 // resume says the sink holds a partial file worth hashing, and it travels to
 // the workers rather than being acted on here: verifying a part is the first
@@ -286,7 +287,7 @@ func newPartFetcher(blobs Blobs, sink Sink, policy retry.Policy, resume bool) *p
 // digest at the end.
 func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
 	if f.resume {
-		matched, err := f.verify(job)
+		matched, err := f.verify(ctx, job)
 		if err != nil {
 			return err
 		}
@@ -316,13 +317,14 @@ func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
 // point in the job, so a resume costs one read pass over the file and not a
 // byte of scratch beyond what the fetch would have used anyway.
 //
-// Cancellation is checked between jobs, not inside the hash: a cancelled pull
-// finishes verifying at most one part per worker before it stops, which is the
-// same bound a part being fetched already has.
-func (f *partFetcher) verify(job partJob) (bool, error) {
+// Cancellation is checked around each bounded read. A disk read already in
+// progress is allowed to return, but at most one buffer of its bytes is hashed
+// before the context error stops the pull.
+func (f *partFetcher) verify(ctx context.Context, job partJob) (bool, error) {
 	f.hasher.Reset()
 
-	read, err := io.CopyBuffer(f.hasher, io.NewSectionReader(f.sink, job.part.Offset, job.part.Size), f.buf)
+	section := io.NewSectionReader(f.sink, job.part.Offset, job.part.Size)
+	read, err := io.CopyBuffer(f.hasher, contextReader{ctx: ctx, reader: section}, f.buf)
 	if err != nil {
 		return false, fmt.Errorf("read part %d of the existing file: %w", job.part.Index, err)
 	}
@@ -334,6 +336,33 @@ func (f *partFetcher) verify(job partJob) (bool, error) {
 	}
 
 	return digest.NewDigest(digest.SHA256, f.hasher) == job.dgst, nil
+}
+
+// contextReader checks whether a transfer ended around each bounded read from
+// reader. It lets [io.CopyBuffer] retain its standard copy and error semantics
+// while ensuring a resume hash cannot outlive the caller's context by more
+// than one read into its fixed-size buffer.
+type contextReader struct {
+	// ctx is the transfer context that bounds the read pass.
+	ctx context.Context
+	// reader is the part range being hashed out of the partial file.
+	reader io.Reader
+}
+
+// Read returns the context's error before starting another read and after a
+// read that overlapped cancellation. Returning bytes with that error lets
+// [io.CopyBuffer] hash the bytes the disk already produced before it stops.
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	n, err := r.reader.Read(p)
+	if contextErr := r.ctx.Err(); contextErr != nil {
+		return n, contextErr
+	}
+
+	return n, err
 }
 
 // attempt is one try at the rest of one part: open the blob where the part

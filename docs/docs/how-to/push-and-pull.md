@@ -96,6 +96,8 @@ committed from the first attempt. And every rerun hashes the whole partial
 before it fetches anything — the hashing runs across your workers and overlaps
 the downloads of the missing parts, but a pull that died at the very start
 still pays a read of a file that holds nothing useful.
+Cancelling the pull or reaching its deadline interrupts this hash pass between
+256 KiB reads; it does not finish hashing the rest of a large partial first.
 
 ## Choose a part size and worker count
 
