@@ -181,7 +181,9 @@ TotalBytes does NOT imply finished — only PhaseDone does.
   final line from the terminal snapshot — before probe.writeSummary() and
   before the frozen result line.
 - Line grammar (one shape, every field always present, stderr only):
-  `bigoci: progress push transferring pct=41 parts=17/40 skipped=0 bytes=8589934592/21474836480 wire=9126805504 hashed=21474836480 retries=1 elapsed=29.3s`
+  `bigoci: progress push transferring pct=40 parts=17/40 skipped=0 bytes=8589934592/21474836480 wire=9126805504 hashed=21474836480 retries=1 elapsed=29.3s`
+  (pct corrected 41->40 post-review: 8 GiB of 20 GiB floors to 40; the panel's
+  example carried the slip and the implementation's render test caught it.)
   Exact byte counts (compare exactly against the preflight line); pct is a
   floored integer (100 only when truly all placed); elapsed at tenths. NO
   rate, NO eta (lead ruling): render(Progress, elapsed) stays a pure function
