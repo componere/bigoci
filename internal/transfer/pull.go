@@ -35,6 +35,10 @@ type PullSpec struct {
 	// value is the library's default policy, so a caller that has nothing to
 	// say about retries leaves it out.
 	Retry retry.Policy
+	// Progress receives a snapshot of the pull whenever there is one worth
+	// delivering. It is optional, and a nil one is not a callback that does
+	// nothing: a pull nobody is watching keeps no account at all.
+	Progress Report
 }
 
 // Pull downloads the artifact the manifests port is bound to into the sink.
@@ -80,12 +84,32 @@ type PullSpec struct {
 //
 // A cancelled ctx stops the workers, cuts short any wait in progress, and
 // interrupts a resume hash at its next bounded file read.
+//
+// A caller that named a [PullSpec.Progress] gets its first snapshot before the
+// manifest is even asked for, so a manifest fetch that is retrying its way
+// through a bad minute is visible rather than silent, and its last when the
+// pull ends. A spec that does not describe a transfer reports nothing at all.
 func Pull(ctx context.Context, spec PullSpec) error {
 	if err := spec.validate(); err != nil {
 		return err
 	}
 
-	body, err := fetchManifest(ctx, spec)
+	report := newReporter(spec.Progress)
+	report.begin(PhaseResolving, 0, 0)
+
+	err := pull(ctx, spec, report)
+	report.finish(err)
+
+	return err
+}
+
+// pull is the whole of a pull, from the manifest to the commit.
+//
+// It is split out of [Pull] for the reason the push side is: every way a pull
+// can end passes through one return, and the terminal snapshot is delivered
+// there rather than by a deferred call over a named return.
+func pull(ctx context.Context, spec PullSpec, report *reporter) error {
+	body, err := fetchManifest(ctx, spec, report)
 	if err != nil {
 		return err
 	}
@@ -94,6 +118,11 @@ func Pull(ctx context.Context, spec PullSpec) error {
 	if err != nil {
 		return fmt.Errorf("decode the manifest: %w", err)
 	}
+
+	// The manifest is the only thing that knows how large the transfer is, so
+	// this is the one moment a pull's totals change — from nothing to what it
+	// is really moving — and it is the same moment the parts start moving.
+	report.measured(artifact.FileSize, len(artifact.Parts))
 
 	// Measuring comes first because the truncate below destroys the evidence:
 	// it is what makes a leftover partial the right length or cuts it to fit,
@@ -109,9 +138,11 @@ func Pull(ctx context.Context, spec PullSpec) error {
 		return fmt.Errorf("size the destination to %d bytes: %w", artifact.FileSize, err)
 	}
 
-	if err := fetchParts(ctx, spec, artifact, resume); err != nil {
+	if err := fetchParts(ctx, spec, artifact, resume, report); err != nil {
 		return err
 	}
+
+	report.finalizing()
 
 	if err := spec.Sink.Commit(); err != nil {
 		return fmt.Errorf("commit the destination: %w", err)
@@ -128,10 +159,10 @@ func Pull(ctx context.Context, spec PullSpec) error {
 // The descriptor the port also returns is dropped here. It describes the
 // bytes, which is what the caller decodes, and the port has already checked
 // it against a digest reference.
-func fetchManifest(ctx context.Context, spec PullSpec) ([]byte, error) {
+func fetchManifest(ctx context.Context, spec PullSpec, report *reporter) ([]byte, error) {
 	var body []byte
 
-	if err := retry.Do(ctx, spec.Retry, func(ctx context.Context) error {
+	if err := attempted(ctx, report, spec.Retry, func(ctx context.Context) error {
 		fetched, _, err := spec.Manifests.Get(ctx)
 		if err != nil {
 			return fmt.Errorf("fetch the manifest: %w", err)
@@ -191,7 +222,13 @@ func (s PullSpec) validate() error {
 // the workers rather than being acted on here: verifying a part is the first
 // step of that part's job, so the hashing runs at the pull's own parallelism
 // and overlaps the fetches of the parts that failed it.
-func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact, resume bool) error {
+func fetchParts(
+	ctx context.Context,
+	spec PullSpec,
+	artifact manifest.Artifact,
+	resume bool,
+	report *reporter,
+) error {
 	split, err := plan.New(artifact.FileSize, artifact.PartSize)
 	if err != nil {
 		return fmt.Errorf("plan the split: %w", err)
@@ -208,7 +245,7 @@ func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact, 
 	// receive and leave, so its goroutine is never started.
 	for range min(spec.Workers, split.NumParts()) {
 		group.Go(func() error {
-			return fetchWorker(groupCtx, spec, jobs, resume)
+			return fetchWorker(groupCtx, spec, jobs, resume, report)
 		})
 	}
 
@@ -218,8 +255,8 @@ func fetchParts(ctx context.Context, spec PullSpec, artifact manifest.Artifact, 
 // fetchWorker drains jobs until the channel closes, downloading and verifying
 // each part it takes. Every worker builds its own fetcher, so the scratch a
 // part streams through is never shared between goroutines.
-func fetchWorker(ctx context.Context, spec PullSpec, jobs <-chan partJob, resume bool) error {
-	fetcher := newPartFetcher(spec.Blobs, spec.Sink, spec.Retry, resume)
+func fetchWorker(ctx context.Context, spec PullSpec, jobs <-chan partJob, resume bool, report *reporter) error {
+	fetcher := newPartFetcher(spec.Blobs, spec.Sink, spec.Retry, resume, report)
 
 	for job := range jobs {
 		if err := ctx.Err(); err != nil {
@@ -254,11 +291,14 @@ type partFetcher struct {
 	// resume says the sink already holds a partial file of the right length,
 	// so every part is hashed out of it before it is fetched.
 	resume bool
+	// report is where the pull's progress is recorded, nil when nobody is
+	// watching. Every worker shares it; it serializes its own callers.
+	report *reporter
 }
 
 // newPartFetcher builds the fetcher for one worker, allocating that worker's
 // share of scratch once.
-func newPartFetcher(blobs Blobs, sink Sink, policy retry.Policy, resume bool) *partFetcher {
+func newPartFetcher(blobs Blobs, sink Sink, policy retry.Policy, resume bool, report *reporter) *partFetcher {
 	return &partFetcher{
 		blobs:  blobs,
 		sink:   sink,
@@ -266,6 +306,7 @@ func newPartFetcher(blobs Blobs, sink Sink, policy retry.Policy, resume bool) *p
 		hasher: sha256.New(),
 		policy: policy,
 		resume: resume,
+		report: report,
 	}
 }
 
@@ -292,15 +333,29 @@ func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
 			return err
 		}
 		if matched {
+			// The part is in place and this pull moved none of its bytes,
+			// which is exactly what a skipped part is.
+			f.report.complete(job.part.Index, job.part.Size, true)
+
 			return nil
 		}
 	}
 
 	var done int64
 
-	return retry.Do(ctx, f.policy, func(ctx context.Context) error {
+	if err := attempted(ctx, f.report, f.policy, func(ctx context.Context) error {
 		return f.attempt(ctx, job, &done)
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Credited here rather than inside the attempt, because an attempt that
+	// returns without error is one that hashed the whole part and matched it
+	// against the manifest: that, and not the arrival of the last byte, is
+	// what makes a part provably in place.
+	f.report.complete(job.part.Index, job.part.Size, false)
+
+	return nil
 }
 
 // verify hashes one part's range out of the sink and reports whether what is
@@ -323,8 +378,10 @@ func (f *partFetcher) fetch(ctx context.Context, job partJob) error {
 func (f *partFetcher) verify(ctx context.Context, job partJob) (bool, error) {
 	f.hasher.Reset()
 
+	into := hashesInto(f.hasher, f.report)
 	section := io.NewSectionReader(f.sink, job.part.Offset, job.part.Size)
-	read, err := io.CopyBuffer(f.hasher, contextReader{ctx: ctx, reader: section}, f.buf)
+
+	read, err := io.CopyBuffer(into, contextReader{ctx: ctx, reader: section}, f.buf)
 	if err != nil {
 		return false, fmt.Errorf("read part %d of the existing file: %w", job.part.Index, err)
 	}
@@ -473,7 +530,17 @@ func (f *partFetcher) attempt(ctx context.Context, job partJob, done *int64) err
 // attempted again.
 func (f *partFetcher) stream(content io.Reader, part plan.Part, done *int64) error {
 	from, remaining := *done, part.Size-*done
+
 	into := io.MultiWriter(f.hasher, io.NewOffsetWriter(f.sink, part.Offset+from))
+	if f.report != nil {
+		// The counter goes behind the writers that place the bytes, and that
+		// order is the whole of why counting here is honest. [io.MultiWriter]
+		// stops at the first writer that fails and [io.CopyBuffer] hands the
+		// next chunk on only once the whole of this one was taken, so the
+		// counter sees exactly the bytes that reached the hasher and the sink
+		// together — including the refused write, where it sees none of them.
+		into = io.MultiWriter(into, wireWriter{to: f.report})
+	}
 
 	written, err := io.CopyBuffer(into, io.LimitReader(tagReads{r: content}, remaining), f.buf)
 	if err != nil {

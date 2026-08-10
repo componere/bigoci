@@ -61,6 +61,8 @@ const (
 	flagDebug = "debug"
 	// flagTimeout bounds how long the whole transfer may take.
 	flagTimeout = "timeout"
+	// flagProgress prints a progress line this often while a transfer runs.
+	flagProgress = "progress"
 )
 
 const (
@@ -99,6 +101,24 @@ type env struct {
 	stdout io.Writer
 	// stderr receives everything else, including the request log.
 	stderr io.Writer
+	// ticks, when set, replaces the ticker a -progress run would build, so a
+	// test decides exactly when a progress line is rendered and how many are.
+	// A real run leaves it nil and gets a [time.Ticker].
+	ticks <-chan time.Time
+	// now, when set, replaces the clock the progress line's elapsed column is
+	// read off, so a rendered line can be asserted byte for byte. A real run
+	// leaves it nil and gets [time.Now].
+	now func() time.Time
+}
+
+// clock returns the clock a run reads: the injected one where a test supplied
+// it, and the real one otherwise.
+func (e env) clock() func() time.Time {
+	if e.now != nil {
+		return e.now
+	}
+
+	return time.Now
 }
 
 // run executes one command line and returns the exit code the process should
@@ -390,6 +410,8 @@ type commonFlags struct {
 	plainHTTP bool
 	// debug logs every registry request and response on standard error.
 	debug bool
+	// progress prints a progress line this often, zero for none.
+	progress time.Duration
 }
 
 // register declares the shared flags on fs.
@@ -406,15 +428,21 @@ func (c *commonFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&c.plainHTTP, flagPlainHTTP, false, "talk http:// to the registry instead of https://")
 	fs.BoolVar(&c.debug, flagDebug, false, "log every registry request and response on stderr")
 	fs.DurationVar(&c.timeout, flagTimeout, 0, "give up after this long, as 30s or 5m (unset: no limit)")
+	fs.DurationVar(&c.progress, flagProgress, 0,
+		"print a progress line this often, as 5s or 500ms (unset: no progress output)")
 }
 
-// validate rejects shared flag values no transfer can run with. Today that is
-// one case: a negative -timeout, which someone who typed a sign by mistake
-// should hear about rather than run unbounded. An explicit zero stays the
-// documented "no limit", the same as leaving the flag alone.
+// validate rejects shared flag values no transfer can run with. Both cases
+// are the same mistake: a negative duration, from someone who typed a sign by
+// accident and should hear about it rather than watch a run go unbounded or
+// silent. An explicit zero stays what leaving the flag alone means — no
+// limit, and no progress lines.
 func (c *commonFlags) validate(set map[string]bool, name, usage string) error {
 	if set[flagTimeout] && c.timeout < 0 {
 		return usageErrorf(usage, "%s: -timeout must not be negative, got %s", name, c.timeout)
+	}
+	if set[flagProgress] && c.progress < 0 {
+		return usageErrorf(usage, "%s: -progress must not be negative, got %s", name, c.progress)
 	}
 
 	return nil

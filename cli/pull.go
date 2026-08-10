@@ -33,16 +33,35 @@ func runPull(ctx context.Context, e env, args []string) error {
 		return destErr
 	}
 
-	client, probe, err := newClient(c, e.stderr)
+	// The tap and the progress renderer are the only two writers this program
+	// ever runs at once, so they share one guarded stream and everything else
+	// keeps writing to stderr directly.
+	lines := sharedStderr(e.stderr, c.progress)
+
+	client, probe, err := newClient(c, lines)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(e.stderr, "bigoci: pull %s -> %s (%s)\n", ref, dest, c.settings(set))
 
+	watch := startProgress(e, lines, c.progress)
+
+	// The callback is added here rather than in pullOptions, which stays a
+	// pure function of the command line: a watcher is something this run
+	// built, not a value a flag carried.
+	opts := pullOptions(c, set)
+	if watch != nil {
+		opts = append(opts, bigoci.WithProgress(watch.record))
+	}
+
 	started := time.Now()
 	err = withDeadline(ctx, c.timeout, func(ctx context.Context) error {
-		return client.Pull(ctx, bigoci.Reference(ref), bigoci.ToFile(dest), pullOptions(c, set)...)
+		return client.Pull(ctx, bigoci.Reference(ref), bigoci.ToFile(dest), opts...)
 	})
+
+	// The final progress line comes first, so the last thing said about the
+	// transfer while it ran sits above everything said about how it ended.
+	watch.stop()
 
 	if probe != nil {
 		probe.writeSummary()

@@ -218,6 +218,7 @@ func (c *Client) push(
 		PartSize:  plan.PartSize(settings.partSize),
 		Workers:   settings.workers,
 		Title:     settings.title,
+		Progress:  progressReport(DirectionPush, settings.progress),
 	})
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("push %s to %s: %w", src.path, ref, err)
@@ -256,6 +257,7 @@ func (c *Client) pull(ctx context.Context, ref Reference, dest FileDest, opts []
 		Blobs:     repo.Blobs(),
 		Manifests: repo.Manifests(),
 		Workers:   settings.workers,
+		Progress:  progressReport(DirectionPull, settings.progress),
 	}); err != nil {
 		discardEmptyPartial(sink)
 
@@ -263,6 +265,59 @@ func (c *Client) pull(ctx context.Context, ref Reference, dest FileDest, opts []
 	}
 
 	return nil
+}
+
+// progressReport adapts the orchestrator's snapshots to the [Progress] a
+// caller asked for, stamping in the direction the core does not carry: a
+// transfer moves a file between the same two ends whichever way it is going,
+// and only the call knows which way that is.
+//
+// It returns nil when no option named a callback, which is what keeps an
+// unwatched transfer free of the accounting rather than merely quiet about
+// it.
+func progressReport(direction Direction, fn ProgressFunc) transfer.Report {
+	if fn == nil {
+		return nil
+	}
+
+	return func(s transfer.Snapshot) {
+		fn(Progress{
+			Direction:      direction,
+			Phase:          publicPhase(s.Phase),
+			TotalBytes:     s.TotalBytes,
+			TotalParts:     s.TotalParts,
+			CompletedBytes: s.CompletedBytes,
+			CompletedParts: s.CompletedParts,
+			SkippedParts:   s.SkippedParts,
+			WireBytes:      s.WireBytes,
+			HashedBytes:    s.HashedBytes,
+			Retries:        s.Retries,
+		})
+	}
+}
+
+// publicPhase maps a core phase onto the one this package exports.
+//
+// The two enums are declared independently — one is a public contract, the
+// other is an implementation detail free to gain a phase — so this is a
+// switch and never a numeric conversion. A phase added on either side shows
+// up here as a case that has to be answered, instead of silently renumbering
+// the other side's constants.
+func publicPhase(p transfer.Phase) Phase {
+	switch p {
+	case transfer.PhaseResolving:
+		return PhaseResolving
+	case transfer.PhaseTransferring:
+		return PhaseTransferring
+	case transfer.PhaseFinalizing:
+		return PhaseFinalizing
+	case transfer.PhaseDone:
+		return PhaseDone
+	case transfer.PhaseFailed:
+		return PhaseFailed
+	default:
+		return 0
+	}
 }
 
 // discardEmptyPartial removes the partial file a failed pull created when it

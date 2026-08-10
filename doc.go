@@ -31,7 +31,8 @@
 //
 // A push splits at [DefaultPartSize] and names the artifact after the file it
 // read; [WithPartSize] and [WithTitle] change both. [WithWorkers] sets how
-// many parts either direction moves at once.
+// many parts either direction moves at once, and [WithProgress] watches
+// either direction move them.
 //
 // # Errors
 //
@@ -41,16 +42,16 @@
 // check, so [errors.Is] answers for the whole chain no matter how deep the
 // failure started.
 //
-// # This phase
+// # Reliability
 //
 // Push and pull move a file end to end and retry transient failures: a
 // dropped connection, a 429, a 5xx, or a part whose body ends early costs a
 // bounded number of attempts with growing jittered waits, never the
 // transfer. A pull resumes into the partial file an earlier run left behind,
-// fetching only the parts that do not verify. What they do not do yet:
-// authenticate. Every request is anonymous — a registry that refuses one
-// reports [ErrUnauthorized] — and presenting credentials arrives with the
-// authentication phase.
+// fetching only the parts that do not verify. [WithDockerCredentials] and
+// [WithCredentials] authenticate a transfer to registries that ask for a
+// credential; a client built with neither still answers a token challenge,
+// anonymously.
 //
 // bigoci is dual-licensed under Apache-2.0 and MIT, at your option.
 package bigoci
