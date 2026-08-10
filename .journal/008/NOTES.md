@@ -42,3 +42,8 @@ Next: Push `feat/bench-audit-fixes`, open the review PR, and monitor its exact-h
 ## 2026-08-09 17:21 — Published for review
 PR: Opened ready-for-review PR [#40](https://github.com/componere/bigoci/pull/40), `fix(bench): preserve measurement validity and correct defaults`, from `feat/bench-audit-fixes` at exact head `50951092ef307a88a9bf6128f6753537ef964d03`.
 Hosted proof: CI, GitHub Pages, CodeQL actions analysis, and CodeQL Go analysis all completed successfully on that exact head. GitHub reports the PR merge state clean. It remains open and unmerged pending human review; session 008 remains open.
+
+## 2026-08-09 17:26 — Close
+Landed: The user approved PR [#40](https://github.com/componere/bigoci/pull/40), which GitHub squash-merged as `3b351c65d6d5047b48702b14a2d1c371f6bb19d7`. Local `master` was fast-forwarded to that exact commit, and Worktrunk removed the integrated `feat/bench-audit-fixes` worktree and local branch; the remote feature branch is also absent.
+Recorded: `SUMMARY.md` captures the audit, corrected cohort, default change, validation, and cleanup. `INDEX.md` marks session 008 complete, and `TECH_NOTES.md` now records the effective-worker and schema-3 cohort contracts instead of the superseded eight-worker claim.
+Handoff: The implementation and journal artifacts are committed, the corrected Latitude server and GHCR packages remain absent, and no task-owned work remains. The task-local session binding clears after this closeout mutation reaches `journal/jmgilman`.
