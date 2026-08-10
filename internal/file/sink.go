@@ -1,6 +1,7 @@
 package file
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,27 +60,88 @@ type Sink struct {
 // which of them still need fetching. The directory holding path must already
 // exist.
 //
-// A partial path that exists but is not a regular file — a symbolic link
-// planted there, a directory, a device — is refused. The partial name is
-// predictable from the destination, so following a pre-planted link would
-// hand a writable handle on an arbitrary file to whatever put the link there;
-// on platforms with O_NOFOLLOW the open itself enforces this without a race.
+// An existing partial must be regular before the open and through the opened
+// handle. On Unix, the observation must identify that same inode and the file
+// must be private and owned by the current identity. Other platforms retain
+// the static symlink and regular-file checks without claiming Unix ownership
+// or race-free pathname semantics. A partial that fails is refused unchanged.
 //
-// Errors come back exactly as the operating system reported them, because
-// those errors already name both the path and the operation that failed.
+// Open and stat failures come back exactly as the operating system reported
+// them. A file that opens but fails the safety checks returns a descriptive
+// error naming the partial and the property that was refused.
 func CreateSink(path string) (*Sink, error) {
 	partial := path + PartialSuffix
 
-	if info, err := os.Lstat(partial); err == nil && !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("partial file %s exists but is not a regular file", partial)
-	}
-
-	f, err := os.OpenFile(partial, os.O_RDWR|os.O_CREATE|noFollow, partialPerm)
+	f, existing, err := openPartial(partial)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateOpenedPartial(f, partial, existing); err != nil {
+		_ = f.Close()
+
 		return nil, err
 	}
 
 	return &Sink{file: f, partial: partial, path: path}, nil
+}
+
+// openPartial atomically distinguishes a new private partial from one already
+// at partial. A failed exclusive create is followed by an observation and an
+// open without create, so removal is reported rather than silently creating a
+// new file. [os.SameFile] rejects a replacement when the platform snapshots
+// file identity in [os.FileInfo]; Unix provides that guarantee.
+func openPartial(partial string) (*os.File, bool, error) {
+	f, err := os.OpenFile(partial, os.O_RDWR|os.O_CREATE|os.O_EXCL|noFollow, partialPerm)
+	if err == nil {
+		return f, false, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, false, err
+	}
+
+	observed, err := os.Lstat(partial)
+	if err != nil {
+		return nil, false, err
+	}
+	if !observed.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("partial file %s exists but is not a regular file", partial)
+	}
+
+	f, err = os.OpenFile(partial, os.O_RDWR|noFollow, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	opened, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+
+		return nil, false, err
+	}
+	if !os.SameFile(observed, opened) {
+		_ = f.Close()
+
+		return nil, false, fmt.Errorf("partial file %s changed while it was being opened", partial)
+	}
+
+	return f, true, nil
+}
+
+// validateOpenedPartial checks the file represented by f before a pull reads
+// or writes it. Path is used only to identify the refused partial in errors;
+// type, owner, and mode decisions come from the already-open handle.
+func validateOpenedPartial(f *os.File, path string, existing bool) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("partial file %s exists but is not a regular file", path)
+	}
+	if err := validatePartialAccess(info, existing); err != nil {
+		return fmt.Errorf("partial file %s is not safe to use: %w", path, err)
+	}
+
+	return nil
 }
 
 // ReadAt reads len(p) bytes from the partial file starting at byte offset
