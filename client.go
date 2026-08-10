@@ -17,11 +17,13 @@ import (
 // a digest, written registry/repo[:tag][@digest].
 //
 // The grammar is the one container tooling uses, parsed by
-// github.com/distribution/reference. Three rules follow from it. The registry
+// github.com/distribution/reference. Four rules follow from it. The registry
 // is required, so "team/model:v1" is not a reference and no short name is
 // quietly expanded to Docker Hub. The name must be canonical, which means
-// lowercase. And a reference must carry a tag or a digest, because every
-// transfer names one manifest.
+// lowercase. A reference must carry a tag or a digest, because every
+// transfer names one manifest. And a digest must be sha256 — the only
+// algorithm the v1 format uses — so a reference naming another one is
+// refused before a request is made.
 //
 // A reference that carries both is bound to its digest: the digest names one
 // manifest exactly, while the tag beside it is a claim about where that tag
@@ -106,9 +108,9 @@ func New(opts ...Option) (*Client, error) {
 // file must not change while the push runs.
 //
 // A failure the registry or the network says is worth repeating — a 429, a
-// 5xx, a connection that dropped — is retried up to four times per part, with
-// an exponentially growing jittered wait that never falls short of a
-// Retry-After the registry sent. Everything else fails at once. A push that
+// 5xx, a connection that dropped — costs up to four attempts per part in
+// total, with an exponentially growing jittered wait that never falls short
+// of a Retry-After the registry sent. Everything else fails at once. A push that
 // gives up leaves whichever parts had already landed in the repository,
 // unreferenced, and a later push finds and skips them.
 //
@@ -152,9 +154,9 @@ func (c *Client) Push(
 // to some other artifact and is refilled from the start.
 //
 // A part whose fetch breaks in a way worth repeating — a 429, a 5xx, a
-// connection that dropped mid-part — is fetched again, up to four times, with
-// an exponentially growing jittered wait that never falls short of a
-// Retry-After the registry sent. Those attempts carry on from the byte the
+// connection that dropped mid-part — is fetched again, up to four attempts in
+// total, with an exponentially growing jittered wait that never falls short
+// of a Retry-After the registry sent. Those attempts carry on from the byte the
 // broken one reached, unless the registry will not serve a byte range, in
 // which case it answers with the whole blob and the part is simply written
 // again from its first byte. A part that arrives whole and hashes wrong is not

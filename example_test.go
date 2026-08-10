@@ -87,22 +87,40 @@ func Example_progress() {
 		panic(err)
 	}
 
+	// The library serializes the callback's calls, so the callback itself
+	// needs no lock. The mutex is for the render loop below, which reads
+	// from a goroutine of its own.
 	var mu sync.Mutex
 	var last bigoci.Progress
 
+	// The renderer stops when the transfer call returns, never by waiting
+	// for a terminal snapshot: a push that fails before it begins — a file
+	// that will not open, a reference that will not parse — delivers no
+	// snapshot at all.
+	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for range time.Tick(2 * time.Second) {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+
 			mu.Lock()
 			p := last
 			mu.Unlock()
+			// The zero Progress describes no transfer: nothing has been
+			// reported yet, so there is nothing to draw.
+			if p.Phase == 0 {
+				continue
+			}
 
 			fmt.Printf("%s %s: %3.0f%% (%d/%d parts, %d retries)\n",
 				p.Direction, p.Phase, 100*p.Fraction(), p.CompletedParts, p.TotalParts, p.Retries)
-			if p.Phase == bigoci.PhaseDone || p.Phase == bigoci.PhaseFailed {
-				return
-			}
 		}
 	}()
 
@@ -114,8 +132,15 @@ func Example_progress() {
 			mu.Unlock()
 		}),
 	)
+	close(stop)
 	<-done
 	if err != nil {
 		panic(err)
 	}
+
+	// Only the phase says whether the transfer finished — every byte counter
+	// can read complete while the manifest is still being written.
+	mu.Lock()
+	fmt.Println("final phase:", last.Phase)
+	mu.Unlock()
 }
