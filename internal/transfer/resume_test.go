@@ -2,11 +2,13 @@ package transfer_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"slices"
 	"testing"
 
+	digest "github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -14,6 +16,7 @@ import (
 	filemocks "github.com/componere/bigoci/internal/file/mocks"
 	"github.com/componere/bigoci/internal/manifest"
 	ocimocks "github.com/componere/bigoci/internal/oci/mocks"
+	"github.com/componere/bigoci/internal/plan"
 	"github.com/componere/bigoci/internal/transfer"
 )
 
@@ -248,6 +251,71 @@ func TestPullDoesNotRetryAPartialItCannotRead(t *testing.T) {
 	require.ErrorContains(t, err, "read part 0 of the existing file")
 
 	assert.Empty(t, sleeps.waits(), "a disk that will not read is not waited on")
+	blobs.AssertNotCalled(t, "Get", mock.Anything, mock.Anything, mock.Anything)
+	sink.AssertNotCalled(t, "Commit")
+}
+
+// TestPullStopsResumeVerificationWhenContextIsCancelled proves that hashing a
+// large existing part observes cancellation between bounded reads. The first
+// read ends the context deliberately; no second disk read, blob request, or
+// commit may happen after that point.
+func TestPullStopsResumeVerificationWhenContextIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	const size = 1 << 20
+
+	content := fileContent(size)
+	partDigest := digest.FromBytes(content)
+	artifact := manifest.Artifact{
+		FileDigest: partDigest,
+		FileSize:   size,
+		PartSize:   plan.PartSize(size),
+		Title:      "model.bin",
+		Parts: []manifest.Part{{
+			Digest: partDigest,
+			Size:   size,
+		}},
+	}
+	body, err := manifest.Encode(artifact)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	manifests := ocimocks.NewMockManifests(t)
+	manifests.EXPECT().Get(mock.Anything).Return(body, manifestDescriptor(body), nil).Once()
+
+	blobs := ocimocks.NewMockBlobs(t)
+
+	reads := 0
+	sink := filemocks.NewMockSink(t)
+	sink.EXPECT().Size().Return(int64(size), nil).Once()
+	sink.EXPECT().Truncate(int64(size)).Return(nil).Once()
+	sink.EXPECT().ReadAt(mock.Anything, mock.Anything).RunAndReturn(
+		func(p []byte, off int64) (int, error) {
+			reads++
+			n := copy(p, content[off:])
+			if reads == 1 {
+				cancel()
+			}
+			if n < len(p) {
+				return n, io.EOF
+			}
+
+			return n, nil
+		},
+	).Maybe()
+
+	err = transfer.Pull(ctx, transfer.PullSpec{
+		Sink:      sink,
+		Blobs:     blobs,
+		Manifests: manifests,
+		Workers:   1,
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorContains(t, err, "read part 0 of the existing file")
+
+	assert.Equal(t, 1, reads, "cancellation after the first bounded read stops the hash pass")
 	blobs.AssertNotCalled(t, "Get", mock.Anything, mock.Anything, mock.Anything)
 	sink.AssertNotCalled(t, "Commit")
 }

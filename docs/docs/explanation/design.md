@@ -275,6 +275,9 @@ moves, at the pull's own worker count, overlapping the fetches of the parts
 that failed. A pull that died at the first part therefore pays a read of a
 file that holds nothing. Any way of avoiding that is a record of what an
 earlier run did, which is exactly what resume is built not to need.
+The caller's context still bounds that pass: cancellation and deadlines are
+checked around every 256 KiB read, so hashing stops after the disk read already
+in progress rather than finishing an attacker-declared part.
 
 ### Verification
 
