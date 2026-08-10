@@ -19,25 +19,26 @@ type PartSize int64
 //
 // 512 MiB sits roughly 19 times under the lowest registry layer cap, makes a
 // 5 GB file into ten parts, and keeps the per-part request overhead in the
-// noise. The value is measured, not provisional: on a 10 Gbit/s path it came
-// within two percent of the best cell of a 64 MiB to 1 GiB sweep against zot
-// at 16 GiB, led the sweep against CNCF Distribution, and tied within noise
-// against GHCR, while smaller parts paid visible per-part overhead at scale
-// (bare-metal matrix, 2026-08; see
+// noise. The value is measured, not provisional: with eight workers it came
+// within 1.6 percent of the best 16 GiB zot cell and one percent of the best
+// CNCF Distribution cell. Against GHCR its push and pull medians were within
+// 2.5 and 4.1 percent of 256 MiB parts, while smaller parts paid visible
+// per-part overhead at local scale (bare-metal matrix, 2026-08; see
 // https://componere.github.io/bigoci/reference/benchmarks/).
 const DefaultPartSize PartSize = 512 << 20
 
 // DefaultWorkers is how many parts a push or a pull moves at once when the
 // caller names no worker count.
 //
-// One worker holds one connection. Measured on a 10 Gbit/s path, four
-// workers pushed at roughly ninety percent of the link and eight bought at
-// most three percent more; against GHCR, where a connection sustains the
-// 85 to 90 MB/s the design predicted, extra workers changed little and
-// drew no throttling (bare-metal matrix, 2026-08; see
-// https://componere.github.io/bigoci/reference/benchmarks/). Callers with a
-// bigger pipe raise it with [WithWorkers].
-const DefaultWorkers = 4
+// With 512 MiB parts, moving from four to eight workers left aggregate push
+// throughput effectively flat against zot, CNCF Distribution, and GHCR. It
+// raised GHCR's aggregate pull median from 161.6 to 262.1 MB/s, while every
+// same-site median changed by at most 1.3 percent. The corrected GHCR matrix
+// kept all eight workers active and recorded no 429 or 503 response
+// (bare-metal matrix, 2026-08; see
+// https://componere.github.io/bigoci/reference/benchmarks/). Callers can
+// override the count with [WithWorkers].
+const DefaultWorkers = 8
 
 // Option configures a [Client] as [New] builds it.
 //

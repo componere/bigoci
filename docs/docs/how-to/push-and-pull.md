@@ -104,12 +104,13 @@ Files move as fixed-size parts, in parallel. Two options control that:
 ```go
 desc, err := client.Push(ctx, ref, bigoci.FromFile(path),
     bigoci.WithPartSize(256<<20), // 256 MiB parts; the default is 512 MiB
-    bigoci.WithWorkers(8),        // parallel transfers; the default is 4
+    bigoci.WithWorkers(4),        // parallel transfers; the default is 8
 )
 ```
 
-The defaults suit most links. Raise the worker count on a fast pipe. The part
-size is recorded in the manifest, so a pull never needs to be told it.
+The defaults suit the measured paths. Override the worker count when your path
+has different constraints. The part size is recorded in the manifest, so a
+pull never needs to be told it.
 
 ## What bigoci retries
 

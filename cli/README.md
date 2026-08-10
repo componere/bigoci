@@ -93,7 +93,7 @@ Two consequences worth stating outright:
   passes nothing, and the library names the artifact after the base name of the
   file it read.
 - Help text shows the library's real defaults, read at runtime:
-  `-workers int` says `(unset: the library default, 4)`. The registered default
+  `-workers int` says `(unset: the library default, 8)`. The registered default
   is the zero value, which is why no `(default 0)` appears beside it.
 
 ### Why pull has no -part-size and no -title
@@ -211,10 +211,10 @@ This is a contract, not a description. Recipes read these streams.
 except request log lines, which are prefixed `http> `, `http< `, and `http! `.
 
 ```
-bigoci: push /data/model.bin (204800 bytes) -> 127.0.0.1:5050/team/model:v1 (part-size=64KiB, workers=4, plain-http)
+bigoci: push /data/model.bin (204800 bytes) -> 127.0.0.1:5050/team/model:v1 (part-size=64KiB, workers=8, plain-http)
 bigoci: pushed sha256:829c96af3ccd… in 12.4s
 
-bigoci: pull 127.0.0.1:5050/team/model:v1 -> /data/out.bin (workers=4, plain-http)
+bigoci: pull 127.0.0.1:5050/team/model:v1 -> /data/out.bin (workers=8, plain-http)
 bigoci: pulled 204800 bytes in 9.1s
 ```
 

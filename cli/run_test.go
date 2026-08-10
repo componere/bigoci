@@ -413,7 +413,7 @@ func TestPushPreflightLine(t *testing.T) {
 	line := f.preflight(set, src, "reg/repo:v1")
 	assert.Contains(t, line, "bigoci: push "+src+" (2048 bytes) -> reg/repo:v1 (")
 	assert.Contains(t, line, "part-size=1KiB")
-	assert.Contains(t, line, "workers=4")
+	assert.Contains(t, line, "workers=8")
 	assert.Contains(t, line, "plain-http")
 
 	assert.Empty(t, f.preflight(set, filepath.Join(t.TempDir(), "absent"), "reg/repo:v1"))
