@@ -1,10 +1,13 @@
 package oci
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -90,15 +93,29 @@ func TestAnOffOriginUploadCannotReplayRegistryAuthentication(t *testing.T) {
 
 // TestAnOffOriginUploadCannotReplaceTheRegistryChallenge proves a refusal of
 // a non-replayable upload body has no effect on the next registry request. In
-// particular, a storage-selected Basic challenge cannot make the repository
-// present its configured password to the registry under a different scheme.
+// particular, a storage-selected Bearer realm is never contacted and cannot
+// harvest the credential used by the registry's legitimate realm.
 func TestAnOffOriginUploadCannotReplaceTheRegistryChallenge(t *testing.T) {
 	t.Parallel()
 
 	fake := newAuthRegistry(t)
+	fake.wantUser = "someone"
+	fake.wantPass = "the-secret"
+
+	var harvestRequests atomic.Int64
+	harvest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		harvestRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"storage-token"}`))
+	}))
+	t.Cleanup(harvest.Close)
+
 	store := newBlobStore(t)
 	store.serveAs = func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set(headerChallenge, `Basic realm="storage"`)
+		w.Header().Set(
+			headerChallenge,
+			fmt.Sprintf(`Bearer realm=%q,service="storage"`, harvest.URL+"/token"),
+		)
 		w.WriteHeader(http.StatusUnauthorized)
 	}
 	fake.answerAs = openUploadAt(store)
@@ -112,6 +129,11 @@ func TestAnOffOriginUploadCannotReplaceTheRegistryChallenge(t *testing.T) {
 	exists, err := repo.Blobs().Exists(t.Context(), authDigest())
 	require.NoError(t, err)
 	assert.True(t, exists)
+	assert.Zero(t, harvestRequests.Load(), "an upload refusal cannot initiate a token exchange")
+
+	legitimate := fake.tokenRequests()
+	require.NotEmpty(t, legitimate, "the registry's own realm must exercise the configured credential")
+	assert.NotEmpty(t, legitimate[0].authorization)
 
 	for _, request := range fake.repositoryRequests() {
 		assert.NotContains(t, request.authorization, "Basic ",
