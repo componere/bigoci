@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/componere/bigoci"
 )
@@ -61,6 +63,58 @@ func Example_authentication() {
 
 		return
 	}
+	if err != nil {
+		panic(err)
+	}
+}
+
+// The callback stores the snapshot and returns; rendering happens somewhere
+// else, on the consumer's own clock. That split is the whole pattern. The
+// callback runs on the transfer's goroutines and blocks them for as long as
+// it takes, so a channel send, a network call, or a call back into the
+// client belongs in the render loop, never here.
+//
+// Percent comes from [bigoci.Progress.Fraction] (completed bytes), and a
+// throughput reading would come from the change in
+// [bigoci.Progress.WireBytes] between two renders — the two counters answer
+// different questions, and only [bigoci.PhaseDone] means the transfer
+// finished.
+//
+//nolint:testableexamples // Running would need a live registry; the example exists to be compiled, not executed.
+func Example_progress() {
+	client, err := bigoci.New()
+	if err != nil {
+		panic(err)
+	}
+
+	var mu sync.Mutex
+	var last bigoci.Progress
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range time.Tick(2 * time.Second) {
+			mu.Lock()
+			p := last
+			mu.Unlock()
+
+			fmt.Printf("%s %s: %3.0f%% (%d/%d parts, %d retries)\n",
+				p.Direction, p.Phase, 100*p.Fraction(), p.CompletedParts, p.TotalParts, p.Retries)
+			if p.Phase == bigoci.PhaseDone || p.Phase == bigoci.PhaseFailed {
+				return
+			}
+		}
+	}()
+
+	_, err = client.Push(context.Background(), "registry.example.com/team/models:v1",
+		bigoci.FromFile("/data/model.bin"),
+		bigoci.WithProgress(func(p bigoci.Progress) {
+			mu.Lock()
+			last = p
+			mu.Unlock()
+		}),
+	)
+	<-done
 	if err != nil {
 		panic(err)
 	}
