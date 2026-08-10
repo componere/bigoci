@@ -41,7 +41,7 @@ if err := client.Pull(ctx, ref, bigoci.ToFile("/data/model.bin")); err != nil {
 }
 ```
 
-A push splits at 512 MiB and moves 4 parts at once; `WithPartSize` and
+A push splits at 512 MiB and moves 8 parts at once; `WithPartSize` and
 `WithWorkers` change that. For a registry that asks for a credential, build
 the client with `bigoci.WithDockerCredentials()`. The
 [documentation site](https://componere.github.io/bigoci/) has the guides, and

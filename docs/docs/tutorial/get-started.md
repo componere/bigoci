@@ -171,8 +171,8 @@ pulled model-pulled.bin
 Your digest differs from this one. It describes the bytes of the file, and
 `/dev/urandom` gave you different bytes.
 
-The push split `model.bin` into four 64 MiB parts, uploaded them in parallel —
-four at a time by default — and wrote a manifest listing them in order. The pull
+The push split `model.bin` into four 64 MiB parts, uploaded them all in
+parallel, and wrote a manifest listing them in order. The pull
 read that manifest, fetched the parts in parallel, checked each one against the
 digest the manifest gives it, and renamed the finished file into place only once
 every part passed. [Design](../explanation/design.md) covers why it works that

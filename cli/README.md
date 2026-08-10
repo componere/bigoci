@@ -20,7 +20,8 @@ ends up in a log. This CLI's own tests check the first of those against a fake
 registry, which proves the wiring; a real one is what proves the claim.
 
 It is the instrument for the library's manual gates: parallel push and pull,
-retries, pull resume, `docker login` credentials, and presigned redirects.
+retries, pull resume, `docker login` credentials, presigned redirects, and
+progress reporting.
 Section [Reading the output](#reading-the-output) is the cookbook for those
 gates.
 

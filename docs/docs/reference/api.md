@@ -440,13 +440,14 @@ sweep against CNCF Distribution, and tied within noise against GHCR. See
 ### DefaultWorkers
 
 ```go
-const DefaultWorkers = 4
+const DefaultWorkers = 8
 ```
 
 How many parts a push or a pull moves at once when the caller names no worker
-count. One worker holds one connection. Measured on a 10 Gbit/s path, four
-workers pushed at roughly ninety percent of the link and eight bought at most
-three percent more. See [Benchmarks](benchmarks.md).
+count. One worker holds one connection. With 512 MiB parts, moving from four
+to eight workers left aggregate push throughput effectively flat against zot,
+CNCF Distribution, and GHCR, raised GHCR's aggregate pull median from 161.6 to
+262.1 MB/s, and drew no 429 or 503. See [Benchmarks](benchmarks.md).
 
 ### Constraints
 
@@ -544,7 +545,7 @@ type Progress struct {
 | `CompletedBytes` | Bytes provably in their final place — held by the registry for a push, written and verified for a pull. Credited in whole-part steps, exactly once per part |
 | `CompletedParts` | How many parts have been credited |
 | `SkippedParts` | Parts that completed without moving their own bytes over the wire |
-| `WireBytes` | Bytes that crossed the registry boundary to get there |
+| `WireBytes` | Bytes of the file that crossed the registry boundary to get there. The manifest and the empty config blob are not counted |
 | `HashedBytes` | Local bytes read and hashed: a push's hash pass, a pull's resume verify |
 | `Retries` | Entries into a retry budget after the first |
 
