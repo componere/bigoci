@@ -41,8 +41,11 @@ type FileDest struct {
 // exist.
 //
 // A pull that fails leaves the partial file behind on purpose: those bytes
-// are what a later resume starts from. An existing destination is replaced
-// only by a pull that finishes.
+// are what a later resume starts from. On Unix, a later pull resumes only from
+// the same private regular file it observed before opening, owned by the
+// current identity. Other platforms reject statically planted links and
+// non-regular files but cannot make the Unix ownership guarantee. A partial
+// that fails is left untouched. A pull that finishes replaces the destination.
 func ToFile(path string) FileDest {
 	return FileDest{path: path}
 }

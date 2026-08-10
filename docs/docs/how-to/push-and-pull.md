@@ -80,6 +80,13 @@ manifest. A rerun after a pull you stopped halfway downloads the second half.
 A rerun after a pull that had finished everything but the rename downloads
 nothing at all.
 
+On Unix, bigoci resumes only from the same regular file it observed before
+opening. The file must be owned by the effective user and grant no permissions
+to its group or other users. A partial that fails the check is left untouched
+and the pull stops before contacting the registry. Other platforms reject a
+statically planted symbolic link or non-regular file, but do not claim the Unix
+ownership or race-free pathname guarantee.
+
 Three things follow from hashing rather than bookkeeping:
 
 - It is safe to interrupt a pull at any moment, including with `SIGKILL`. A
