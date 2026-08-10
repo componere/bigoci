@@ -20,4 +20,4 @@ lsh servers list --project="$PROJECT"
 
 echo "if a GHCR stage ran, delete the throwaway package too:"
 echo "  https://github.com/settings > Packages > bigoci-bench"
-rm -f hosts.env
+rm -f hosts.env "known_hosts.$CLIENT_ID"

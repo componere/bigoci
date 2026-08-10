@@ -32,6 +32,10 @@ type iteration struct {
 	// attemptID names this process attempt's fresh fixture and repository
 	// namespace.
 	attemptID string
+	// cohortID binds emitted rows to the effective spec and harness build.
+	cohortID string
+	// commit is the human-readable harness revision.
+	commit string
 	// client is the library client for the cell's target.
 	client *bigoci.Client
 	// counter watches the client's traffic per timed phase.
@@ -238,6 +242,7 @@ func (it *iteration) emitRow(scenario string, t timing, phaseErr error) error {
 	r := row{
 		Schema:     rowSchema,
 		RunID:      it.spec.RunID,
+		CohortID:   it.cohortID,
 		AttemptID:  it.attemptID,
 		Timestamp:  time.Now().UTC(),
 		CellID:     it.cell.id,
@@ -250,7 +255,7 @@ func (it *iteration) emitRow(scenario string, t timing, phaseErr error) error {
 		Iteration:  it.number,
 		WallMS:     t.wall.Milliseconds(),
 		HTTPStatus: t.statuses,
-		Commit:     buildCommit(),
+		Commit:     it.commit,
 	}
 	if phaseErr != nil {
 		r.Error = phaseErr.Error()
@@ -315,8 +320,8 @@ func clearPullFiles(dest string) error {
 	return nil
 }
 
-// throughput derives decimal megabytes per second from a byte count and a
-// duration, the unit the design's expectations are quoted in.
+// throughput derives aggregate decimal megabytes per second from a byte count
+// and the whole phase's wall-clock duration.
 func throughput(bytes int64, wall time.Duration) float64 {
 	seconds := wall.Seconds()
 	if seconds <= 0 {

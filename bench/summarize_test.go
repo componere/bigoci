@@ -15,6 +15,7 @@ func speedRow(registry string, partSize int64, workers int, speed float64) row {
 	return row{
 		Schema:    rowSchema,
 		RunID:     "unit-run",
+		CohortID:  "unit-cohort",
 		AttemptID: "attempt",
 		CellID:    cellID(registry, partSize, workers, 16<<20),
 		Registry:  registry,
@@ -25,7 +26,30 @@ func speedRow(registry string, partSize int64, workers int, speed float64) row {
 		Parts:     (16 << 20) / partSize,
 		WallMS:    100,
 		MBPerS:    speed,
+		Commit:    "abcdef123456",
 	}
+}
+
+// TestRunSummarizeRejectsMixedHarnesses checks the command boundary does not
+// combine populations produced by different binaries.
+func TestRunSummarizeRejectsMixedHarnesses(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "mixed.jsonl")
+	writer, err := newRowWriter(path)
+	require.NoError(t, err)
+	first := speedRow("zot", 4<<20, 1, 100)
+	second := speedRow("zot", 8<<20, 1, 300)
+	second.Commit = "fedcba654321"
+	require.NoError(t, writer.write(first))
+	require.NoError(t, writer.write(second))
+	require.NoError(t, writer.close())
+
+	var stdout, stderr strings.Builder
+	code := runSummarize([]string{"-in", path}, &stdout, &stderr)
+	assert.Equal(t, exitFailure, code)
+	assert.Contains(t, stderr.String(), "multiple harness commits")
+	assert.Empty(t, stdout.String())
 }
 
 // TestSummarizeShowsConfiguredAndMaxActiveWorkers makes a capped worker cell

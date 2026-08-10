@@ -15,6 +15,7 @@ func sampleRow(scenario string, iteration int) row {
 	return row{
 		Schema:    rowSchema,
 		RunID:     "unit-run",
+		CohortID:  "unit-cohort",
 		AttemptID: "attempt",
 		Timestamp: time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 		CellID:    "zot-p4MiB-w1-f16MiB",
@@ -27,6 +28,7 @@ func sampleRow(scenario string, iteration int) row {
 		Iteration: iteration,
 		WallMS:    100,
 		MBPerS:    167.8,
+		Commit:    "abcdef123456",
 	}
 }
 
@@ -82,7 +84,7 @@ func TestCompletedKeysSkipsOnlySuccesses(t *testing.T) {
 	require.NoError(t, writer.write(failed))
 	require.NoError(t, writer.close())
 
-	keys, err := completedKeys(path, "unit-run")
+	keys, err := completedKeys(path, "unit-run", "unit-cohort")
 	require.NoError(t, err)
 
 	assert.True(t, keys["zot-p4MiB-w1-f16MiB|cold-push|0"], "a success is skipped on resume")
@@ -92,7 +94,7 @@ func TestCompletedKeysSkipsOnlySuccesses(t *testing.T) {
 func TestCompletedKeysTreatsAMissingFileAsAFreshRun(t *testing.T) {
 	t.Parallel()
 
-	keys, err := completedKeys(filepath.Join(t.TempDir(), "absent.jsonl"), "unit-run")
+	keys, err := completedKeys(filepath.Join(t.TempDir(), "absent.jsonl"), "unit-run", "unit-cohort")
 	require.NoError(t, err)
 	assert.Empty(t, keys)
 }
@@ -110,12 +112,12 @@ func TestPrepareOutputProtectsNonResumeRuns(t *testing.T) {
 	require.NoError(t, os.WriteFile(nonempty, []byte("occupied"), 0o600))
 
 	for _, path := range []string{absent, empty} {
-		keys, err := prepareOutput(path, false, "unit-run")
+		keys, err := prepareOutput(path, false, "unit-run", "unit-cohort")
 		require.NoError(t, err)
 		assert.Empty(t, keys)
 	}
 
-	_, err := prepareOutput(nonempty, false, "unit-run")
+	_, err := prepareOutput(nonempty, false, "unit-run", "unit-cohort")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "-resume")
 }
@@ -131,10 +133,25 @@ func TestCompletedKeysRejectsAnotherRun(t *testing.T) {
 	require.NoError(t, writer.write(sampleRow(scenarioColdPush, 0)))
 	require.NoError(t, writer.close())
 
-	_, err = completedKeys(path, "new-run")
+	_, err = completedKeys(path, "new-run", "unit-cohort")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unit-run")
 	assert.Contains(t, err.Error(), "new-run")
+}
+
+// TestCompletedKeysRejectsAnotherCohort proves a retained output cannot mix
+// another effective spec or harness build into a partial run.
+func TestCompletedKeysRejectsAnotherCohort(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "results.jsonl")
+	writer, err := newRowWriter(path)
+	require.NoError(t, err)
+	require.NoError(t, writer.write(sampleRow(scenarioColdPush, 0)))
+	require.NoError(t, writer.close())
+
+	_, err = completedKeys(path, "unit-run", "other-cohort")
+	require.ErrorContains(t, err, "cohort_id")
 }
 
 // TestValidateResultRowsRejectsMixedOrDuplicateSuccesses checks both ways a
@@ -146,6 +163,14 @@ func TestValidateResultRowsRejectsMixedOrDuplicateSuccesses(t *testing.T) {
 	mixed[1].RunID = "other-run"
 	require.ErrorContains(t, validateResultRows(mixed), "multiple run_ids")
 
+	mixedCommit := []row{sampleRow(scenarioColdPush, 0), sampleRow(scenarioColdPull, 0)}
+	mixedCommit[1].Commit = "fedcba654321"
+	require.ErrorContains(t, validateResultRows(mixedCommit), "multiple harness commits")
+
+	mixedCohort := []row{sampleRow(scenarioColdPush, 0), sampleRow(scenarioColdPull, 0)}
+	mixedCohort[1].CohortID = "other-cohort"
+	require.ErrorContains(t, validateResultRows(mixedCohort), "multiple cohort_ids")
+
 	duplicate := []row{sampleRow(scenarioColdPush, 0), sampleRow(scenarioColdPush, 0)}
 	require.ErrorContains(t, validateResultRows(duplicate), "duplicate successful")
 
@@ -155,15 +180,57 @@ func TestValidateResultRowsRejectsMixedOrDuplicateSuccesses(t *testing.T) {
 	require.NoError(t, validateResultRows(failedThenPassed))
 }
 
-// TestValidateResultRowsAcceptsLegacyRows keeps the archived schema-one
-// result files readable after attempt identity was added.
+// TestValidateResultRowsAcceptsLegacyRows keeps archived schema-one and
+// schema-two result files readable after cohort identity was added.
 func TestValidateResultRowsAcceptsLegacyRows(t *testing.T) {
 	t.Parallel()
 
+	for _, schema := range []int{1, 2} {
+		legacy := sampleRow(scenarioColdPush, 0)
+		legacy.Schema = schema
+		legacy.CohortID = ""
+		if schema == 1 {
+			legacy.AttemptID = ""
+		}
+		require.NoError(t, validateResultRows([]row{legacy}))
+	}
+}
+
+// TestCompletedKeysRejectsLegacyRows keeps old files summarizable without
+// pretending their missing spec fingerprint is safe for resume.
+func TestCompletedKeysRejectsLegacyRows(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "legacy.jsonl")
 	legacy := sampleRow(scenarioColdPush, 0)
-	legacy.Schema = 1
-	legacy.AttemptID = ""
-	require.NoError(t, validateResultRows([]row{legacy}))
+	legacy.Schema = 2
+	legacy.CohortID = ""
+	writer, err := newRowWriter(path)
+	require.NoError(t, err)
+	require.NoError(t, writer.write(legacy))
+	require.NoError(t, writer.close())
+
+	_, err = completedKeys(path, "unit-run", "unit-cohort")
+	require.ErrorContains(t, err, "predates cohort identity")
+}
+
+// TestCohortIDChangesWithHarnessAndEffectiveSpec checks both inputs that make
+// resumed rows one comparable population.
+func TestCohortIDChangesWithHarnessAndEffectiveSpec(t *testing.T) {
+	t.Parallel()
+
+	spec := &Spec{RunID: "unit-run", Targets: []Target{{Name: "zot", Endpoint: "one"}}}
+	first, err := newCohortID(spec, "111111111111")
+	require.NoError(t, err)
+
+	otherHarness, err := newCohortID(spec, "222222222222")
+	require.NoError(t, err)
+	assert.NotEqual(t, first, otherHarness)
+
+	spec.Targets[0].Endpoint = "two"
+	otherSpec, err := newCohortID(spec, "111111111111")
+	require.NoError(t, err)
+	assert.NotEqual(t, first, otherSpec)
 }
 
 // TestNewAttemptIDIsPathSafe checks the namespace can be used directly in an

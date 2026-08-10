@@ -16,7 +16,7 @@ import (
 
 // rowSchema versions the result row shape. Bump it when a field changes
 // meaning, so old JSONL files cannot be summarized as if they were new.
-const rowSchema = 2
+const rowSchema = 3
 
 // injectedCommit is set by the Latitude build script because Go can report
 // the main checkout's revision when building from a linked worktree.
@@ -32,6 +32,9 @@ type row struct {
 	Schema int `json:"schema"`
 	// RunID names the run the row belongs to.
 	RunID string `json:"run_id"`
+	// CohortID fingerprints the effective spec and harness build. Every row
+	// in one resumable result set carries the same value.
+	CohortID string `json:"cohort_id,omitempty"`
 	// AttemptID names the process attempt that produced the row. A resumed
 	// process gets a fresh attempt and therefore fresh fixture bytes and
 	// repository paths.
@@ -64,7 +67,7 @@ type row struct {
 	// Error is why the phase failed, empty on success. A failed row keeps
 	// its wall time but carries no throughput.
 	Error string `json:"error,omitempty"`
-	// Commit is the harness build's short VCS revision, so a saved JSONL
+	// Commit is the harness build's VCS revision, so a saved JSONL
 	// names the code that produced it.
 	Commit string `json:"commit,omitempty"`
 }
@@ -162,7 +165,7 @@ func readRows(path string) ([]row, error) {
 
 // prepareOutput enforces the append boundary and returns the successful rows
 // a validated resume may skip. A missing or empty path starts a fresh file.
-func prepareOutput(path string, resume bool, runID string) (map[string]bool, error) {
+func prepareOutput(path string, resume bool, runID, cohortID string) (map[string]bool, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]bool{}, nil
@@ -177,13 +180,13 @@ func prepareOutput(path string, resume bool, runID string) (map[string]bool, err
 		return nil, fmt.Errorf("results %s is not empty; use -resume or a new -out path", path)
 	}
 
-	return completedKeys(path, runID)
+	return completedKeys(path, runID, cohortID)
 }
 
 // completedKeys returns the identity of every successful row already in the
-// output file at path, after proving every row belongs to runID. Failed rows
-// are left out, so a re-run measures them again.
-func completedKeys(path, runID string) (map[string]bool, error) {
+// output file at path, after proving every row belongs to the expected run and
+// cohort. Failed rows are left out, so a re-run measures them again.
+func completedKeys(path, runID, cohortID string) (map[string]bool, error) {
 	rows, err := readRows(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]bool{}, nil
@@ -203,6 +206,20 @@ func completedKeys(path, runID string) (map[string]bool, error) {
 			runID,
 		)
 	}
+	if len(rows) > 0 && rows[0].CohortID == "" {
+		return nil, fmt.Errorf(
+			"results %s predates cohort identity; use a new -out path",
+			path,
+		)
+	}
+	if len(rows) > 0 && rows[0].CohortID != cohortID {
+		return nil, fmt.Errorf(
+			"results %s belongs to cohort_id %q, not %q; use a new -out path",
+			path,
+			rows[0].CohortID,
+			cohortID,
+		)
+	}
 
 	keys := make(map[string]bool, len(rows))
 	for _, r := range rows {
@@ -214,13 +231,17 @@ func completedKeys(path, runID string) (map[string]bool, error) {
 	return keys, nil
 }
 
-// validateResultRows proves rows form one run and contain at most one
-// successful measurement per key. Failed attempts may precede one success.
+// validateResultRows proves rows form one run and measurement cohort and
+// contain at most one successful measurement per key. Failed attempts may
+// precede one success. Legacy files without cohort identity remain readable,
+// but cannot be resumed.
 func validateResultRows(rows []row) error {
 	if len(rows) == 0 {
 		return nil
 	}
 	runID := rows[0].RunID
+	commit := rows[0].Commit
+	cohortID := rows[0].CohortID
 	if runID == "" {
 		return errors.New("results row 1 has an empty run_id")
 	}
@@ -234,6 +255,25 @@ func validateResultRows(rows []row) error {
 				runID,
 				rowNumber,
 				r.RunID,
+			)
+		}
+		if r.Commit != commit {
+			return fmt.Errorf(
+				"results contain multiple harness commits: row 1 is %q, row %d is %q",
+				commit,
+				rowNumber,
+				r.Commit,
+			)
+		}
+		if r.Schema >= 3 && r.CohortID == "" {
+			return fmt.Errorf("results row %d has an empty cohort_id", rowNumber)
+		}
+		if r.CohortID != cohortID {
+			return fmt.Errorf(
+				"results contain multiple cohort_ids: row 1 is %q, row %d is %q",
+				cohortID,
+				rowNumber,
+				r.CohortID,
 			)
 		}
 		if r.Error != "" {
@@ -266,8 +306,8 @@ func newAttemptID() (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
-// buildCommit returns the short VCS revision baked into the build, or empty
-// when the build carries none. A "+" suffix marks a dirty working tree.
+// buildCommit returns the VCS revision baked into the build, or empty when the
+// build carries none. A "+" suffix marks a dirty working tree.
 func buildCommit() string {
 	if injectedCommit != "" {
 		return injectedCommit
@@ -278,7 +318,6 @@ func buildCommit() string {
 		return ""
 	}
 
-	const short = 12
 	var revision, modified string
 	for _, setting := range info.Settings {
 		switch setting.Key {
@@ -290,9 +329,5 @@ func buildCommit() string {
 			}
 		}
 	}
-	if len(revision) > short {
-		revision = revision[:short]
-	}
-
 	return revision + modified
 }

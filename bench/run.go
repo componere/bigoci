@@ -191,7 +191,12 @@ func applyEndpoints(spec *Spec, endpoints endpointFlag) error {
 // should never sit idle because one cell went bad. Only a context
 // cancellation or a failure to record results stops the walk.
 func runMatrix(ctx context.Context, spec *Spec, outPath string, resume bool, stderr io.Writer) (int, error) {
-	skip, err := prepareOutput(outPath, resume, spec.RunID)
+	commit := buildCommit()
+	cohortID, err := newCohortID(spec, commit)
+	if err != nil {
+		return 0, err
+	}
+	skip, err := prepareOutput(outPath, resume, spec.RunID, cohortID)
 	if err != nil {
 		return 0, err
 	}
@@ -216,6 +221,8 @@ func runMatrix(ctx context.Context, spec *Spec, outPath string, resume bool, std
 	walk := &matrixWalk{
 		spec:      spec,
 		attemptID: attemptID,
+		cohortID:  cohortID,
+		commit:    commit,
 		skip:      skip,
 		writer:    writer,
 		log: func(format string, args ...any) {
@@ -241,6 +248,10 @@ type matrixWalk struct {
 	spec *Spec
 	// attemptID isolates this process attempt's fixtures and repositories.
 	attemptID string
+	// cohortID binds every row to this effective spec and harness build.
+	cohortID string
+	// commit is the human-readable harness revision stored beside the cohort.
+	commit string
 	// skip is the resume set of already-measured rows.
 	skip map[string]bool
 	// writer records finished rows.
@@ -268,6 +279,8 @@ func (w *matrixWalk) cell(ctx context.Context, c cell) error {
 			cell:      c,
 			number:    number,
 			attemptID: w.attemptID,
+			cohortID:  w.cohortID,
+			commit:    w.commit,
 			client:    client,
 			counter:   counter,
 			skip:      w.skip,
