@@ -191,6 +191,63 @@ func TestDecodeRejectsManifestsThatAreNotBigociArtifacts(t *testing.T) {
 	}
 }
 
+// TestDecodeErrorsDoNotReflectRegistrySelectedManifestValues pins the public
+// logging boundary around manifests. A registry can place a reusable bearer
+// in any field it returns, so Decode reports the field and rule without
+// repeating the value.
+func TestDecodeErrorsDoNotReflectRegistrySelectedManifestValues(t *testing.T) {
+	const reusableBearer = "application/vnd.registry.reusable-bearer-a8f4c2+json"
+
+	tests := []struct {
+		name    string
+		data    func() []byte
+		wantIs  error
+		wantErr string
+	}{
+		{
+			name: "artifact type",
+			data: func() []byte {
+				return manifestJSON(t, func(m map[string]any) { m["artifactType"] = reusableBearer })
+			},
+			wantIs:  manifest.ErrNotBigociArtifact,
+			wantErr: "manifest artifact type is not bigoci",
+		},
+		{
+			name: "config media type",
+			data: func() []byte {
+				return manifestJSON(t, func(m map[string]any) { configOf(m)["mediaType"] = reusableBearer })
+			},
+			wantErr: "config media type does not match",
+		},
+		{
+			name: "size annotation",
+			data: func() []byte {
+				return manifestJSON(t, func(m map[string]any) {
+					annotationsOf(m)[manifest.AnnotationFileSize] = reusableBearer
+				})
+			},
+			wantErr: "annotation io.bigoci.file.size is not a base-10 byte count",
+		},
+		{
+			name:    "malformed JSON",
+			data:    func() []byte { return []byte(`{"artifactType":"` + reusableBearer) },
+			wantErr: "parse manifest JSON",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := manifest.Decode(tt.data())
+			require.Error(t, err)
+			if tt.wantIs != nil {
+				require.ErrorIs(t, err, tt.wantIs)
+			}
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.NotContains(t, err.Error(), reusableBearer)
+		})
+	}
+}
+
 func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -200,27 +257,27 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 		{
 			name:    "schema version from another spec",
 			corrupt: func(m map[string]any) { m["schemaVersion"] = 1 },
-			wantErr: "schema version is 1, want 2",
+			wantErr: "schema version must be 2",
 		},
 		{
 			name:    "config media type of a real image config",
 			corrupt: func(m map[string]any) { configOf(m)["mediaType"] = ocispec.MediaTypeImageConfig },
-			wantErr: "config media type is",
+			wantErr: "config media type does not match",
 		},
 		{
 			name:    "config digest of some other blob",
 			corrupt: func(m map[string]any) { configOf(m)["digest"] = digest.FromString("{}\n").String() },
-			wantErr: "config digest is",
+			wantErr: "config digest does not match",
 		},
 		{
 			name:    "config size that is not two bytes",
 			corrupt: func(m map[string]any) { configOf(m)["size"] = 3 },
-			wantErr: "config size is 3, want 2",
+			wantErr: "config size does not match",
 		},
 		{
 			name:    "config data that contradicts the config digest",
 			corrupt: func(m map[string]any) { configOf(m)["data"] = "Zm9vYmFy" },
-			wantErr: "config data is",
+			wantErr: "config data does not match",
 		},
 		{
 			name:    "no layers",
@@ -233,7 +290,7 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 				annotationsOf(m)[manifest.AnnotationFileSize] = "10000000"
 				annotationsOf(m)[manifest.AnnotationPartSize] = "1"
 			},
-			wantErr: "split of 10000000 bytes at part size 1: too many parts",
+			wantErr: "manifest split is invalid",
 		},
 		{
 			name:    "layer that is a tar layer",
@@ -263,44 +320,44 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 		{
 			name:    "file size that is not a number",
 			corrupt: func(m map[string]any) { annotationsOf(m)[manifest.AnnotationFileSize] = "2.5 KB" },
-			wantErr: "annotation io.bigoci.file.size is \"2.5 KB\", want a base-10 byte count",
+			wantErr: "annotation io.bigoci.file.size is not a base-10 byte count",
 		},
 		{
 			name:    "part size that is not a number",
 			corrupt: func(m map[string]any) { annotationsOf(m)[manifest.AnnotationPartSize] = "0x3e8" },
-			wantErr: "annotation io.bigoci.part.size is \"0x3e8\", want a base-10 byte count",
+			wantErr: "annotation io.bigoci.part.size is not a base-10 byte count",
 		},
 		{
 			name:    "negative file size",
 			corrupt: func(m map[string]any) { annotationsOf(m)[manifest.AnnotationFileSize] = "-1" },
-			wantErr: "file size must not be negative",
+			wantErr: "manifest split is invalid",
 		},
 		{
 			name:    "part size of zero",
 			corrupt: func(m map[string]any) { annotationsOf(m)[manifest.AnnotationPartSize] = "0" },
-			wantErr: "part size must be positive",
+			wantErr: "manifest split is invalid",
 		},
 		{
 			name:    "file size that needs more parts than the manifest has",
 			corrupt: func(m map[string]any) { annotationsOf(m)[manifest.AnnotationFileSize] = "3500" },
-			wantErr: "artifact has 3 parts, but 3500 bytes at part size 1000 split into 4",
+			wantErr: "artifact part count does not match its split",
 		},
 		{
 			name:    "middle part shorter than the split rule allows",
 			corrupt: func(m map[string]any) { layersOf(m)[1]["size"] = partSize - 1 },
-			wantErr: "part 1 is 999 bytes, split rule requires 1000",
+			wantErr: "part 1 size does not match the split rule",
 		},
 		{
 			name:    "part digest that does not parse",
 			corrupt: func(m map[string]any) { layersOf(m)[0]["digest"] = "sha256:nothex" },
-			wantErr: `part 0 digest "sha256:nothex"`,
+			wantErr: "part 0 digest is invalid",
 		},
 		{
 			name: "file digest from another algorithm",
 			corrupt: func(m map[string]any) {
 				annotationsOf(m)[manifest.AnnotationFileDigest] = otherAlgorithmDigest(t).String()
 			},
-			wantErr: `file digest algorithm is "sha512"`,
+			wantErr: "file digest algorithm must be sha256",
 		},
 	}
 

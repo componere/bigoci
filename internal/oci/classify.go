@@ -103,7 +103,7 @@ type blobBody struct {
 func (b *blobBody) Read(p []byte) (int, error) {
 	n, err := b.rc.Read(p)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return n, retry.Transient(err, 0)
+		return n, retry.Transient(safeCause("blob response body read failed", err), 0)
 	}
 
 	return n, err
@@ -112,4 +112,29 @@ func (b *blobBody) Read(p []byte) (int, error) {
 // Close closes the response body.
 func (b *blobBody) Close() error {
 	return b.rc.Close()
+}
+
+// safeError retains an underlying failure for [errors.Is] and [errors.As] while
+// exposing only a package-chosen message. HTTP parser and body-read failures
+// can quote peer-provided bytes, including a reflected credential.
+type safeError struct {
+	// message is the fixed structural diagnosis rendered by Error.
+	message string
+	// cause retains typed and sentinel identity without contributing its text.
+	cause error
+}
+
+// Error returns the fixed structural diagnosis.
+func (e *safeError) Error() string {
+	return e.message
+}
+
+// Unwrap exposes the underlying failure to [errors.Is] and [errors.As].
+func (e *safeError) Unwrap() error {
+	return e.cause
+}
+
+// safeCause wraps cause without rendering its potentially peer-derived text.
+func safeCause(message string, cause error) error {
+	return &safeError{message: message, cause: cause}
 }

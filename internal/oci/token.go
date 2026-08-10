@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -109,15 +110,14 @@ func (a *authState) credential(ctx context.Context) (Credential, error) {
 // where nothing bigoci does can promise to keep it out of a log, and every
 // registry bigoci talks to accepts the GET.
 //
-// The exchange rides the repository's own client, so a caller watching that
-// client sees the token request exactly as it sees every other request — with
-// one deliberate difference: a redirect from the realm is terminal rather
-// than followed. The exchange carries a Basic header, a redirected token
-// endpoint is a shape no measured registry has, and failing loudly beats
-// deciding where a credential goes next on a token server's say-so. And
-// its failures classify through the same table a blob request's do — a token
-// endpoint answering 503 is worth another attempt for the same reason a
-// registry answering 503 is.
+// The exchange rides the repository's cookie-free external client, so the
+// caller's transport still sees it but a Cookie Jar contributes no ambient
+// authority. A redirect from the realm is terminal rather than followed. The
+// exchange carries a Basic header, a redirected token endpoint is a shape no
+// measured registry has, and failing loudly beats deciding where a credential
+// goes next on a token server's say-so. Its failures classify through the same
+// table a blob request's do — a token endpoint answering 503 is worth another
+// attempt for the same reason a registry answering 503 is.
 func (a *authState) exchange(
 	ctx context.Context,
 	asked challenge,
@@ -132,7 +132,7 @@ func (a *authState) exchange(
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return "", 0, fmt.Errorf("build the token request for %s: %w", endpoint.Host, err)
+		return "", 0, &authError{reason: "the registry's bearer challenge cannot form a token request"}
 	}
 
 	// The gate is the whole credential, not the user name: a secret with no
@@ -144,17 +144,41 @@ func (a *authState) exchange(
 		req.SetBasicAuth(cred.Username, cred.Password)
 	}
 
-	resp, err := a.repo.do(req)
+	resp, err := a.repo.doExternal(req)
 	if err != nil {
+		var targetErr *externalTargetError
+		if errors.As(err, &targetErr) {
+			return "", 0, &authError{reason: targetErr.Error()}
+		}
+
 		return "", 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("token exchange with %s: %w", endpoint.Host, statusError(resp))
+		return "", 0, tokenStatusError(resp)
 	}
 
 	return readToken(resp)
+}
+
+// tokenStatusError reports a token endpoint's status without admitting its
+// path or response body into the public error. It retains the same status
+// sentinels, transient table, and Retry-After behavior as a registry status.
+func tokenStatusError(resp *http.Response) error {
+	drain(resp.Body)
+
+	err := &StatusError{
+		Method:     http.MethodGet,
+		Path:       "token endpoint",
+		Status:     resp.StatusCode,
+		RetryAfter: retryAfter(resp),
+	}
+	if transientStatus(err.Status) {
+		return retry.Transient(err, err.RetryAfter)
+	}
+
+	return err
 }
 
 // tokenQuery renders a token request's query: whatever the realm already
@@ -188,24 +212,16 @@ func tokenQuery(endpoint *url.URL, service string, scopes []scope) string {
 func readToken(resp *http.Response) (string, time.Duration, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, tokenBodyLimit+1))
 	if err != nil {
-		return "", 0, retry.Transient(fmt.Errorf(
-			"%s %s: read the token endpoint's answer: %w", resp.Request.Method, resp.Request.URL.Path, err,
-		), 0)
+		return "", 0, retry.Transient(safeCause("read the token endpoint's answer", err), 0)
 	}
 
 	if len(body) > tokenBodyLimit {
-		return "", 0, fmt.Errorf(
-			"%s %s: the token endpoint's answer is larger than the %d byte limit",
-			resp.Request.Method, resp.Request.URL.Path, tokenBodyLimit,
-		)
+		return "", 0, fmt.Errorf("the token endpoint's answer is larger than the %d byte limit", tokenBodyLimit)
 	}
 
 	var answer tokenResponse
 	if err := json.Unmarshal(body, &answer); err != nil {
-		return "", 0, fmt.Errorf(
-			"%s %s: the token endpoint's answer is not a token document: %w",
-			resp.Request.Method, resp.Request.URL.Path, err,
-		)
+		return "", 0, errors.New("the token endpoint's answer is not a token document")
 	}
 
 	token := answer.Token
@@ -214,10 +230,7 @@ func readToken(resp *http.Response) (string, time.Duration, error) {
 	}
 
 	if token == "" {
-		return "", 0, fmt.Errorf(
-			"%s %s: the token endpoint answered with a document carrying no token",
-			resp.Request.Method, resp.Request.URL.Path,
-		)
+		return "", 0, errors.New("the token endpoint answered with a document carrying no token")
 	}
 
 	return bearerHeader(token), lifetimeOf(answer.ExpiresIn), nil

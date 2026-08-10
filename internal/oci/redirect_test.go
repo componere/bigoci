@@ -22,6 +22,11 @@ import (
 // offset of this one cannot be confused.
 const redirectOffset = 10
 
+// reflectedLocationHost is a DNS-safe reusable bearer shaped as a host. A
+// registry controls this component just as it controls a signed query, so no
+// validation error may repeat it.
+const reflectedLocationHost = "reusable-bearer-a8f4c2.example"
+
 // followedParam marks a location the registry sent to itself, so the fixture
 // can redirect the first request and serve the second.
 const followedParam = "followed"
@@ -315,7 +320,7 @@ func TestAStoreRefusalIsNeverTheCallersCredentials(t *testing.T) {
 
 			require.NotErrorAs(t, err, &status, "the registry did not say this, so nothing may report it as if it had")
 
-			assertNamesNoSignature(t, err, store.host(t))
+			assertNamesNoPeerValue(t, err, store.host(t))
 		})
 	}
 }
@@ -325,7 +330,8 @@ func TestAStoreRefusalIsNeverTheCallersCredentials(t *testing.T) {
 //
 // The error the standard library builds for one renders the whole URL, query
 // included, which for a presigned location is the signature. What comes back
-// names the host and the failure and nothing else.
+// names only the original registry operation: even the transport's host is
+// peer-selected material and is unnecessary to retry the operation.
 func TestAStoreThatCannotBeReachedIsWorthAnotherAttempt(t *testing.T) {
 	t.Parallel()
 
@@ -350,7 +356,17 @@ func TestAStoreThatCannotBeReachedIsWorthAnotherAttempt(t *testing.T) {
 	_, transient := retry.IsTransient(err)
 	assert.True(t, transient, "a connection that would not open is worth another attempt")
 
-	assertNamesNoSignature(t, err, dead)
+	assert.Contains(t, err.Error(), "GET "+repo.endpoint("blobs/<digest>").Path)
+	assert.NotContains(
+		t,
+		err.Error(),
+		authDigest().String(),
+		"the manifest-selected digest stays out of the operation label",
+	)
+	assert.NotContains(t, err.Error(), dead)
+	assert.NotContains(t, err.Error(), "?", "a query is where a signature lives")
+	assert.NotContains(t, err.Error(), signatureParam+"=", "and this is what one looks like")
+	assert.NotContains(t, err.Error(), storagePrefix, "the location's path is not the registry's path")
 }
 
 // TestTheRedirectChainIsBounded pins the hop limit. A store that keeps
@@ -400,7 +416,7 @@ func TestALocationBigociWillNotFollow(t *testing.T) {
 		{
 			name:     "a location that is not http",
 			location: func(*blobStore) string { return "ftp://storage.example.com/blob" },
-			want:     `redirected to a "ftp" location`,
+			want:     "redirected to a location that is not http",
 		},
 		{
 			name:     "a location naming no host",
@@ -409,9 +425,8 @@ func TestALocationBigociWillNotFollow(t *testing.T) {
 		},
 		{
 			name: "a location choosing bigoci's credential",
-			location: func(store *blobStore) string {
-				return strings.Replace(store.server.URL, "http://", "http://someone:"+storageSecret+"@", 1) +
-					storagePrefix
+			location: func(*blobStore) string {
+				return "https://someone:" + storageSecret + "@" + reflectedLocationHost + storagePrefix
 			},
 			want: "carries a user name and password",
 		},
@@ -446,6 +461,7 @@ func TestALocationBigociWillNotFollow(t *testing.T) {
 			assert.False(t, transient, "a location bigoci will not follow is not one it will follow later")
 			assert.Contains(t, err.Error(), tt.want)
 			assert.NotContains(t, err.Error(), storageSecret, "an error is no place for a secret a peer offered")
+			assert.NotContains(t, err.Error(), reflectedLocationHost, "the peer-selected host is not safe context")
 			assert.Empty(t, store.all(), "nothing was sent to a location bigoci refused")
 		})
 	}
@@ -612,7 +628,7 @@ func TestTheLocationsRedirectTargetRefuses(t *testing.T) {
 			name:     "a location that is not http",
 			scheme:   schemeHTTPS,
 			location: "ftp://storage.example.com/blob",
-			want:     `redirected to a "ftp" location`,
+			want:     "redirected to a location that is not http",
 		},
 		{
 			name:     "a plain-http location for an https repository",
@@ -628,7 +644,7 @@ func TestTheLocationsRedirectTargetRefuses(t *testing.T) {
 		{
 			name:     "a location carrying a credential of the registry's choosing",
 			scheme:   schemeHTTPS,
-			location: "https://someone:" + storageSecret + "@storage.example.com/blob",
+			location: "https://someone:" + storageSecret + "@" + reflectedLocationHost + "/blob",
 			want:     "carries a user name and password",
 		},
 		{
@@ -667,6 +683,7 @@ func TestTheLocationsRedirectTargetRefuses(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.want)
 			assert.NotContains(t, err.Error(), storageSecret)
+			assert.NotContains(t, err.Error(), reflectedLocationHost)
 		})
 	}
 }
@@ -749,10 +766,18 @@ func TestTheCallersClientIsNeverMutated(t *testing.T) {
 	assert.NotNil(t, repo.external.CheckRedirect)
 	assert.Nil(t, repo.external.Jar, "the external client carries none anywhere")
 
-	for _, derived := range []*http.Client{repo.client, repo.external} {
-		assert.Equal(t, caller.Transport, derived.Transport, "every request still crosses the caller's transport")
-		assert.Equal(t, caller.Timeout, derived.Timeout)
-	}
+	assert.Equal(t, caller.Transport, repo.client.Transport, "registry requests keep the caller's transport")
+	assert.Equal(t, caller.Timeout, repo.client.Timeout)
+	assert.Equal(t, caller.Timeout, repo.external.Timeout)
+
+	guard, ok := repo.external.Transport.(*externalTransport)
+	require.True(t, ok)
+	assert.Equal(t, caller.Transport, guard.registry, "the registry hostname keeps the caller's pool")
+	derived, ok := guard.next.(*http.Transport)
+	require.True(t, ok)
+	assert.NotSame(t, caller.Transport, derived, "external requests use a separately pooled transport clone")
+	assert.Equal(t, http.DefaultTransport.(*http.Transport).TLSHandshakeTimeout, derived.TLSHandshakeTimeout)
+	assert.Equal(t, http.DefaultTransport.(*http.Transport).MaxIdleConns, derived.MaxIdleConns)
 }
 
 // TestSameOriginComparesLikeTheWeb pins the origin rule's edges: DNS names
@@ -853,7 +878,7 @@ func TestAnUnfollowableRedirectOffOriginIsNotTheRegistrys(t *testing.T) {
 
 	var status *StatusError
 	require.NotErrorAs(t, err, &status, "the registry did not answer 303; the store did")
-	assert.Contains(t, err.Error(), store.host(t))
+	assert.NotContains(t, err.Error(), store.host(t), "the target host is peer-selected direct reflection material")
 	assert.NotContains(t, err.Error(), "registry returned")
 }
 

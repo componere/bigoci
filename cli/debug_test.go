@@ -175,6 +175,33 @@ func TestTapLogsOneRequestAsTwoLines(t *testing.T) {
 	assert.Contains(t, log.received[0], "retry-after=- challenge=-")
 }
 
+// TestTapExternalLayerSharesOneObserver proves bigoci can rebuild the CLI tap
+// around a guarded base without copying its lock, sequence, or counters.
+func TestTapExternalLayerSharesOneObserver(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	base := isolatedTransport(t)
+	probe := newTap(&buf, base)
+	assert.Same(t, base, probe.BigociExternalBase())
+
+	layer := probe.BigociWrapExternal(base)
+	get(t, &http.Client{Transport: layer}, http.MethodGet, srv.URL+"/token", nil)
+	probe.writeSummary()
+
+	log := splitLog(t, buf.String())
+	require.Len(t, log.sent, 1)
+	require.Len(t, log.received, 1)
+	require.Len(t, log.summary, 1)
+	assert.Contains(t, log.sent[0], "http> 0001")
+	assert.Contains(t, log.summary[0], "requests=1")
+}
+
 // TestTapLogsRanges checks the two fields a resumed or partial read turns on, in
 // both directions.
 func TestTapLogsRanges(t *testing.T) {

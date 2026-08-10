@@ -144,7 +144,7 @@ func TestPullRetriesPartFetches(t *testing.T) {
 			},
 			wantGets:   1,
 			fails:      true,
-			wantSays:   []string{"is longer than the 1000 bytes the manifest declares"},
+			wantSays:   []string{"is longer than its declared size"},
 			wantSilent: []string{"attempts"},
 		},
 	}
@@ -293,7 +293,7 @@ func TestPullDoesNotRetryADestinationItCannotWrite(t *testing.T) {
 		Retry:     policy,
 	})
 	require.ErrorIs(t, err, full)
-	require.ErrorContains(t, err, "write part 0 into the destination at offset 0")
+	require.ErrorContains(t, err, "write part 0 into the destination")
 
 	assert.Equal(t, 1, calls.gets(artifact.Parts[0].Digest), "a disk that will not take bytes is not asked twice")
 	assert.Empty(t, sleeps.waits())

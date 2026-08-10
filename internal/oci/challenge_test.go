@@ -184,17 +184,18 @@ func TestParseChallenge(t *testing.T) {
 	}
 }
 
-// TestParseChallengeQuotesWhatItCouldNotRead pins the bound on the message an
-// unusable challenge produces: enough of the header to recognize it, never
-// enough to fill a terminal with whatever was actually on the connection.
-func TestParseChallengeQuotesWhatItCouldNotRead(t *testing.T) {
+// TestParseChallengeDoesNotRepeatWhatItCouldNotRead pins that an unusable
+// challenge contributes no peer-controlled bytes to a public error.
+func TestParseChallengeDoesNotRepeatWhatItCouldNotRead(t *testing.T) {
 	t.Parallel()
 
-	_, err := parseChallenge("Negotiate " + strings.Repeat("z", challengeLimit-20))
+	const secret = "malformed-challenge-secret"
+
+	_, err := parseChallenge("Negotiate " + secret + strings.Repeat("z", challengeLimit-20))
 
 	require.Error(t, err)
-	assert.Less(t, len(err.Error()), challengeQuoteLimit*2, "the message quotes a truncated challenge")
-	assert.Contains(t, err.Error(), "Negotiate", "enough of the challenge to recognize it survives")
+	assert.NotContains(t, err.Error(), secret)
+	assert.NotContains(t, err.Error(), "Negotiate")
 }
 
 // TestValidateRealm walks the realm shapes a challenge can name against
@@ -219,6 +220,93 @@ func TestValidateRealm(t *testing.T) {
 			name:       "a realm on a host other than the registry is allowed",
 			realm:      "https://auth.docker.io/token",
 			repoScheme: schemeHTTPS,
+		},
+		{
+			name:       "a public IP literal is allowed",
+			realm:      "https://8.8.8.8/token",
+			repoScheme: schemeHTTPS,
+		},
+		{
+			name:       "the registry's own loopback IP is allowed on another https port",
+			realm:      "https://127.0.0.1:6000/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "127.0.0.1:5000",
+		},
+		{
+			name:       "equivalent spellings of the registry's own IPv6 loopback are allowed",
+			realm:      "https://[::1]:6000/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "[0:0:0:0:0:0:0:1]:5000",
+		},
+		{
+			name:       "an IPv4 loopback realm on another host is refused",
+			realm:      "https://127.0.0.1/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "an IPv4-mapped loopback realm on another host is refused",
+			realm:      "https://[::ffff:127.0.0.1]/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "a private IPv4 realm on another host is refused",
+			realm:      "https://10.0.0.1/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "a link-local IPv4 realm on another host is refused",
+			realm:      "https://169.254.169.254/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "an unspecified IPv4 realm on another host is refused",
+			realm:      "https://0.0.0.0/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "an IPv6 loopback realm on another host is refused",
+			realm:      "https://[::1]/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "a private IPv6 realm on another host is refused",
+			realm:      "https://[fd00::1]/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "a link-local IPv6 realm on another host is refused",
+			realm:      "https://[fe80::1]/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "a link-local multicast realm on another host is refused",
+			realm:      "https://[ff02::1]/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
+		},
+		{
+			name:       "an unspecified IPv6 realm on another host is refused",
+			realm:      "https://[::]/token",
+			repoScheme: schemeHTTPS,
+			repoHost:   "registry.example.com",
+			wantErr:    true,
 		},
 		{
 			name:       "the realm's own query is kept",
@@ -393,14 +481,49 @@ func TestChallengeHeaderJoinsEveryFieldLine(t *testing.T) {
 	assert.Equal(t, "https://auth.example.com/token", got.realm)
 }
 
-// TestValidateRealmNeverQuotesAUserinfoSecret pins the redaction rule: the
-// realm is registry-supplied text, and one smuggling a password must not see
-// it repeated in an error a terminal prints.
-func TestValidateRealmNeverQuotesAUserinfoSecret(t *testing.T) {
+// TestValidateRealmNeverQuotesRegistrySelectedMaterial pins that no invalid
+// realm shape makes its userinfo, path, query, fragment, or malformed source
+// text public error material.
+func TestValidateRealmNeverQuotesRegistrySelectedMaterial(t *testing.T) {
 	t.Parallel()
 
-	_, err := validateRealm("https://someone:hunter2@auth.example.com/token", schemeHTTPS, "registry.example")
+	tests := []struct {
+		name    string
+		realm   string
+		secrets []string
+	}{
+		{
+			name:    "userinfo",
+			realm:   "https://someone:hunter2@auth.example.com/private-path?ticket=query-ticket#private-fragment",
+			secrets: []string{"hunter2", "private-path", "query-ticket", "private-fragment"},
+		},
+		{
+			name:    "fragment",
+			realm:   "https://auth.example.com/private-path?ticket=query-ticket#private-fragment",
+			secrets: []string{"private-path", "query-ticket", "private-fragment"},
+		},
+		{
+			name:    "malformed URL",
+			realm:   "https://auth.example.com/%zz/private-path?ticket=query-ticket",
+			secrets: []string{"%zz", "private-path", "query-ticket"},
+		},
+		{
+			name:    "unsafe scheme",
+			realm:   "ftp://auth.example.com/private-path?ticket=query-ticket",
+			secrets: []string{"private-path", "query-ticket"},
+		},
+	}
 
-	require.ErrorIs(t, err, ErrUnauthorized)
-	assert.NotContains(t, err.Error(), "hunter2", "the password inside a hostile realm stays out of the message")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := validateRealm(tt.realm, schemeHTTPS, "registry.example")
+
+			require.ErrorIs(t, err, ErrUnauthorized)
+			for _, secret := range tt.secrets {
+				assert.NotContains(t, err.Error(), secret)
+			}
+		})
+	}
 }

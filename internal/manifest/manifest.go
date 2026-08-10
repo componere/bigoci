@@ -191,9 +191,9 @@ func EmptyConfig() (ocispec.Descriptor, []byte) {
 	return descriptor, bytes.Clone(ocispec.DescriptorEmptyJSON.Data)
 }
 
-// validate checks an artifact against the format contract. [Encode] and
-// [Decode] both call it, so a writer and a reader enforce identical
-// invariants.
+// validate checks a caller-supplied artifact against the format contract for
+// [Encode]. [Decode] applies the same rules through validateDecoded, whose
+// messages omit registry-selected values.
 //
 // The size checks and the part checks defer to the plan package: the file
 // size, the part size, the number of parts, and every part's size must match
@@ -253,4 +253,29 @@ func validateParts(a Artifact) error {
 	}
 
 	return nil
+}
+
+// safeError preserves a cause for [errors.Is] and [errors.As] while rendering only
+// a message chosen by this package rather than peer-originated values carried
+// in the cause.
+type safeError struct {
+	// message is the safe structural diagnosis returned by Error.
+	message string
+	// cause retains typed and sentinel identity without contributing its text.
+	cause error
+}
+
+// Error returns the safe structural diagnosis.
+func (e *safeError) Error() string {
+	return e.message
+}
+
+// Unwrap exposes the cause for [errors.Is] and [errors.As].
+func (e *safeError) Unwrap() error {
+	return e.cause
+}
+
+// safeCause wraps cause without rendering its potentially peer-derived text.
+func safeCause(message string, cause error) error {
+	return &safeError{message: message, cause: cause}
 }

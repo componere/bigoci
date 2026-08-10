@@ -417,9 +417,9 @@ func TestStatusErrorReadsTheSameThroughTheTransientTag(t *testing.T) {
 	assert.Equal(
 		t,
 		"GET /v2/"+repoName+"/manifests/"+tag+
-			": registry returned 503 Service Unavailable: the registry is restarting",
+			": registry returned 503 Service Unavailable",
 		err.Error(),
-		"neither the tag nor the wait the registry asked for reaches the message a caller reads",
+		"neither peer detail nor the wait the registry asked for reaches the message a caller reads",
 	)
 
 	after, transient := retry.IsTransient(err)
@@ -430,6 +430,8 @@ func TestStatusErrorReadsTheSameThroughTheTransientTag(t *testing.T) {
 
 	require.ErrorAs(t, err, &statusErr)
 	assert.Equal(t, 5*time.Second, statusErr.RetryAfter, "the raw value the registry asked for")
+	assert.Equal(t, "the registry is restarting", statusErr.Detail,
+		"bounded detail remains available for explicit programmatic diagnosis")
 }
 
 func TestARefusedConnectionIsWorthRepeating(t *testing.T) {

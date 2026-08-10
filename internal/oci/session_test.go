@@ -232,6 +232,23 @@ func TestAnUploadSessionCarryingUserinfoIsRefused(t *testing.T) {
 	assert.NotContains(t, err.Error(), "harvest.example/up", "and so does the location's path")
 }
 
+// TestAnUploadSessionCannotTargetALocalIPOnAnotherHost pins the address rule
+// before any request is sent. The error names the rule but neither the
+// rejected address nor the signed query the registry attached to it.
+func TestAnUploadSessionCannotTargetALocalIPOnAnotherHost(t *testing.T) {
+	t.Parallel()
+
+	repo := &Repository{scheme: schemeHTTPS, host: "registry.example.com"}
+	session, err := url.Parse("https://127.0.0.1/upload?ticket=" + storageSecret)
+	require.NoError(t, err)
+
+	err = repo.checkSession(session)
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "127.0.0.1")
+	assert.NotContains(t, err.Error(), storageSecret)
+}
+
 // openUploadAt returns registry behavior that opens every blob upload at
 // store, carrying a query value that stands in for a signed capability.
 func openUploadAt(store *blobStore) func(http.ResponseWriter, *http.Request) bool {

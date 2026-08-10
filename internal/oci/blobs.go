@@ -2,6 +2,7 @@ package oci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,12 +89,17 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 // A blob the registry does not hold is an error wrapping [ErrNotFound]. A 404
 // from a storage location the registry redirected to is not that answer: it
 // reads as a stale signature, comes back marked worth another attempt, and
-// matches no sentinel.
+// matches no sentinel. Public errors use a "<digest>" path label: a digest was
+// selected by the manifest and can itself be a reusable Bearer token.
 func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.ReadCloser, int64, error) {
 	req, err := b.repo.newRequest(ctx, http.MethodGet, b.repo.endpoint(blobPath(dgst)), nil)
 	if err != nil {
 		return nil, 0, err
 	}
+	req = withOrigin(req, origin{
+		method: http.MethodGet,
+		path:   b.repo.endpoint("blobs/<digest>").Path,
+	})
 	if off > 0 {
 		req.Header.Set("Range", rangeFrom(off))
 	}
@@ -170,7 +176,7 @@ func (b *Blobs) openUpload(ctx context.Context) (*url.URL, error) {
 	// as a signature.
 	session, err := url.Parse(location)
 	if err != nil {
-		return nil, fmt.Errorf("POST %s: registry sent an unusable Location: %w", endpoint.Path, err)
+		return nil, fmt.Errorf("POST %s: registry sent an unusable Location", endpoint.Path)
 	}
 
 	resolved := resp.Request.URL.ResolveReference(session)
@@ -203,8 +209,12 @@ func (b *Blobs) completeUpload(
 		req, err = b.repo.newRequest(ctx, http.MethodPut, target, uploadBody(size, r))
 	}
 	if err != nil {
-		return fmt.Errorf("build PUT request for upload on %s: %w", target.Host, scrub(err))
+		return errors.New("build the upload PUT request")
 	}
+	req = withOrigin(req, origin{
+		method: http.MethodPut,
+		path:   b.repo.endpoint(uploadsPath).Path,
+	})
 
 	req.ContentLength = size
 	req.Header.Set("Content-Type", mediaTypeBlob)
@@ -214,7 +224,7 @@ func (b *Blobs) completeUpload(
 		at := origin{method: http.MethodPut, path: b.repo.endpoint(uploadsPath).Path}
 		resp, err = b.repo.hop(at, req)
 		if err == nil {
-			resp, err = offOriginUploadResponse(at, target.Host, resp)
+			resp, err = offOriginUploadResponse(at, resp)
 		}
 	} else {
 		resp, err = b.repo.send(req)
@@ -329,18 +339,18 @@ func blobReadStart(at origin, resp *http.Response, off int64) (int64, error) {
 // the file being assembled, so it is an error rather than something to seek
 // around.
 //
-// The message names the registry request at describes, whoever answered it.
-// The Content-Range value is quoted because it is a short header the far end
-// chose and the whole point of the failure is what it said.
+// The message names the registry request at describes, but no byte values.
+// The peer's raw Content-Range and parsed start are direct reflection material;
+// the expected offset can in turn be derived from manifest-selected sizes.
 func checkRangeStart(at origin, resp *http.Response, offset int64) error {
 	contentRange := resp.Header.Get("Content-Range")
 
 	first, ok := rangeStart(contentRange)
 	if !ok {
-		return fmt.Errorf("%s: the range request came back with an unusable Content-Range %q", at, contentRange)
+		return fmt.Errorf("%s: the range response has an unusable Content-Range", at)
 	}
 	if first != offset {
-		return fmt.Errorf("%s: asked for bytes from %d but the range starts at %d", at, offset, first)
+		return fmt.Errorf("%s: the range response does not start at the requested offset", at)
 	}
 
 	return nil

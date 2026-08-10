@@ -19,8 +19,8 @@ Requires Go 1.26.4 or newer.
 
 ## Usage
 
-One client holds the transport settings and serves any number of transfers.
-Each direction is a single call:
+One client holds transfer-wide settings and one shared external connection
+pool, and serves any number of transfers. Each direction is a single call:
 
 ```go
 client, err := bigoci.New()

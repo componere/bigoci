@@ -10,8 +10,9 @@
 //
 // # Usage
 //
-// A [Client] holds the transport settings and nothing else, so one client
-// serves any number of transfers. Each direction is a single call:
+// A [Client] holds transfer-wide settings and one shared external connection
+// pool, so one client serves any number of transfers. Each direction is a
+// single call:
 //
 //	client, err := bigoci.New()
 //	if err != nil {

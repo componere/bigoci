@@ -9,6 +9,7 @@ import (
 	// linked — the tests cannot catch its absence because the testing
 	// framework links it for them.
 	_ "crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -138,7 +139,7 @@ func (m *Manifests) checkBound(body []byte) error {
 	// The algorithm comes from the reference, which was parsed — and so
 	// validated as an available algorithm — before the repository existed.
 	if got := want.Algorithm().FromBytes(body); got != want {
-		return fmt.Errorf("manifest %s: registry answered with %s, which is different content", want, got)
+		return errors.New("manifest content does not match the requested digest")
 	}
 
 	return nil
@@ -162,7 +163,7 @@ func manifestPath(target string) string {
 func readManifest(at origin, resp *http.Response) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestSize+1))
 	if err != nil {
-		return nil, retry.Transient(fmt.Errorf("%s: read manifest: %w", at, err), 0)
+		return nil, retry.Transient(safeCause(fmt.Sprintf("%s: read manifest response body", at), err), 0)
 	}
 
 	if len(body) > maxManifestSize {

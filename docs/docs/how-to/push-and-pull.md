@@ -184,5 +184,9 @@ Five failures are worth branching on with `errors.Is`:
   different part size is a different artifact, with a different manifest
   digest.
 
-Everything else comes back as a descriptive error naming the operation that
-failed.
+Everything else comes back as a structural error naming the operation that
+failed. Registry response bodies, parser text, manifest-selected values, and
+registry-selected location components are not appended to error strings. They
+can reflect a reusable credential the request carried. A blob operation uses
+`<digest>` in place of the manifest's digest; fixed field names, bounded part
+indexes, and HTTP status are the safe diagnostic boundary.

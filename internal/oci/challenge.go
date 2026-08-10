@@ -29,10 +29,6 @@ const tcharSpecials = "!#$%&'*+-.^_`|~"
 // out to be on the other end of the connection.
 const challengeLimit = 8 << 10
 
-// challengeQuoteLimit is how much of an unusable challenge an error message
-// quotes, so a header that is not a challenge cannot fill a terminal.
-const challengeQuoteLimit = 200
-
 // challenge is what a registry answered a refused request with, reduced to
 // the three parameters a token exchange has any use for.
 type challenge struct {
@@ -108,7 +104,7 @@ func parseChallenge(header string) (challenge, error) {
 		return challenge{}, err
 	}
 
-	return pickChallenge(offered, header)
+	return pickChallenge(offered)
 }
 
 // scanChallenges reads every challenge the header lists, in the order they
@@ -131,7 +127,7 @@ func scanChallenges(header string) ([]challenge, error) {
 
 		name, ok := scan.token()
 		if !ok {
-			return nil, unreadableChallenge(header)
+			return nil, unreadableChallenge()
 		}
 
 		if !scan.equals() {
@@ -143,7 +139,7 @@ func scanChallenges(header string) ([]challenge, error) {
 		value, ok := scan.value()
 		if !ok {
 			if len(offered) == 0 {
-				return nil, unreadableChallenge(header)
+				return nil, unreadableChallenge()
 			}
 
 			// A value this scanner cannot read — RFC 9110's other production,
@@ -158,7 +154,7 @@ func scanChallenges(header string) ([]challenge, error) {
 			continue
 		}
 		if len(offered) == 0 {
-			return nil, unreadableChallenge(header)
+			return nil, unreadableChallenge()
 		}
 
 		offered[len(offered)-1].set(name, value)
@@ -173,7 +169,7 @@ func scanChallenges(header string) ([]challenge, error) {
 // the fallback. A bearer challenge that names no realm is refused rather than
 // demoted to the Basic beside it: a registry that offered a token endpoint
 // and then failed to name it is broken in a way worth reporting.
-func pickChallenge(offered []challenge, header string) (challenge, error) {
+func pickChallenge(offered []challenge) (challenge, error) {
 	fallback := -1
 
 	for i, one := range offered {
@@ -181,7 +177,7 @@ func pickChallenge(offered []challenge, header string) (challenge, error) {
 		case schemeBearer:
 			if one.realm == "" {
 				return challenge{}, &authError{
-					reason: "the registry's bearer challenge names no realm: " + quoteChallenge(header),
+					reason: "the registry's bearer challenge names no realm",
 				}
 			}
 
@@ -198,7 +194,7 @@ func pickChallenge(offered []challenge, header string) (challenge, error) {
 	}
 
 	return challenge{}, &authError{
-		reason: "the registry asked for an authentication scheme bigoci does not implement: " + quoteChallenge(header),
+		reason: "the registry asked for an authentication scheme bigoci does not implement",
 	}
 }
 
@@ -219,78 +215,60 @@ func pickChallenge(offered []challenge, header string) (challenge, error) {
 // is a cleartext path carrying the user's credential to a third party. It
 // may not carry userinfo, which [net/http] would turn into a Basic header of
 // the registry's choosing, and it may not carry a fragment, which no request
-// would ever send. Its own query is kept and the exchange's parameters are
-// merged on top.
+// would ever send. A different host may not be a local or private IP literal:
+// a public registry does not get to turn token acquisition into a request to
+// an internal service. Its own query is kept and the exchange's parameters
+// are merged on top.
 //
-// Every message below renders the realm through [net/url.URL.Redacted] once
-// it parsed as a URL: a realm is registry-supplied text that may carry
-// userinfo, and an error message is no place for a password.
+// No failure renders any part of the realm. Registry-selected URLs routinely
+// carry bearer tickets in their path and query, and malformed challenge text
+// has no safe substring to quote into a public error.
 func validateRealm(realm, repoScheme, repoHost string) (*url.URL, error) {
 	endpoint, err := url.Parse(realm)
 	if err != nil {
-		return nil, &authError{
-			reason: "the registry's bearer challenge names a realm that is not a URL: " + strconv.Quote(realm),
-			cause:  err,
-		}
+		return nil, &authError{reason: "the registry's bearer challenge names a realm that is not a URL"}
 	}
 
 	secure := endpoint.Scheme == schemeHTTPS || (endpoint.Scheme == schemeHTTP && repoScheme == schemeHTTP)
 	if !secure {
-		return nil, &authError{
-			reason: "the registry's bearer challenge names a realm that is not an https URL: " +
-				strconv.Quote(endpoint.Redacted()),
-		}
+		return nil, &authError{reason: "the registry's bearer challenge names a realm that is not an https URL"}
 	}
 
 	if endpoint.Scheme == schemeHTTP && endpoint.Host != repoHost {
 		return nil, &authError{
 			reason: "the registry's bearer challenge names a plain-http realm on another host, " +
-				"which would carry the credential in the clear to a third party: " +
-				strconv.Quote(endpoint.Redacted()),
+				"which would carry the credential in the clear to a third party",
 		}
 	}
 
 	if endpoint.Host == "" {
-		return nil, &authError{
-			reason: "the registry's bearer challenge names a realm with no host: " +
-				strconv.Quote(endpoint.Redacted()),
-		}
+		return nil, &authError{reason: "the registry's bearer challenge names a realm with no host"}
 	}
 
 	if endpoint.User != nil {
-		return nil, &authError{
-			reason: "the registry's bearer challenge names a realm carrying a user name: " +
-				strconv.Quote(endpoint.Redacted()),
-		}
+		return nil, &authError{reason: "the registry's bearer challenge names a realm carrying a user name"}
 	}
 
 	if endpoint.Fragment != "" {
+		return nil, &authError{reason: "the registry's bearer challenge names a realm carrying a fragment"}
+	}
+
+	if restrictedIPTarget(endpoint.Hostname(), repoHost) {
 		return nil, &authError{
-			reason: "the registry's bearer challenge names a realm carrying a fragment: " +
-				strconv.Quote(endpoint.Redacted()),
+			reason: "the registry's bearer challenge names a local or private IP address " +
+				"that is not the registry",
 		}
 	}
 
 	return endpoint, nil
 }
 
-// unreadableChallenge reports a header this package could not read, quoting
-// what it was handed.
-func unreadableChallenge(header string) error {
+// unreadableChallenge reports a header this package could not read without
+// repeating registry-controlled challenge bytes into the public error.
+func unreadableChallenge() error {
 	return &authError{
-		reason: "the registry's WWW-Authenticate header is not a challenge this package can read: " +
-			quoteChallenge(header),
+		reason: "the registry's WWW-Authenticate header is not a challenge this package can read",
 	}
-}
-
-// quoteChallenge renders a challenge for an error message, truncated so a
-// header that is not a challenge at all cannot fill the terminal.
-func quoteChallenge(header string) string {
-	if len(header) > challengeQuoteLimit {
-		return strconv.Quote(header[:challengeQuoteLimit]) + "..."
-	}
-
-	return strconv.Quote(header)
 }
 
 // scanner walks a WWW-Authenticate header one RFC 9110 token, quoted string,

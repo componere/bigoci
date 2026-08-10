@@ -114,12 +114,12 @@ func TestPullRefusesAPartOfTheWrongLength(t *testing.T) {
 		{
 			name:    "a part that ends early is refused",
 			body:    func(part []byte) []byte { return part[:len(part)-1] },
-			wantErr: "ended after 999 bytes, but the manifest declares 1000",
+			wantErr: "ended before its declared size",
 		},
 		{
 			name:    "a part that runs long is refused",
 			body:    func(part []byte) []byte { return append(slices.Clone(part), 0x00) },
-			wantErr: "is longer than the 1000 bytes the manifest declares",
+			wantErr: "is longer than its declared size",
 		},
 	}
 
@@ -200,7 +200,7 @@ func TestPullRefusesAStreamThatStartsSomewhereElse(t *testing.T) {
 		Workers:   1,
 		Retry:     policy,
 	})
-	require.ErrorContains(t, err, "starts at byte 1")
+	require.ErrorContains(t, err, "blob port returned an unusable stream offset")
 	require.ErrorContains(t, err, "fetch part 0")
 
 	assert.Empty(t, sleeps.waits(), "a stream at a byte nobody asked for is not worth another attempt")

@@ -105,6 +105,7 @@ func TestBlobsGet(t *testing.T) {
 		wantStart     int64
 		wantBody      string
 		wantErrIs     error
+		notWant       string
 		wantErr       bool
 		wantTransient bool
 	}{
@@ -153,6 +154,16 @@ func TestBlobsGet(t *testing.T) {
 			send:      blobPayload[resumeOffset:],
 			wantRange: "bytes=5-",
 			wantErr:   true,
+		},
+		{
+			name:         "a peer-selected content range is not reflected",
+			offset:       resumeOffset,
+			status:       http.StatusPartialContent,
+			send:         blobPayload[resumeOffset:],
+			contentRange: "reusable-content-range-bearer-a8f4c2",
+			wantRange:    "bytes=5-",
+			notWant:      "reusable-content-range-bearer-a8f4c2",
+			wantErr:      true,
 		},
 		{
 			name:          "a range the registry refuses outright is a terminal error",
@@ -208,6 +219,9 @@ func TestBlobsGet(t *testing.T) {
 
 			if tt.wantErr || tt.wantErrIs != nil {
 				require.Error(t, err)
+				if tt.notWant != "" {
+					assert.NotContains(t, err.Error(), tt.notWant)
+				}
 				assert.Zero(t, start, "a read that failed opened no stream to report a start for")
 				if tt.wantErrIs != nil {
 					require.ErrorIs(t, err, tt.wantErrIs)
@@ -229,6 +243,33 @@ func TestBlobsGet(t *testing.T) {
 			assert.Equal(t, tt.wantBody, string(got))
 		})
 	}
+}
+
+// TestBlobsGetUsesAStructuralDigestPathInErrors proves that the adapter still
+// requests the manifest-selected digest while replacing it with a fixed label
+// in both StatusError.Path and Error. A Bearer token can be a syntactically
+// valid sha256 digest, so the wire path itself is not safe log context.
+func TestBlobsGetUsesAStructuralDigestPathInErrors(t *testing.T) {
+	t.Parallel()
+
+	dgst := digest.Digest("sha256:" + strings.Repeat("a", 64))
+	var rec recorder
+	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(t, r)
+		w.WriteHeader(http.StatusNotFound)
+	}), repoName+":"+tag)
+
+	_, _, err := repo.Blobs().Get(t.Context(), dgst, 0)
+	require.ErrorIs(t, err, oci.ErrNotFound)
+
+	request := rec.only(t)
+	assert.Contains(t, request.path, dgst.String(), "the registry request still names the selected blob")
+
+	var status *oci.StatusError
+	require.ErrorAs(t, err, &status)
+	assert.Contains(t, status.Path, "blobs/<digest>")
+	assert.NotContains(t, status.Path, dgst.String())
+	assert.NotContains(t, err.Error(), dgst.String())
 }
 
 func TestBlobsPut(t *testing.T) {

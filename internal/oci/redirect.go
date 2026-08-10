@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -44,15 +45,33 @@ const (
 type origin struct {
 	// method is the HTTP method of the registry request.
 	method string
-	// path is the path that request addressed on the registry. It is a path
-	// and never a URL: a path carries no query, and a query is where a
-	// signature lives.
+	// path is the safe structural path label for the registry request. It is a
+	// path and never a URL: a blob read replaces its manifest-selected digest
+	// with "<digest>", and an upload uses the stable session-opening path.
 	path string
 }
 
-// originOf returns the registry request req is.
+// originKey is the private context key used to carry a safe operation label
+// through authentication replays and redirect hops.
+type originKey struct{}
+
+// originOf returns the safe registry operation req belongs to. A label
+// explicitly attached by withOrigin wins over the request's actual path.
 func originOf(req *http.Request) origin {
+	if at, ok := req.Context().Value(originKey{}).(origin); ok {
+		return at
+	}
+
 	return origin{method: req.Method, path: req.URL.Path}
+}
+
+// withOrigin carries at through every request clone and redirect built from
+// req's context. The actual request URL remains unchanged on the wire; only
+// public error reporting uses this structural label.
+func withOrigin(req *http.Request, at origin) *http.Request {
+	ctx := context.WithValue(req.Context(), originKey{}, at)
+
+	return req.WithContext(ctx)
 }
 
 // String renders the "METHOD /path" prefix the messages in this package open
@@ -125,7 +144,7 @@ func (r *Repository) follow(at origin, req *http.Request, resp *http.Response) (
 		}
 
 		if away {
-			return offOriginResponse(at, next.URL.Host, resp)
+			return offOriginResponse(at, resp)
 		}
 
 		return resp, nil
@@ -155,7 +174,7 @@ func (r *Repository) nextHop(
 		// host said, so it is reported as one — a [StatusError] would say
 		// "registry returned" about a verdict the registry never gave.
 		if away {
-			return nil, &redirectError{at: at, host: current.URL.Host, status: resp.StatusCode}
+			return nil, &redirectError{at: at, status: resp.StatusCode}
 		}
 
 		return nil, statusErrorAt(at, resp)
@@ -168,7 +187,7 @@ func (r *Repository) nextHop(
 
 	hop, err := http.NewRequestWithContext(current.Context(), method, target.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("%s: build the request %s redirected to: %w", at, target.Host, scrub(err))
+		return nil, fmt.Errorf("%s: build the redirected request", at)
 	}
 
 	copyAllowed(hop.Header, current.Header)
@@ -194,21 +213,19 @@ func (r *Repository) nextHop(
 // userinfo in a URL into a Basic header (net/http/client.go, in the request
 // builder).
 //
-// No message here quotes the location. It is the one string in this exchange
-// that carries a signature, and an error naming it would hand that signature
-// to a terminal, a log file, and whatever collects both. The host is named
-// instead, which is what says who to go ask.
+// No message here quotes the location or any component of it. A registry can
+// place a signature or a reusable credential in its host, path, query,
+// fragment, userinfo, or even scheme, and an error repeating one would hand
+// it to a terminal, a log file, and whatever collects both.
 //
 // One refusal below is unreachable through [net/http.Client.Do] and kept
 // anyway. The standard library resolves the Location itself before it consults
 // the redirect policy (net/http/client.go, at the top of the client's redirect
-// loop), so a location that is not a URL fails there, quoting it, and this
-// package never sees the response. That costs nothing worth closing: a
-// presigned URL always parses, because [net/url.Parse] does not validate a
-// query at all — it is [net/url.URL.Query] that reads one — so the location a
-// signature rides in cannot be the location that fails to parse. The branch
-// stays as the guard for a request this package sends some other way and for a
-// standard library that reorders the two steps.
+// loop), so a location that is not a URL fails there and its parser error may
+// quote the full Location. [Repository.doWith] discards that parser text and
+// reports only the original registry operation. The branch stays as the guard
+// for a request this package sends some other way and for a standard library
+// that reorders the two steps.
 func (r *Repository) redirectTarget(at origin, current *http.Request, resp *http.Response) (*url.URL, error) {
 	location := resp.Header.Get(headerLocation)
 	if location == "" {
@@ -217,20 +234,20 @@ func (r *Repository) redirectTarget(at origin, current *http.Request, resp *http
 
 	parsed, err := url.Parse(location)
 	if err != nil {
-		return nil, fmt.Errorf("%s: redirected to a Location that is not a URL: %w", at, scrub(err))
+		return nil, fmt.Errorf("%s: redirected to a Location that is not a URL", at)
 	}
 
 	target := current.URL.ResolveReference(parsed)
 
 	switch {
 	case target.Scheme != schemeHTTPS && target.Scheme != schemeHTTP:
-		return nil, fmt.Errorf("%s: redirected to a %q location, which is not http", at, target.Scheme)
+		return nil, fmt.Errorf("%s: redirected to a location that is not http", at)
 	case target.Host == "":
 		return nil, fmt.Errorf("%s: redirected to a location naming no host", at)
 	case target.Scheme == schemeHTTP && r.scheme == schemeHTTPS:
-		return nil, fmt.Errorf("%s: %s redirected an https request to plain http", at, target.Host)
+		return nil, fmt.Errorf("%s: redirected an https request to plain http", at)
 	case target.User != nil:
-		return nil, fmt.Errorf("%s: the location for %s carries a user name and password", at, target.Host)
+		return nil, fmt.Errorf("%s: the redirect location carries a user name and password", at)
 	}
 
 	return target, nil
@@ -248,38 +265,66 @@ func (r *Repository) redirectTarget(at origin, current *http.Request, resp *http
 func (r *Repository) checkSession(session *url.URL) error {
 	switch {
 	case session.Scheme != schemeHTTPS && session.Scheme != schemeHTTP:
-		return fmt.Errorf("the registry opened an upload at a %q location, which is not http", session.Scheme)
+		return errors.New("the registry opened an upload at a location that is not http")
 	case session.Host == "":
 		return errors.New("the registry opened an upload at a location naming no host")
 	case session.Scheme == schemeHTTP && r.scheme == schemeHTTPS:
-		return fmt.Errorf("the registry opened an upload at plain http on %s, a downgrade from https", session.Host)
+		return errors.New("the registry opened an upload at plain http, a downgrade from https")
 	case session.User != nil:
-		return fmt.Errorf("the registry's upload location at %s carries a user name and password", session.Host)
-	default:
-		return nil
+		return errors.New("the registry's upload location carries a user name and password")
 	}
+
+	if restrictedIPTarget(session.Hostname(), r.host) {
+		return errors.New("the registry opened an upload on a local or private IP address that is not the registry")
+	}
+
+	return nil
 }
 
 // hop sends one request through the repository's cookie-free external client
 // and reports a transport failure against the registry operation that named
 // the target.
 //
-// The failure is scrubbed on the way out. Everything else is the verdict
+// The failure admits no parser text, response bytes, target URL, or caller
+// transport message to the public error. Everything else is the verdict
 // [Repository.do] reaches for the same reasons: a network that failed once is
 // worth another attempt, and a context the caller ended is the transfer
 // stopping rather than the network failing.
 func (r *Repository) hop(at origin, req *http.Request) (*http.Response, error) {
 	resp, err := r.external.Do(req)
 	if err != nil {
-		failure := fmt.Errorf("%s: the request to %s failed: %w", at, req.URL.Host, scrub(err))
-		if req.Context().Err() != nil {
-			return nil, failure
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
 		}
 
-		return nil, retry.Transient(failure, 0)
+		if req.Context().Err() != nil {
+			return nil, fmt.Errorf("%s: external request stopped: %w", at, req.Context().Err())
+		}
+
+		var targetErr *externalTargetError
+		if errors.As(err, &targetErr) {
+			return nil, fmt.Errorf("%s: %w", at, targetErr)
+		}
+
+		return nil, retry.Transient(
+			safeCause(fmt.Sprintf("%s: external transport failed", at), transportCause(err)),
+			0,
+		)
 	}
 
 	return resp, nil
+}
+
+// transportCause removes net/http's URL-bearing wrapper while retaining the
+// underlying typed failure for [errors.Is] and [errors.As]. The returned cause is
+// placed behind safeCause before it reaches a public error string.
+func transportCause(err error) error {
+	var wrapped *url.Error
+	if errors.As(err, &wrapped) {
+		return wrapped.Err
+	}
+
+	return err
 }
 
 // registryURL returns the origin every request of this repository starts at,
@@ -397,37 +442,35 @@ func portOf(u *url.URL) string {
 // here rather than travelling on, because the statuses that reach this point
 // mean something different than they do from a registry and there is no way to
 // tell them apart further up.
-func offOriginResponse(at origin, host string, resp *http.Response) (*http.Response, error) {
+func offOriginResponse(at origin, resp *http.Response) (*http.Response, error) {
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
 		return resp, nil
 	}
 
-	return nil, offOriginFailure(at, host, resp)
+	return nil, offOriginFailure(at, resp)
 }
 
 // offOriginUploadResponse decides what a response from an upload session
 // beyond the registry means. Only Created completes the write; every other
 // status is classified as an external failure without interpreting a
 // challenge or exposing the session response.
-func offOriginUploadResponse(at origin, host string, resp *http.Response) (*http.Response, error) {
+func offOriginUploadResponse(at origin, resp *http.Response) (*http.Response, error) {
 	if resp.StatusCode == http.StatusCreated {
 		return resp, nil
 	}
 
-	return nil, offOriginFailure(at, host, resp)
+	return nil, offOriginFailure(at, resp)
 }
 
-// offOriginFailure closes an unsuccessful response from a host the registry
-// named and reports only the original registry operation, the host, and its
-// status. Its body and URL may contain a live signed capability and never
-// become part of the returned error.
-func offOriginFailure(at origin, host string, resp *http.Response) error {
+// offOriginFailure closes an unsuccessful response from a target the registry
+// named and reports only the original registry operation and status. Its host,
+// body, and URL are peer-selected and never become part of the returned error.
+func offOriginFailure(at origin, resp *http.Response) error {
 	drain(resp.Body)
 	_ = resp.Body.Close()
 
 	failure := &redirectError{
 		at:         at,
-		host:       host,
 		status:     resp.StatusCode,
 		retryAfter: retryAfter(resp),
 	}
@@ -458,32 +501,6 @@ func offOriginTransient(status int) bool {
 	}
 }
 
-// scrub drops the URL a [net/url.Error] renders, keeping the failure
-// underneath.
-//
-// [net/http.Client.Do] wraps everything it returns in one, and that error's
-// message prints the URL whole — [net/http] blanks a password in userinfo and
-// nothing else (net/http/client.go, stripPassword), so a signed query rides
-// straight into whatever reads the error, and from there into a terminal and a
-// support ticket. The cause is what says what went wrong; the URL is the part
-// that must not be said.
-//
-// The tap the reference CLI installs is safe without this and stays safe, and
-// that is a fact about where the wrapping happens rather than a hope. The
-// [net/url.Error] is built by [net/http.Client.Do] itself, above the transport
-// (net/http/client.go, the uerr helper the client wraps every send with), so
-// what a [net/http.RoundTripper] returns — which is all the tap ever sees and
-// all its err= field ever holds — is the cause on its own, with no URL
-// rendered around it.
-func scrub(err error) error {
-	var wrapped *url.Error
-	if errors.As(err, &wrapped) {
-		return wrapped.Err
-	}
-
-	return err
-}
-
 // redirectError reports a failure the target of a redirect answered with.
 //
 // It is deliberately not a [StatusError]. A [StatusError] carries the
@@ -499,25 +516,20 @@ type redirectError struct {
 	// at is the registry request the redirect started from. It is the only
 	// method and path this error will ever name.
 	at origin
-	// host is the host that answered — no scheme, no path, no query. Enough to
-	// say who refused, and not enough to repeat what was asked.
-	host string
-	// status is the HTTP status that host answered with.
+	// status is the HTTP status the external target answered with.
 	status int
 	// retryAfter is the wait it asked for, read the same way a registry's is.
 	retryAfter time.Duration
 }
 
-// Error names the registry request, the host that answered it after the
-// redirect, and the status — and nothing the target sent. The location never
-// appears, and neither does the response body: an object store's error
-// document usually carries only a request id, but at least one real store
-// echoes the signed request it is complaining about, which is a credential.
-// The -debug log is where diagnosis happens, and it never renders bodies
-// either.
+// Error names the original registry request and the external status — and
+// nothing the target or registry selected. The location never appears, and
+// neither does the response body: an object store's error document usually
+// carries only a request id, but at least one real store echoes the signed
+// request it is complaining about, which is a credential.
 func (e *redirectError) Error() string {
 	return fmt.Sprintf(
-		"%s: %s answered the redirected request with %d %s",
-		e.at, e.host, e.status, http.StatusText(e.status),
+		"%s: the external target answered with %d %s",
+		e.at, e.status, http.StatusText(e.status),
 	)
 }

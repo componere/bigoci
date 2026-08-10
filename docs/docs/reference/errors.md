@@ -6,8 +6,8 @@ description: The five bigoci sentinels, what each reports, what a failed transfe
 # Errors reference
 
 Package `bigoci` exports five sentinel errors. They are the failures a caller
-branches on; everything else comes back as a descriptive error naming the
-operation that failed.
+branches on; everything else comes back as a structural error naming the
+operation and rule that failed without repeating peer-selected values.
 
 | Sentinel | Direction | Cause |
 |---|---|---|
@@ -29,7 +29,7 @@ built, so both the sentinel and everything under it stay in the chain:
 
 ```
 not found: pull 127.0.0.1:5050/team/model:absent to /data/x.bin: fetch the
-manifest: GET /v2/team/model/manifests/absent: registry returned 404 Not Found: …
+manifest: GET /v2/team/model/manifests/absent: registry returned 404 Not Found
 ```
 
 Four rules follow.
@@ -38,13 +38,23 @@ Four rules follow.
   never the returned error itself, so `err == bigoci.ErrNotFound` is always
   false.
 - **Never match on message text.** The text under the sentinel names the
-  operation, the reference, and what the registry said, and none of that is a
-  contract.
+  operation and structural failure, and none of that is a contract.
 - **At most one sentinel is attached.** The classifier returns on its first
   match, so an error never carries two.
 - **An error that matches nothing public comes back unchanged**, rather than
   being dressed up as a case it is not. See
   [Errors with no sentinel](#errors-with-no-sentinel).
+
+Peer-controlled text is not safe diagnosis. A registry can copy the reusable
+`Authorization` header it just received into a response body, challenge,
+manifest field, redirect, or parser failure. Public error strings therefore
+omit registry bodies, token realms, locations, manifest-selected values, and
+raw transport or JSON parser messages. They retain fixed operations, statuses,
+field names, bounded part indexes, and rules.
+
+The underlying error chain remains inspectable. Sentinels, context errors,
+and typed transport or body-read causes still work with `errors.Is` and
+`errors.As`; only their potentially peer-derived message text is hidden.
 
 ```go
 switch {
@@ -142,7 +152,7 @@ artifact claims to be bigoci and is broken:
 - a missing or unparseable annotation
 - parts that disagree with the split rule
 
-Those are descriptive errors with no sentinel. The format contract they are
+Those are structural errors with no sentinel. The format contract they are
 checked against is in [Format](format.md).
 
 **Seen when** a pull names a reference that points at a container image or any
@@ -221,13 +231,13 @@ unreferenced, and no manifest was written — so no artifact exists.
 
 ## Errors with no sentinel
 
-An error that matches no sentinel is a plain wrapped error. It reads as the
-operation, then what failed inside it, then the cause:
+An error that matches no sentinel is a wrapped error. It reads as the operation
+and a structural cause:
 
 ```
 push /tmp/model.bin to 127.0.0.1:5999/team/model:v1: after 4 attempts: check
-whether part 0 (sha256:…) exists: HEAD /v2/team/model/blobs/sha256:…: dial tcp
-127.0.0.1:5999: connect: connection refused
+whether part 0 (sha256:…) exists: HEAD /v2/team/model/blobs/<digest>: transport
+failed
 ```
 
 `after N attempts` appears when the failure outlived a retry budget. What
@@ -246,8 +256,9 @@ lands here:
 
 ## Cancellation and deadlines
 
-A cancelled `ctx` stops the workers, cuts short any wait in progress, and the
-transfer returns an error. `errors.Is(err, context.Canceled)` and
+A cancelled `ctx` stops the workers, interrupts active local resume hashing,
+cuts short any wait in progress, and the transfer returns an error.
+`errors.Is(err, context.Canceled)` and
 `errors.Is(err, context.DeadlineExceeded)` answer over that chain.
 
 **The error is not a reliable signal that you cancelled.** Cancelling a

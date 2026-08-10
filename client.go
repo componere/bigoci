@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -33,11 +34,11 @@ type Reference string
 
 // Client pushes and pulls bigoci artifacts.
 //
-// A Client holds the transport settings and nothing else — no connection to
-// one registry, no state from one transfer — so a single client serves any
-// number of concurrent pushes and pulls against any number of repositories.
-// [New] builds one; the zero value is usable and behaves as if built with no
-// options.
+// A Client holds transfer-wide settings, its credential resolver, and one
+// lazily prepared external connection pool — no state from one repository or
+// transfer. A single client therefore serves any number of concurrent pushes
+// and pulls against any number of repositories. [New] builds one; the zero
+// value is usable and behaves as if built with no options.
 type Client struct {
 	// settings are the transport settings the options collected; the fields
 	// are documented on clientSettings, their one home.
@@ -46,7 +47,25 @@ type Client struct {
 	// when no option named a source. Built once, by [New], and shared by every
 	// transfer the client carries.
 	creds oci.Credentials
+	// external owns the lazily prepared external connection pool. It is a
+	// pointer so copying a Client keeps the copy-safe semantics it had before
+	// this state existed: both values share the concurrency-safe pool.
+	external *externalTransportState
 }
+
+// externalTransportState lazily prepares one caller-derived transport pool.
+// It lives behind a pointer in Client so the public value does not acquire a
+// no-copy-after-use contract from [sync.Once].
+type externalTransportState struct {
+	// once serializes preparation across concurrent repositories.
+	once sync.Once
+	// base owns the shared caller-derived connection pool after preparation.
+	base *oci.ExternalTransportBase
+}
+
+// zeroClientExternal is the shared default state used without mutating a
+// zero-value Client, including when several zero-value clients start at once.
+var zeroClientExternal externalTransportState //nolint:gochecknoglobals // Zero Client values need shared copy-safe lazy state.
 
 // New returns a client configured by opts.
 //
@@ -72,7 +91,7 @@ func New(opts ...Option) (*Client, error) {
 		opt(&applied)
 	}
 
-	client := &Client{settings: applied}
+	client := &Client{settings: applied, external: &externalTransportState{}}
 
 	if applied.credentials != nil {
 		creds, err := applied.credentials()
@@ -343,10 +362,35 @@ func (c *Client) repository(ref Reference) (*oci.Repository, error) {
 	options := []oci.Option{
 		oci.WithHTTPClient(c.settings.httpClient),
 		oci.WithCredentials(c.creds),
+		oci.WithExternalTransportBase(c.externalTransportBase()),
 	}
 	if c.settings.plainHTTP {
 		options = append(options, oci.WithPlainHTTP())
 	}
+	if c.settings.allowUnverifiedExternal {
+		options = append(options, oci.WithUnverifiedExternalTransport())
+	}
 
 	return oci.NewRepository(string(ref), options...)
+}
+
+// externalTransportBase returns the one caller-derived external transport
+// pool shared by every repository this client builds.
+func (c *Client) externalTransportBase() *oci.ExternalTransportBase {
+	state := c.external
+	if state == nil {
+		state = &zeroClientExternal
+	}
+
+	state.once.Do(func() {
+		if c.settings.httpClient == nil {
+			state.base = oci.NewExternalTransportBase(nil)
+
+			return
+		}
+
+		state.base = oci.NewExternalTransportBase(c.settings.httpClient.Transport)
+	})
+
+	return state.base
 }
