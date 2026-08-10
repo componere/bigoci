@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/componere/bigoci"
 )
@@ -177,13 +180,14 @@ func runHelp(e env, args []string) error {
 // reportError writes the two-line failure presentation on standard error and
 // returns the exit code the failure maps to.
 //
-// The first line is the library's error verbatim, never re-wrapped and never
-// re-phrased. The second takes one of three documented forms: the sentinel
+// The first line preserves the library's printable error text and visibly
+// escapes non-graphic runes so a peer cannot add log records or terminal
+// controls. The second takes one of three documented forms: the sentinel
 // [errors.Is] matched, the statement that none did, or the signal that stopped
-// the run. It prints whatever the failure was: it is how a shell script
-// watches the library's error classification work.
+// the run. It prints whatever the failure was: it is how a shell script watches
+// the library's error classification work.
 func reportError(e env, err error, sig *interrupts) int {
-	fmt.Fprintf(e.stderr, "bigoci: %s\n", err)
+	fmt.Fprintf(e.stderr, "bigoci: %s\n", terminalSafeLine(err.Error()))
 
 	var usage *usageError
 	if errors.As(err, &usage) {
@@ -212,6 +216,38 @@ func reportError(e env, err error, sig *interrupts) int {
 	fmt.Fprintf(e.stderr, "bigoci: no sentinel matched (exit %d)\n", exitFailure)
 
 	return exitFailure
+}
+
+// terminalSafeLine preserves graphic runes and renders every non-graphic rune
+// with Go's visible escape spelling. The result cannot create another terminal
+// line or execute a terminal control sequence.
+func terminalSafeLine(value string) string {
+	var b strings.Builder
+	b.Grow(len(value))
+
+	for len(value) > 0 {
+		r, size := utf8.DecodeRuneInString(value)
+		if r == utf8.RuneError && size == 1 {
+			const hexadecimal = "0123456789abcdef"
+
+			b.WriteString(`\x`)
+			b.WriteByte(hexadecimal[value[0]>>4])
+			b.WriteByte(hexadecimal[value[0]&0x0f])
+			value = value[1:]
+
+			continue
+		}
+
+		if unicode.IsGraphic(r) {
+			b.WriteRune(r)
+		} else {
+			quoted := strconv.QuoteRuneToGraphic(r)
+			b.WriteString(quoted[1 : len(quoted)-1])
+		}
+		value = value[size:]
+	}
+
+	return b.String()
 }
 
 // sentinelExits is the table that turns a failure into an exit code, checked

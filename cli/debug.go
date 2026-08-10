@@ -18,6 +18,11 @@ const (
 	durPrecision = 100 * time.Microsecond
 	// revisionWidth is how much of a commit hash the provenance line shows.
 	revisionWidth = 7
+	// responseLengthKnown says net/http knew a peer response Content-Length
+	// without retaining its attacker-controlled numeric value.
+	responseLengthKnown int64 = -2
+	// responseLengthUnknown says net/http did not know a response length.
+	responseLengthUnknown int64 = -1
 )
 
 // class names one kind of registry request, inferred from the shape of the URL
@@ -95,9 +100,9 @@ func (c counters) summary() string {
 //
 // It is a pure observer. It never changes a request, never wraps or reads a body
 // in either direction, never sets a timeout, and never sets a redirect policy.
-// Sizes come from Content-Length alone. No body is ever logged, not even in part,
-// which is what keeps a credential exchange out of the log by construction
-// rather than by care.
+// Request sizes come from Content-Length alone. Response lengths retain only
+// whether a value was known, because a registry can reflect an all-decimal
+// bearer through Content-Length. No body is ever logged, not even in part.
 type tap struct {
 	// out receives the log lines, one Write call per whole line.
 	out io.Writer
@@ -109,6 +114,19 @@ type tap struct {
 	// seq numbers requests so a sent line can be paired with the response or the
 	// error that answered it, however many workers are running.
 	seq atomic.Uint64
+	// registryOnce records the first request origin exactly once. Every request
+	// that can be influenced by a response necessarily follows this one.
+	registryOnce sync.Once
+	// registryScheme is the scheme of the first request's registry origin.
+	registryScheme string
+	// registryHost is the host of the first request's registry origin.
+	registryHost string
+	// locationsMu guards locationTargets. Location responses and followed
+	// requests can be observed concurrently across workers.
+	locationsMu sync.RWMutex
+	// locationTargets holds every server-issued Location target the tap has
+	// observed, so later requests to it remain redacted.
+	locationTargets map[locationTarget]struct{}
 	// mu serializes the writes and the counter updates.
 	mu sync.Mutex
 	// counts is the tally the summary line reports.
@@ -127,10 +145,11 @@ func newTap(out io.Writer, next http.RoundTripper) *tap {
 	}
 
 	t := &tap{
-		out:    out,
-		next:   next,
-		start:  time.Now(),
-		counts: counters{byClass: make(map[class]int)},
+		out:             out,
+		next:            next,
+		start:           time.Now(),
+		locationTargets: make(map[locationTarget]struct{}),
+		counts:          counters{byClass: make(map[class]int)},
 	}
 	t.writeLine("bigoci: debug: " + provenance() + "\n")
 
@@ -200,7 +219,7 @@ func (t *tap) roundTrip(req *http.Request, next http.RoundTripper) (*http.Respon
 func (t *tap) requestLine(seq uint64, req *http.Request, kind class) string {
 	return fmt.Sprintf(
 		"http> %04d %s %-4s %s class=%s auth=%s clen=%d %s\n",
-		seq, t.elapsed(), req.Method, redactURL(req.URL), kind,
+		seq, t.elapsed(), req.Method, t.renderTargetURL(req.URL, kind), kind,
 		authScheme(req.Header), req.ContentLength, requestHeaderFields(req.Header),
 	)
 }
@@ -208,23 +227,36 @@ func (t *tap) requestLine(seq uint64, req *http.Request, kind class) string {
 // responseLine renders the received line, stamped with the time the response
 // headers arrived.
 //
-// A clen of -1 means the response did not say how long it was. On a blob upload
-// that would be a regression of the library's explicit Content-Length invariant,
-// which is exactly the kind of thing this line exists to make visible.
+// Response clen is -2 when net/http knew a Content-Length and -1 when it did
+// not. The exact peer value is withheld because a valid bearer can consist only
+// of decimal digits and be reflected through Content-Length.
 func (t *tap) responseLine(seq uint64, req *http.Request, resp *http.Response, kind class, took time.Duration) string {
 	return fmt.Sprintf(
 		"http< %04d %s %-4s %s class=%s status=%d dur=%s clen=%d %s\n",
-		seq, t.elapsed(), req.Method, redactURL(req.URL), kind,
-		resp.StatusCode, took, resp.ContentLength, responseHeaderFields(req.URL, resp.Header),
+		seq, t.elapsed(), req.Method, t.renderTargetURL(req.URL, kind), kind,
+		resp.StatusCode, took, responseContentLength(resp.ContentLength), t.responseHeaderFields(req.URL, resp.Header),
 	)
 }
 
-// errorLine renders the failed line for a request that never got a response. The
-// error is quoted, so however many lines it would have printed it stays one.
-func (t *tap) errorLine(seq uint64, req *http.Request, kind class, took time.Duration, err error) string {
+// responseContentLength reduces a peer response length to a fixed numeric
+// marker while preserving the frozen clen=<integer> field grammar. A known
+// length is -2 and an unknown length is -1.
+func responseContentLength(length int64) int64 {
+	if length >= 0 {
+		return responseLengthKnown
+	}
+
+	return responseLengthUnknown
+}
+
+// errorLine renders the failed line for a request that never got a response.
+// Transport details are never rendered: net/http errors can contain a target
+// URL or raw malformed response bytes, including a reflected credential.
+func (t *tap) errorLine(seq uint64, req *http.Request, kind class, took time.Duration, _ error) string {
 	return fmt.Sprintf(
 		"http! %04d %s %-4s %s class=%s dur=%s err=%s\n",
-		seq, t.elapsed(), req.Method, redactURL(req.URL), kind, took, strconv.Quote(err.Error()),
+		seq, t.elapsed(), req.Method, t.renderTargetURL(req.URL, kind), kind, took,
+		strconv.Quote(redactedTargetError),
 	)
 }
 

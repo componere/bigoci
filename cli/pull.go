@@ -42,7 +42,10 @@ func runPull(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stderr, "bigoci: pull %s -> %s (%s)\n", ref, dest, c.settings(set))
+	fmt.Fprintf(
+		e.stderr, "bigoci: pull %s -> %s (%s)\n",
+		terminalSafeLine(ref), terminalSafeLine(dest), c.settings(set),
+	)
 
 	watch := startProgress(e, lines, c.progress)
 

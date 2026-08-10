@@ -162,15 +162,16 @@ func TestTapLogsOneRequestAsTwoLines(t *testing.T) {
 	assert.True(t, strings.HasPrefix(log.sent[0], "http> 0001 "), log.sent[0])
 	assert.True(t, strings.HasPrefix(log.received[0], "http< 0001 "), log.received[0])
 
-	assert.Contains(t, log.sent[0], "GET  http://127.0.0.1:"+portOf(t, srv.URL))
+	assert.Contains(t, log.sent[0], "GET  "+srv.URL+"/v2/team/m/blobs/sha256:ab")
 	assert.Contains(t, log.sent[0], "class=blob-read")
 	assert.Contains(t, log.sent[0], "auth=none")
 	assert.Contains(t, log.sent[0], "type=- range=- accept=-")
 
 	assert.Contains(t, log.received[0], "status=200")
 	assert.Contains(t, log.received[0], "dur=")
-	assert.Contains(t, log.received[0], `ctype="application/octet-stream"`)
-	assert.Contains(t, log.received[0], `ddigest="sha256:ab"`)
+	assert.Contains(t, log.received[0], "clen=-2")
+	assert.Contains(t, log.received[0], `ctype="present"`)
+	assert.Contains(t, log.received[0], `ddigest="present"`)
 	assert.Contains(t, log.received[0], "crange=- loc=-")
 	assert.Contains(t, log.received[0], "retry-after=- challenge=-")
 }
@@ -202,6 +203,17 @@ func TestTapExternalLayerSharesOneObserver(t *testing.T) {
 	assert.Contains(t, log.summary[0], "requests=1")
 }
 
+// TestResponseContentLengthRevealsOnlyWhetherKnown checks that no exact peer
+// response length survives while the clen field retains its numeric grammar.
+func TestResponseContentLengthRevealsOnlyWhetherKnown(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, responseLengthUnknown, responseContentLength(-1))
+	assert.Equal(t, responseLengthUnknown, responseContentLength(-99))
+	assert.Equal(t, responseLengthKnown, responseContentLength(0))
+	assert.Equal(t, responseLengthKnown, responseContentLength(731984620517284693))
+}
+
 // TestTapLogsRanges checks the two fields a resumed or partial read turns on, in
 // both directions.
 func TestTapLogsRanges(t *testing.T) {
@@ -224,7 +236,7 @@ func TestTapLogsRanges(t *testing.T) {
 	require.Len(t, log.received, 1)
 	assert.Contains(t, log.sent[0], `range="bytes=0-4"`)
 	assert.Contains(t, log.received[0], "status=206")
-	assert.Contains(t, log.received[0], `crange="bytes 0-4/2048"`)
+	assert.Contains(t, log.received[0], `crange="present"`)
 }
 
 // TestTapLogsATransportFailureAsOneLine checks the case a dead port produces: no
@@ -251,16 +263,113 @@ func TestTapLogsATransportFailureAsOneLine(t *testing.T) {
 
 	assert.Contains(t, log.failed[0], "class=manifest-read")
 	assert.Contains(t, log.failed[0], "dur=")
-	assert.Regexp(t, ` err="[^"]+"$`, log.failed[0])
+	assert.Contains(t, log.failed[0], `err="`+redactedTargetError+`"`)
+}
+
+// TestTapRedactsAnOffOriginTransportFailure checks the error half of the
+// origin boundary. A dial failure can repeat the hostname it was handed, so
+// replacing only the URL field would still disclose a credential-bearing host.
+func TestTapRedactsAnOffOriginTransportFailure(t *testing.T) {
+	t.Parallel()
+
+	const (
+		hostTicket  = "redeemable-failed-host-ticket"
+		pathTicket  = "redeemable-failed-path-ticket"
+		queryTicket = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	)
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	dialer := &net.Dialer{}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if strings.Contains(addr, hostTicket) {
+				return nil, fmt.Errorf("dial %s: injected transport failure", addr)
+			}
+
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+
+	var buf bytes.Buffer
+	probe := newTap(&buf, transport)
+	client := &http.Client{Transport: probe}
+	get(t, client, http.MethodGet, origin.URL+"/v2/team/m/blobs/sha256:ab", nil)
+
+	target := "http://" + hostTicket + ".example:" + portOf(t, origin.URL) +
+		"/v2/team/m/blobs/" + pathTicket + "?digest=" + queryTicket
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	require.NoError(t, err)
+
+	_, err = client.Do(req)
+	require.Error(t, err)
+
+	log := splitLog(t, buf.String())
+	require.Len(t, log.failed, 1)
+	assert.Contains(t, log.failed[0], offOriginTarget)
+	assert.Contains(t, log.failed[0], `err="`+redactedTargetError+`"`)
+	for _, credential := range []string{hostTicket, pathTicket, queryTicket} {
+		assert.NotContains(t, buf.String(), credential)
+	}
+}
+
+// TestTapRedactsAMasqueradingTokenTransportFailure pins the same decision for a
+// same-origin token realm whose path is deliberately classified as blob-read.
+// The original transport detail is unsafe because it can repeat the full URL.
+func TestTapRedactsAMasqueradingTokenTransportFailure(t *testing.T) {
+	t.Parallel()
+
+	const (
+		pathTicket  = "redeemable-masquerading-path-ticket"
+		queryTicket = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	)
+
+	base, err := url.Parse("https://reg.example.com/v2/team/m/manifests/v1")
+	require.NoError(t, err)
+	target, err := url.Parse(
+		"https://reg.example.com/v2/team/m/blobs/" + pathTicket +
+			"?digest=" + queryTicket + "&scope=repository:team/m:pull",
+	)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	probe := newTap(&buf, nil)
+	_ = probe.renderTargetURL(base, classManifestRead)
+	req := requestFor(t, target.String(), nil)
+	line := probe.errorLine(
+		2,
+		req,
+		classBlobRead,
+		0,
+		fmt.Errorf("GET %s: injected transport failure", target),
+	)
+
+	assert.Contains(t, line, "https://reg.example.com"+redactedTargetPath)
+	assert.Contains(t, line, "class=blob-read")
+	assert.Contains(t, line, `err="`+redactedTargetError+`"`)
+	for _, credential := range []string{pathTicket, queryTicket} {
+		assert.NotContains(t, line, credential)
+	}
 }
 
 // TestTapLogsBothHopsOfARedirect pins the tap's own sightline: a redirect to
-// another host is visible as a second request line, and what that line's
-// auth= field says is evidence. The client here is a bare [net/http.Client]
-// on purpose — the tap must see hops whatever follows them, and the library
-// no longer lets the standard library follow at all.
+// another origin is visible as a second request line, while credentials in the
+// target host, path, and even a digest-shaped query remain unrepresentable. The
+// client here is a bare [net/http.Client] on purpose — the tap must see hops
+// whatever follows them, and the library no longer lets the standard library
+// follow at all.
 func TestTapLogsBothHopsOfARedirect(t *testing.T) {
 	t.Parallel()
+
+	const (
+		hostTicket  = "redeemable-host-ticket"
+		pathTicket  = "redeemable-path-ticket"
+		queryTicket = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -270,13 +379,18 @@ func TestTapLogsBothHopsOfARedirect(t *testing.T) {
 
 	targetPort := portOf(t, target.URL)
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Location", "http://localhost:"+targetPort+"/v2/team/m/blobs/sha256:ab")
+		w.Header().Set(
+			"Location",
+			"http://"+hostTicket+".example:"+targetPort+"/v2/team/m/blobs/"+pathTicket+"?digest="+queryTicket,
+		)
 		w.WriteHeader(http.StatusTemporaryRedirect)
 	}))
 	defer origin.Close()
 
 	var buf bytes.Buffer
-	probe := newTap(&buf, loopbackTransport())
+	transport := loopbackTransport()
+	t.Cleanup(transport.CloseIdleConnections)
+	probe := newTap(&buf, transport)
 	header := http.Header{"Authorization": []string{"Bearer " + secret}}
 	get(t, &http.Client{Transport: probe}, http.MethodGet, origin.URL+"/v2/team/m/blobs/sha256:ab", header)
 
@@ -286,10 +400,14 @@ func TestTapLogsBothHopsOfARedirect(t *testing.T) {
 
 	assert.Contains(t, log.sent[0], "auth=bearer")
 	assert.Contains(t, log.sent[1], "auth=none", "a cross-host hop must show as auth=none, and the tap must see it")
+	assert.Contains(t, log.sent[1], offOriginTarget)
 	assert.Contains(t, log.received[0], "status=307")
-	assert.Contains(t, log.received[0], `loc="http://localhost:`+targetPort+`/v2/team/m/blobs/sha256:ab"`)
+	assert.Contains(t, log.received[0], `loc="`+offOriginTarget+`"`)
 	assert.Contains(t, log.received[1], "status=200")
-	assert.NotContains(t, buf.String(), secret)
+	assert.Contains(t, log.received[1], offOriginTarget)
+	for _, credential := range []string{secret, hostTicket, pathTicket, queryTicket} {
+		assert.NotContains(t, buf.String(), credential)
+	}
 }
 
 // TestTapSummary checks the accounting the summary line reports, including the one
@@ -450,7 +568,7 @@ func TestTapUnderConcurrency(t *testing.T) {
 	}
 	for _, line := range log.received {
 		require.Regexp(t, receivedPattern, line)
-		assert.Contains(t, line, `crange="bytes 0-4/2048"`, "a header value with a space must stay one field")
+		assert.Contains(t, line, `crange="present"`, "a peer response header must retain presence only")
 	}
 	assert.Len(t, seqs, workers*each, "every request must get its own sequence number")
 }

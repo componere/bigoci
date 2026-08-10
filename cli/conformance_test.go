@@ -274,22 +274,23 @@ func (c conformance) roundTrips(t *testing.T) string {
 //     least one request that did carry a bearer, so "everything reads
 //     auth=none" cannot pass on a log where nothing ever authenticated.
 //
-// The host key holds because the registry's token realm is on the registry
-// itself, which is true of GHCR. Against a registry whose realm lives on
-// another host, the exchange would count as an off-registry request carrying a
-// credential, and the gate would need re-deriving rather than re-pointing.
+// The host key holds because the first registry origin remains literal and
+// every off-origin target becomes the reserved off-origin.invalid placeholder.
+// GHCR's token realm is on the registry itself. Against a registry whose realm
+// lives on another host, the exchange would count as an off-registry request
+// carrying a credential, and the gate would need re-deriving rather than
+// re-pointing.
 func (c conformance) leaksNothingOffRegistry(t *testing.T, pullLog string) {
 	lines := parseRequestLines(t, pullLog)
 	require.NotEmpty(t, lines, "the pull log holds no request lines at all")
 
-	// The challenge count reads the response lines raw: a challenge= field on
-	// an http< line is the registry stating its requirement, and it is what
-	// pairs the class=other exchange below with the dance that caused it —
-	// the design's control against class=other one day meaning something
-	// else.
+	// The challenge count reads the response lines raw: challenge="present" on
+	// an http< line is the registry stating its requirement. Counting the field
+	// name alone would be vacuous because frozen grammar prints challenge=- on
+	// every response without one.
 	challenges := 0
 	for raw := range strings.SplitSeq(pullLog, "\n") {
-		if strings.HasPrefix(raw, "http< ") && strings.Contains(raw, "challenge=") {
+		if strings.HasPrefix(raw, "http< ") && strings.Contains(raw, `challenge="present"`) {
 			challenges++
 		}
 	}
@@ -337,7 +338,7 @@ func (c conformance) leaksNothingOffRegistry(t *testing.T, pullLog string) {
 	)
 	assert.Positive(
 		t, challenges,
-		"no challenge= on any response line, so nothing here proves the class=other traffic was a token "+
+		`no challenge="present" on any response line, so nothing here proves the class=other traffic was a token `+
 			"exchange answering the registry's own demand",
 	)
 	assert.Positive(
@@ -440,8 +441,8 @@ type requestLine struct {
 	// text is the line as it was logged, quoted back into a failure message
 	// when the gate rejects it.
 	text string
-	// host is the host of the URL the request went to, port included when the
-	// URL carried one.
+	// host is the rendered target host: the literal registry host, port included
+	// when present, or the reserved placeholder for every off-origin target.
 	host string
 	// class is the value of the line's class field.
 	class string
@@ -495,7 +496,8 @@ func parseRequestLines(t *testing.T, log string) []requestLine {
 // no body in either direction, renders an Authorization header as its scheme
 // alone with no prefix and no length, elides the value of every query parameter
 // but a verified digest, and drops userinfo from every URL. There is no code
-// path from a credential or a signature to a line in these files.
+// path from raw response header or transport-error bytes to a line in these
+// files, and response Content-Length retains only a fixed known/unknown marker.
 func writeConformanceLog(t *testing.T, name, body string) {
 	t.Helper()
 
