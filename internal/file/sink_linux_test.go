@@ -29,7 +29,10 @@ func TestCreateSinkRefusesAForeignOwnedPartial(t *testing.T) {
 		t.Skip("launching the cross-UID helper requires root; run the Linux container gate")
 	}
 
-	dir, err := os.MkdirTemp("", "bigoci-crossuid-partial-")
+	dir, err := os.MkdirTemp( //nolint:usetesting // t.TempDir's private parent blocks the victim UID.
+		"",
+		"bigoci-crossuid-partial-",
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(dir)) })
 
@@ -91,7 +94,10 @@ func TestCreateSinkForeignOwnerHelper(t *testing.T) {
 func copyExecutableForUID(t *testing.T, source string) string {
 	t.Helper()
 
-	dir, err := os.MkdirTemp("", "bigoci-crossuid-helper-")
+	dir, err := os.MkdirTemp( //nolint:usetesting // t.TempDir's private parent blocks the victim UID.
+		"",
+		"bigoci-crossuid-helper-",
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(dir)) })
 	require.NoError(t, os.Chmod(dir, 0o755))
