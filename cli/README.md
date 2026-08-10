@@ -313,7 +313,7 @@ A failure always prints two lines:
 
 ```
 bigoci: not found: pull 127.0.0.1:5050/team/model:absent to /data/x.bin: fetch the
-manifest: GET /v2/team/model/manifests/absent: registry returned 404 Not Found: …
+manifest: GET /v2/team/model/manifests/absent: registry returned 404 Not Found
 bigoci: matched sentinel bigoci.ErrNotFound (exit 3)
 ```
 

@@ -269,8 +269,14 @@ func TestE2ECorruptedPartsFailThePull(t *testing.T) {
 
 	require.ErrorIs(t, err, bigoci.ErrDigestMismatch)
 	require.ErrorContains(
-		t, err, parts[corruptedPart].String(),
-		"the failure must name the part that was changed, not some other one",
+		t, err, "part "+strconv.Itoa(corruptedPart),
+		"the failure must name the changed part by its safe bounded index",
+	)
+	assert.NotContains(
+		t,
+		err.Error(),
+		parts[corruptedPart].String(),
+		"the manifest-selected digest is not safe log context",
 	)
 	assert.NoFileExists(t, dest, "a pull that failed verification must publish nothing")
 	assert.FileExists(t, dest+file.PartialSuffix, "the partial file stays behind for a later attempt")

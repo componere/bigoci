@@ -46,10 +46,10 @@ const (
 )
 
 // errorBodyLimit caps how many bytes of a response body this package reads
-// when it is not the content the caller asked for: the detail quoted in an
-// error, and the drain that lets a connection go back in the pool. Registries
-// answer with a short JSON document, so the cap only bites when something
-// other than a registry is on the other end.
+// when it is not the content the caller asked for: the detail retained on a
+// [StatusError], and the drain that lets a connection go back in the pool.
+// Registries answer with a short JSON document, so the cap only bites when
+// something other than a registry is on the other end.
 const errorBodyLimit = 4096
 
 // ErrNotFound reports that the registry does not hold what a request named: a
@@ -113,6 +113,13 @@ type settings struct {
 	// now reads the clock token expiry is measured on, [time.Now] unless a
 	// test replaced it.
 	now func() time.Time
+	// allowUnverifiedExternal permits cross-registry requests through a custom
+	// dial hook, proxy, or opaque transport whose final destination bigoci
+	// cannot observe.
+	allowUnverifiedExternal bool
+	// externalBase is the caller-derived transport pool shared by repositories
+	// from one public client, nil for a standalone internal repository.
+	externalBase *ExternalTransportBase
 }
 
 // WithHTTPClient sends the repository's requests with client instead of the
@@ -123,6 +130,27 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(s *settings) {
 		if client != nil {
 			s.client = client
+		}
+	}
+}
+
+// WithUnverifiedExternalTransport authorizes registry-selected cross-host
+// requests through a custom dial hook, proxy, or opaque transport whose final
+// destination this adapter cannot verify. The public option of the same name
+// documents the security boundary callers opt out of.
+func WithUnverifiedExternalTransport() Option {
+	return func(s *settings) {
+		s.allowUnverifiedExternal = true
+	}
+}
+
+// WithExternalTransportBase shares base with this repository's
+// registry-selected external requests. The root package supplies it so one
+// public Client keeps one external connection pool across transfers.
+func WithExternalTransportBase(base *ExternalTransportBase) Option {
+	return func(s *settings) {
+		if base != nil {
+			s.externalBase = base
 		}
 	}
 }
@@ -170,9 +198,10 @@ type Repository struct {
 	// comes back to be decided on here rather than being followed by rules
 	// this package did not write.
 	client *http.Client
-	// external sends requests to a host the registry named. It is the same
-	// client again with no cookie jar, so nothing the registry set in one
-	// travels to a redirect target or an off-origin upload session.
+	// external sends requests to a host the registry named. It has no cookie
+	// jar, retains the caller's original transport for the registry hostname,
+	// and guards direct cross-host connections at the actual peer address before
+	// HTTP request bytes leave.
 	external *http.Client
 	// scheme is the URL scheme, "https" or "http".
 	scheme string
@@ -212,9 +241,11 @@ type Repository struct {
 // state, so copying the struct copies all of it. One turns redirect following
 // off, which is how this package rather than [net/http] decides what a
 // re-issued request may carry; the other drops the cookie jar as well and
-// sends requests to redirect targets and off-origin upload sessions.
-// Everything still goes out through the caller's transport, so a tap on it
-// sees every request bigoci makes.
+// sends requests to token realms, redirect targets, and off-origin upload
+// sessions. The external client binds the caller-derived guarded transport to
+// this registry, preserving its TLS, dial, proxy, and pooling settings while
+// enforcing the destination boundary at the actual connection. Repositories
+// built by one public Client share that transport's external connection pool.
 func NewRepository(ref string, opts ...Option) (*Repository, error) {
 	named, err := reference.ParseNamed(ref)
 	if err != nil {
@@ -240,12 +271,18 @@ func NewRepository(ref string, opts ...Option) (*Repository, error) {
 
 	external := request
 	external.Jar = nil
+	host := reference.Domain(named)
+	externalBase := applied.externalBase
+	if externalBase == nil {
+		externalBase = NewExternalTransportBase(request.Transport)
+	}
+	external.Transport = externalBase.forRegistry(host, applied.allowUnverifiedExternal)
 
 	repo := &Repository{
 		client:   &request,
 		external: &external,
 		scheme:   applied.scheme,
-		host:     reference.Domain(named),
+		host:     host,
 		name:     reference.Path(named),
 		manifest: manifest,
 	}
@@ -463,26 +500,48 @@ func (r *Repository) replay(req *http.Request, header string) (*http.Response, e
 //
 // A transport failure is transient. The adapter does not sort network
 // failures by species — connection refused, DNS, TLS handshake, reset,
-// timeout — because every one of them is worth one more attempt and none of
-// them is cheaper to diagnose than to repeat. The exception is a request the
-// caller ended: that is the transfer stopping, not the network failing, and
-// the check belongs here because this is the last place the two are still
-// distinguishable.
+// timeout — because every one of them is worth one more attempt. Nor does it
+// expose the underlying message: an HTTP parser can repeat a malformed
+// registry header, including a credential the registry just received. The
+// exception is a request the caller ended: that is the transfer stopping, not
+// the network failing, and the check belongs here because this is the last
+// place the two are still distinguishable.
 func (r *Repository) do(req *http.Request) (*http.Response, error) {
-	resp, err := r.client.Do(req)
+	return r.doWith(r.client, req, originOf(req).String())
+}
+
+// doExternal sends req through the cookie-free client used for a token realm.
+// It retains the caller-derived transport behavior, timeout, and redirect
+// refusal while removing ambient authority from the request.
+func (r *Repository) doExternal(req *http.Request) (*http.Response, error) {
+	return r.doWith(r.external, req, "token exchange")
+}
+
+// doWith sends req through client and classifies a transport failure without
+// admitting parser text, response bytes, or a caller transport's message to
+// the public error. operation is chosen before the request and is safe to
+// render.
+func (r *Repository) doWith(
+	client *http.Client,
+	req *http.Request,
+	operation string,
+) (*http.Response, error) {
+	resp, err := client.Do(req)
 	if err != nil {
-		// Scrubbed unconditionally: [net/http.Client.Do] wraps every failure
-		// in a [net/url.Error] that renders its URL whole, and two requests
-		// that pass through here can be off the registry's origin — a token
-		// exchange at a cross-host realm, and a blob upload at the session
-		// URL the registry named — where the query is signed state. The
-		// method and path prefix already say which request failed.
-		failure := fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, scrub(err))
-		if req.Context().Err() != nil {
-			return nil, failure
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
 		}
 
-		return nil, retry.Transient(failure, 0)
+		if req.Context().Err() != nil {
+			return nil, fmt.Errorf("%s: %w", operation, req.Context().Err())
+		}
+
+		var targetErr *externalTargetError
+		if errors.As(err, &targetErr) {
+			return nil, fmt.Errorf("%s: %w", operation, targetErr)
+		}
+
+		return nil, retry.Transient(safeCause(operation+": transport failed", transportCause(err)), 0)
 	}
 
 	return resp, nil
@@ -543,10 +602,11 @@ func boundManifest(named reference.Named) (bound, error) {
 type StatusError struct {
 	// Method is the HTTP method of the request that failed.
 	Method string
-	// Path is the request path on the registry, and always that: a request the
-	// registry redirected somewhere else is reported against the path that was
-	// asked for, never against the location it was sent to. A signed URL
-	// therefore has no way into this field, and neither has its query.
+	// Path is the safe structural request path on the registry. A blob read
+	// replaces its manifest-selected digest with "<digest>", and an upload uses
+	// the stable session-opening path. A token endpoint failure uses the fixed
+	// label "token endpoint" instead. A redirected request is reported against
+	// the original registry path, never against the location it was sent to.
 	Path string
 	// Status is the HTTP status code the registry answered with.
 	Status int
@@ -557,21 +617,20 @@ type StatusError struct {
 	// the registry said, and deciding how much of it to obey belongs to the
 	// retry policy, which bounds every wait by its own cap.
 	RetryAfter time.Duration
-	// Detail is the start of the response body, when it carried one.
+	// Detail is the bounded start of the response body, when it carried one.
+	// It is retained for programmatic diagnosis through [errors.As] but never
+	// rendered by [StatusError.Error]: a registry can reflect the Authorization
+	// header it just received, making this field live credential material.
 	Detail string
 }
 
-// Error renders the method, the path, the status, and whatever detail the
-// registry's body offered. A wait the registry asked for is left out: it is
-// bookkeeping for the retry loop, not something a person reading a failure
-// needs.
+// Error renders only the method, path, and status. [StatusError.Detail] is
+// deliberately excluded because it is peer-controlled and can contain a
+// reusable credential reflected from the request. A wait the registry asked
+// for is also left out: it is bookkeeping for the retry loop, not something a
+// person reading a failure needs.
 func (e *StatusError) Error() string {
-	summary := fmt.Sprintf("%s %s: registry returned %d %s", e.Method, e.Path, e.Status, http.StatusText(e.Status))
-	if e.Detail != "" {
-		return summary + ": " + e.Detail
-	}
-
-	return summary
+	return fmt.Sprintf("%s %s: registry returned %d %s", e.Method, e.Path, e.Status, http.StatusText(e.Status))
 }
 
 // Is makes a 404 match [ErrNotFound], a 401 or a 403 match [ErrUnauthorized],
@@ -608,9 +667,10 @@ func statusError(resp *http.Response) error {
 // The classification lives here because this is the one place every unexpected
 // status from the registry passes through, which is what keeps the
 // transient-or-terminal split a single table instead of a decision repeated at
-// every endpoint. A transient status still gets its detail read, so a 503's
-// body reaches the message and the connection still goes back in the pool. A
-// redirect's does not: see [statusDetail].
+// every endpoint. A transient status still gets its detail read into the
+// structured error and the connection still goes back in the pool. The detail
+// never reaches [StatusError.Error]. A redirect's body is not retained at all:
+// see [statusDetail].
 //
 // The origin is threaded in rather than read off the response because the
 // response may have come from somewhere else entirely: after a re-issue,
@@ -633,12 +693,11 @@ func statusErrorAt(at origin, resp *http.Response) error {
 	return err
 }
 
-// statusDetail reads a failed response's body for the error message — unless
-// the status is a redirect. A 3xx body is a server's courtesy rendering of
-// its own Location header, which for a blob read is a presigned URL, and an
-// error is no place for one: the status and the method already say
-// everything a redirect this package refused can usefully say. The body is
-// drained instead, so the connection still goes back in the pool.
+// statusDetail reads a failed response's body for [StatusError.Detail] — unless
+// the status is a redirect. A 3xx body is a server's courtesy rendering of its
+// own Location header, which for a blob read is a presigned URL, so it is not
+// retained even in the structured field. The body is drained instead, letting
+// the connection go back in the pool.
 func statusDetail(resp *http.Response) string {
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		drain(resp.Body)
@@ -650,7 +709,7 @@ func statusDetail(resp *http.Response) string {
 }
 
 // errorDetail reads the first errorBodyLimit bytes of a failed response body
-// for the error message. A body it cannot read contributes nothing: the
+// for structured diagnosis. A body it cannot read contributes nothing: the
 // status already says what went wrong.
 func errorDetail(body io.Reader) string {
 	detail, err := io.ReadAll(io.LimitReader(body, errorBodyLimit))

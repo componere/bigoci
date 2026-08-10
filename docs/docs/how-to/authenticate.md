@@ -147,6 +147,30 @@ storage, whose URL is already signed. A credential that arrives there is a
 credential in somebody else's logs, and the request would have worked without
 it.
 
+bigoci does not copy cookies from your client's jar to a registry-selected
+token realm, upload session, or blob redirect. With a concrete
+`http.Transport`, it also checks the actual peer of every registry-selected
+cross-host connection and refuses loopback, private, link-local, and
+unspecified addresses before sending HTTP request bytes. TCP and TLS setup may
+already have happened at that point. The registry's own hostname remains
+allowed on a private address and another port.
+
+A custom dial hook may tunnel to a destination other than the peer its
+connection reports. A proxy or opaque `RoundTripper` also hides the actual
+endpoint. A cross-host token realm, upload session, or blob redirect therefore
+fails closed through any of them. A direct `http.Transport` using the standard
+dialer, including `http.DefaultTransport.Clone()`, remains automatic.
+
+If your custom dial hook or transport boundary already enforces an equivalent
+destination policy, add `WithUnverifiedExternalTransport` to authorize it
+explicitly. The option uses your original transport for cross-host requests,
+so your proxy, dial hooks, connection pool, and any handlers installed with
+`http.Transport.RegisterProtocol` keep their exact behavior. You own the full
+destination check on that path; bigoci does not claim that the reported peer is
+the registry-selected endpoint. A custom `RoundTripper` can also add its own
+headers or cookies to every request it receives. A realm or upload Location
+that directly names a private IP remains refused before the transport runs.
+
 The fix is a host check — add the header only for the registry you built the
 transport for:
 
@@ -165,3 +189,9 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 Compare the host, not the domain: `cdn.example.com` is not
 `registry.example.com`, however closely they are related.
+
+Because `authTransport` is an opaque wrapper, pair it with
+`WithUnverifiedExternalTransport` only if its base transport or network policy
+also prevents registry-selected public names from reaching private addresses.
+The host check above protects the header; the explicit option says the caller
+owns the separate destination boundary.

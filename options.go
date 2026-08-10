@@ -106,13 +106,51 @@ type TransferOption interface {
 // back exactly as it handed it over. The copies keep the transport and the
 // timeout, and set a redirect policy of their own — bigoci decides what a
 // re-issued request may carry, which is the whole of the paragraph above. The
-// copy bigoci re-issues a redirect's request with also carries no cookie jar,
-// so nothing a registry set in one reaches the host it redirected to.
+// external copy carries no cookie jar. Ambient cookies therefore do not reach
+// a token realm, an off-origin upload session, or a blob redirect target that
+// the registry selected. Explicit protocol credentials remain unchanged.
+//
+// For registry-selected cross-host endpoints, bigoci clones a concrete
+// [http.Transport] once and checks the actual direct connection's peer before
+// HTTP request bytes leave. Its TLS roots and pool tuning are preserved in one
+// separate cross-host pool; requests to the registry's own hostname keep the
+// caller's original pool. A proxy, an opaque RoundTripper, a custom dial hook,
+// or a caller-supplied TLSNextProto handler can hide that final destination, so
+// cross-host requests through one fail closed unless
+// [WithUnverifiedExternalTransport] explicitly authorizes that trust boundary.
+// The standard dial hook inherited from
+// [http.DefaultTransport] remains automatic.
 func WithHTTPClient(client *http.Client) Option {
 	return func(s *clientSettings) {
 		if client != nil {
 			s.httpClient = client
 		}
+	}
+}
+
+// WithUnverifiedExternalTransport authorizes registry-selected cross-host
+// requests through a custom dial hook, proxy, or opaque [http.RoundTripper]
+// whose final network destination bigoci cannot verify.
+//
+// This is a security escape hatch for callers whose transport boundary
+// already enforces an equivalent destination policy. It is unnecessary for a
+// direct [http.Transport] that uses the standard dial hook, including one with
+// custom TLS roots. Any caller-supplied Dial, DialContext, DialTLS, or
+// DialTLSContext hook requires this option for cross-host requests because the
+// hook may return a tunnel whose RemoteAddr identifies its proxy rather than
+// the registry-selected endpoint. A transport using
+// [http.Transport.RegisterProtocol] also requires it: Go does not expose those
+// handlers and [http.Transport.Clone] intentionally does not copy them.
+//
+// The option does not permit a realm or upload Location that directly names a
+// private IP address. For every other cross-host target it uses the caller's
+// original transport unchanged, preserving registered protocols, proxy and
+// dial behavior, and connection pooling. The caller therefore owns the whole
+// destination check behind this option; bigoci does not claim an actual-peer
+// check on that explicitly trusted path.
+func WithUnverifiedExternalTransport() Option {
+	return func(s *clientSettings) {
+		s.allowUnverifiedExternal = true
 	}
 }
 
@@ -227,6 +265,10 @@ type clientSettings struct {
 	httpClient *http.Client
 	// plainHTTP talks http:// to the registry instead of https://.
 	plainHTTP bool
+	// allowUnverifiedExternal authorizes cross-registry requests through a
+	// custom dial hook, proxy, or opaque transport whose final destination
+	// bigoci cannot observe.
+	allowUnverifiedExternal bool
 	// credentials builds the source a transfer resolves credentials through,
 	// nil when no option named one. It is a builder rather than a built source
 	// because building one can fail — reading the Docker configuration is the

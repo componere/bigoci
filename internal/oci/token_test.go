@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,6 +18,42 @@ import (
 
 	"github.com/componere/bigoci/internal/retry"
 )
+
+// TestATokenExchangeCarriesNoAmbientCookie proves the caller's Cookie Jar
+// remains active for the registry while contributing no authority to the
+// registry-selected realm. Explicit token credentials still travel in the
+// Basic header the distribution protocol defines.
+func TestATokenExchangeCarriesNoAmbientCookie(t *testing.T) {
+	t.Parallel()
+
+	fake := newAuthRegistry(t)
+	fake.wantUser = "someone"
+	fake.wantPass = "the-secret"
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	registryURL, err := url.Parse(fake.server.URL)
+	require.NoError(t, err)
+	jar.SetCookies(registryURL, []*http.Cookie{{Name: "session", Value: storageSecret, Path: "/"}})
+
+	client := *fake.server.Client()
+	client.Jar = jar
+	creds := &staticCredentials{cred: Credential{Username: fake.wantUser, Password: fake.wantPass}}
+	repo := fake.repository(t, WithHTTPClient(&client), WithCredentials(creds))
+
+	_, _, err = repo.Manifests().Get(t.Context())
+	require.NoError(t, err)
+
+	repositoryRequests := fake.repositoryRequests()
+	require.NotEmpty(t, repositoryRequests)
+	assert.Contains(t, repositoryRequests[0].cookie, storageSecret,
+		"the positive control proves the caller's jar is active for the registry")
+
+	tokenRequests := fake.tokenRequests()
+	require.Len(t, tokenRequests, 1)
+	assert.Empty(t, tokenRequests[0].cookie)
+	assert.NotEmpty(t, tokenRequests[0].authorization, "the explicit Basic credential remains present")
+}
 
 // TestTokenEndpointFailuresClassifyThroughTheSameTable pins that a token
 // exchange is a registry request like any other. A token endpoint having a

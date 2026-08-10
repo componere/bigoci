@@ -144,12 +144,43 @@ func newTap(out io.Writer, next http.RoundTripper) *tap {
 // the received line is time to response headers, which on a large GET is time to
 // first byte and says nothing about throughput.
 func (t *tap) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.roundTrip(req, t.next)
+}
+
+// BigociExternalBase exposes the transport the observer forwards to so
+// bigoci can preserve this tap around its guarded external transport.
+func (t *tap) BigociExternalBase() http.RoundTripper {
+	return t.next
+}
+
+// BigociWrapExternal rebuilds this observer around next while sharing its
+// counters, clock, sequence, and output lock with registry requests.
+func (t *tap) BigociWrapExternal(next http.RoundTripper) http.RoundTripper {
+	return &tapLayer{tap: t, next: next}
+}
+
+// tapLayer forwards one external request through a guarded base while
+// recording it in its parent tap's single request stream.
+type tapLayer struct {
+	// tap owns the observer state shared with registry requests.
+	tap *tap
+	// next is the guarded external base transport.
+	next http.RoundTripper
+}
+
+// RoundTrip records req through the parent tap and forwards it to next.
+func (t *tapLayer) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.tap.roundTrip(req, t.next)
+}
+
+// roundTrip logs the request, forwards it through next, and logs the answer.
+func (t *tap) roundTrip(req *http.Request, next http.RoundTripper) (*http.Response, error) {
 	seq := t.seq.Add(1)
 	kind := classify(req.Method, req.URL.Path)
 	t.writeLine(t.requestLine(seq, req, kind))
 
 	started := time.Now()
-	resp, err := t.next.RoundTrip(req)
+	resp, err := next.RoundTrip(req)
 	took := time.Since(started).Round(durPrecision)
 
 	if err != nil {

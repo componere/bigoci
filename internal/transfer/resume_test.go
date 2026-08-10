@@ -351,7 +351,7 @@ func TestPullRefusesAPartialThatReadsShort(t *testing.T) {
 		Retry:     policy,
 	})
 	require.Error(t, err)
-	require.ErrorContains(t, err, "read part 0 of the existing file: got 0 bytes, but the manifest declares")
+	require.ErrorContains(t, err, "read part 0 of the existing file: length does not match the manifest")
 
 	assert.Empty(t, sleeps.waits())
 	blobs.AssertNotCalled(t, "Get", mock.Anything, mock.Anything, mock.Anything)

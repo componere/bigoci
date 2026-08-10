@@ -210,7 +210,7 @@ func TestPullRefusesAnOverlongBlobOnAContinuedAttempt(t *testing.T) {
 		Retry:     policy,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "is longer than the 1000 bytes the manifest declares")
+	assert.Contains(t, err.Error(), "is longer than its declared size")
 
 	assert.Equal(t, []time.Duration{500 * time.Millisecond}, sleeps.waits(),
 		"the only wait is the one the break cost; too much content is not retried")
@@ -414,7 +414,7 @@ func TestPullReportsARegistryBlobShorterThanTheManifest(t *testing.T) {
 			wantWaits:   []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second},
 			wantSays: []string{
 				"after 4 attempts",
-				"part 1 ended after 950 bytes, but the manifest declares 1000",
+				"part 1 ended before its declared size",
 			},
 		},
 	}

@@ -530,11 +530,69 @@ surface.
 - Automatic redirect following is off for every request. The adapter derives
   two clients from the caller's by copying the struct — `http.Client` is four
   exported fields and no hidden state, so the caller's own client is never
-  touched. The external client also drops the cookie jar. It follows a
-  redirect itself, up to three hops, for a `GET` or a `HEAD` and nothing else.
-  Every hop is a fresh request carrying two headers, `Range` and `Accept` —
-  plus the credential in the one same-origin case the next bullet names, and
-  nothing else.
+  touched. The external client also drops the cookie jar. Requests to the
+  registry's own hostname retain the caller's original transport and pool.
+  One public Client lazily derives one separately pooled transport clone for
+  cross-host requests from a concrete `http.Transport` and shares it across
+  repositories. Its TLS roots and pool tuning survive; the next bullet defines
+  how custom dial and proxy boundaries opt in. It sends token exchanges and
+  off-origin upload requests, and
+  follows a blob redirect itself, up to three hops, for a `GET` or a `HEAD` and
+  nothing else. Every redirect hop is a fresh request carrying two headers,
+  `Range` and `Accept` — plus the credential in the one same-origin case the
+  next bullet names, and nothing else.
+- A registry-selected cross-host endpoint cannot land on a loopback, private,
+  link-local, or unspecified IP address. Token realms and upload locations that
+  name such an IP literal are refused before dialing. Every direct cross-host
+  connection is also checked against the `RemoteAddr` the caller's transport
+  actually chose, covering DNS names and redirect targets. Connection setup,
+  including a TLS handshake, may already have happened when `net/http` reports
+  `GotConn`, but the guard closes a reported private peer before any HTTP
+  request bytes, Basic credential, or upload body leave. The registry's own
+  hostname is exempt, including another port and a private address, so local
+  registries keep working.
+- A custom `Dial`, `DialContext`, `DialTLS`, or `DialTLSContext` hook can return
+  a tunnel whose `RemoteAddr` identifies a public proxy rather than the
+  endpoint. A proxy hides the endpoint connection, and an opaque
+  `RoundTripper` may not expose one at all. A caller-supplied `TLSNextProto`
+  handler is opaque for the same reason: unlike `net/http`'s HTTP/2
+  implementation, it need not invoke `GotConn` before opening a stream.
+  Cross-host requests therefore fail closed through any of these by default.
+  `WithUnverifiedExternalTransport` is the explicit escape hatch for a caller
+  whose transport boundary enforces an equivalent policy. It uses the
+  caller's original transport for cross-host requests, preserving custom dial,
+  proxy, pooling, and `RegisterProtocol` behavior while delegating the whole
+  destination check. Go exposes no supported way to inspect registered
+  protocol handlers, and `http.Transport.Clone` intentionally omits them, so a
+  caller that registers one must opt in. A direct `http.Transport` using the
+  standard dialer, including `http.DefaultTransport.Clone()`, needs no option.
+  Standard `net/http` HTTP/2 remains on the guarded path even after the source
+  transport has been used.
+- Registry-selected challenge text, realm paths and queries, and token response
+  bodies do not enter public errors. Status matching and `Retry-After` still
+  classify token endpoint failures without treating those secret-bearing
+  strings as diagnostics.
+- A registry response body never enters a `StatusError` string. The bounded
+  body remains available in `StatusError.Detail` for explicit programmatic
+  diagnosis inside the adapter, but it is peer-controlled: a registry can copy
+  the reusable Bearer or Basic `Authorization` value it just received into the
+  body. Rendering that field would turn ordinary error logging into credential
+  disclosure.
+- HTTP transport failures expose only the operation's original registry method
+  and structural path, or the fixed `token exchange` label. A blob path uses
+  `<digest>` instead of the manifest-selected digest, and an upload uses the
+  stable session-opening path. Underlying transport and response-body read
+  messages are not safe diagnostics: `net/http` parser errors can repeat a
+  malformed `Location`, response header, or body bytes, and a registry can put
+  a signed ticket or the bearer it just received in any of them. Context
+  cancellation and typed causes keep their identities; other transport and
+  body-read failures remain transient.
+- Manifest decode errors name only fixed fields, rules, and bounded part
+  indexes. They do not repeat registry-selected media types, artifact types,
+  digests, sizes, titles, or JSON parser text. Pull errors follow the same rule:
+  manifest-selected digests, byte counts, and offsets are omitted from blob
+  paths, length failures, and digest mismatches. `errors.Is` still reaches
+  `ErrNotBigociArtifact`, `ErrDigestMismatch`, and plan sentinels.
 - A blob `GET` that redirects to presigned object storage does not forward the
   `Authorization` header. This is a confidentiality requirement, not a
   compatibility one: the header is not rejected by the storage those
@@ -561,9 +619,10 @@ surface.
   registry for a fresh session on the next transfer attempt; it cannot replace
   the registry's challenge or mint a credential. The response body is dropped
   because object-store errors can echo the still-live signed upload URL.
-- No error carries a signed URL. Every failure is reported against the
-  registry method and path the request started as, and where naming the far
-  end helps, only its host appears.
+- No error carries a signed URL or any component of a registry-selected
+  location. Every failure is reported against the structural registry
+  operation the request started as; the target host, scheme, path, query,
+  fragment, and userinfo stay out of the message.
 - A `PUT` streamed from an `io.SectionReader` must set `Content-Length`
   explicitly. Go otherwise sends chunked transfer encoding, which some
   registries and proxies reject.

@@ -135,7 +135,7 @@ func pull(ctx context.Context, spec PullSpec, report *reporter) error {
 	resume := resumable(existing, artifact)
 
 	if err := spec.Sink.Truncate(artifact.FileSize); err != nil {
-		return fmt.Errorf("size the destination to %d bytes: %w", artifact.FileSize, err)
+		return fmt.Errorf("size the destination for the manifest: %w", err)
 	}
 
 	if err := fetchParts(ctx, spec, artifact, resume, report); err != nil {
@@ -231,7 +231,7 @@ func fetchParts(
 ) error {
 	split, err := plan.New(artifact.FileSize, artifact.PartSize)
 	if err != nil {
-		return fmt.Errorf("plan the split: %w", err)
+		return safeCause("plan the manifest split", err)
 	}
 
 	jobs := make(chan partJob, split.NumParts())
@@ -387,8 +387,8 @@ func (f *partFetcher) verify(ctx context.Context, job partJob) (bool, error) {
 	}
 	if read != job.part.Size {
 		return false, fmt.Errorf(
-			"read part %d of the existing file: got %d bytes, but the manifest declares %d",
-			job.part.Index, read, job.part.Size,
+			"read part %d of the existing file: length does not match the manifest",
+			job.part.Index,
 		)
 	}
 
@@ -456,7 +456,7 @@ func (f *partFetcher) attempt(ctx context.Context, job partJob, done *int64) err
 
 	content, start, err := f.blobs.Get(ctx, job.dgst, *done)
 	if err != nil {
-		return fmt.Errorf("fetch part %d (%s): %w", job.part.Index, job.dgst, err)
+		return fmt.Errorf("fetch part %d: %w", job.part.Index, err)
 	}
 	defer content.Close()
 
@@ -466,10 +466,7 @@ func (f *partFetcher) attempt(ctx context.Context, job partJob, done *int64) err
 	// the error names the port and not the registry: a conformant adapter has
 	// already refused any answer that starts elsewhere.
 	if start != 0 && start != *done {
-		return fmt.Errorf(
-			"fetch part %d (%s): the blob port's stream starts at byte %d, which this attempt cannot write from",
-			job.part.Index, job.dgst, start,
-		)
+		return fmt.Errorf("fetch part %d: the blob port returned an unusable stream offset", job.part.Index)
 	}
 
 	// A stream that starts at zero is the whole blob: either this attempt asked
@@ -489,9 +486,7 @@ func (f *partFetcher) attempt(ctx context.Context, job partJob, done *int64) err
 	}
 
 	if got := digest.NewDigest(digest.SHA256, f.hasher); got != job.dgst {
-		return fmt.Errorf(
-			"%w: part %d hashes to %s, but the manifest names %s", ErrDigestMismatch, job.part.Index, got, job.dgst,
-		)
+		return fmt.Errorf("%w: part %d does not match the manifest", ErrDigestMismatch, job.part.Index)
 	}
 
 	return nil
@@ -551,7 +546,7 @@ func (f *partFetcher) stream(content io.Reader, part plan.Part, done *int64) err
 			return fmt.Errorf("fetch part %d: %w", part.Index, read.err)
 		}
 
-		return fmt.Errorf("write part %d into the destination at offset %d: %w", part.Index, part.Offset+from, err)
+		return fmt.Errorf("write part %d into the destination: %w", part.Index, err)
 	}
 	*done += written
 
@@ -564,9 +559,7 @@ func (f *partFetcher) stream(content io.Reader, part plan.Part, done *int64) err
 		// how much of it this particular stream carried. The sibling case below
 		// stays terminal — extra bytes are content the manifest does not
 		// describe, and a second fetch serves them again.
-		return retry.Transient(fmt.Errorf(
-			"part %d ended after %d bytes, but the manifest declares %d", part.Index, *done, part.Size,
-		), 0)
+		return retry.Transient(fmt.Errorf("part %d ended before its declared size", part.Index), 0)
 	}
 
 	if _, err := io.ReadFull(content, f.buf[:1]); !errors.Is(err, io.EOF) {
@@ -574,7 +567,7 @@ func (f *partFetcher) stream(content io.Reader, part plan.Part, done *int64) err
 			return fmt.Errorf("read the end of part %d: %w", part.Index, err)
 		}
 
-		return fmt.Errorf("part %d is longer than the %d bytes the manifest declares", part.Index, part.Size)
+		return fmt.Errorf("part %d is longer than its declared size", part.Index)
 	}
 
 	return nil

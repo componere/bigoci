@@ -24,6 +24,30 @@ const copyBufferSize = 256 << 10
 // the transfer broke on the way. The wrapped message names the part.
 var ErrDigestMismatch = errors.New("part digest mismatch")
 
+// safeError retains an underlying failure for [errors.Is] and [errors.As] while
+// exposing only a structural message selected by the transfer package.
+type safeError struct {
+	// message is the safe diagnosis rendered by Error.
+	message string
+	// cause retains typed and sentinel identity without contributing its text.
+	cause error
+}
+
+// Error returns the safe structural diagnosis.
+func (e *safeError) Error() string {
+	return e.message
+}
+
+// Unwrap exposes the underlying failure to [errors.Is] and [errors.As].
+func (e *safeError) Unwrap() error {
+	return e.cause
+}
+
+// safeCause wraps cause without rendering its potentially peer-derived text.
+func safeCause(message string, cause error) error {
+	return &safeError{message: message, cause: cause}
+}
+
 // partJob is one unit of work a transfer hands its workers: which byte range
 // of the file to move, and the digest that range is stored under. A push
 // learns the digest by hashing the range; a pull reads it out of the

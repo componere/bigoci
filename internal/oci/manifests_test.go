@@ -33,6 +33,11 @@ const maxManifestSize = 4 << 20
 // describe the bytes that arrived, not the claim that came with them.
 const lyingDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
+// reflectedDigestHeader is a reusable credential-shaped value a registry can
+// place in Docker-Content-Digest. The adapter ignores that claim and never
+// repeats it in a bound-manifest mismatch.
+const reflectedDigestHeader = "reusable-digest-header-bearer-a8f4c2"
+
 func TestManifestsGet(t *testing.T) {
 	t.Parallel()
 
@@ -163,7 +168,7 @@ func TestManifestsGetTagsABodyThatBreaksMidRead(t *testing.T) {
 	_, _, err := repo.Manifests().Get(t.Context())
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "read manifest:", "the message the adapter has always reported")
+	assert.Contains(t, err.Error(), "read manifest response body")
 
 	_, transient := retry.IsTransient(err)
 	assert.True(t, transient, "a manifest whose connection broke mid-read is worth another attempt")
@@ -188,6 +193,7 @@ func TestManifestsGetVerifiesBoundDigest(t *testing.T) {
 			wanted := digest.FromString(manifestBody)
 			repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+				w.Header().Set("Docker-Content-Digest", reflectedDigestHeader)
 				_, _ = io.WriteString(w, tt.body)
 			}), repoName+"@"+wanted.String())
 
@@ -195,7 +201,9 @@ func TestManifestsGetVerifiesBoundDigest(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), wanted.String())
+				assert.Contains(t, err.Error(), "manifest content does not match the requested digest")
+				assert.NotContains(t, err.Error(), wanted.String())
+				assert.NotContains(t, err.Error(), reflectedDigestHeader)
 
 				return
 			}

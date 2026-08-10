@@ -183,15 +183,16 @@ func deadStorage(t *testing.T) string {
 	return address
 }
 
-// assertNamesNoSignature checks the one property every off-registry failure
-// has to have: it says which host answered, and it says nothing that could be
-// replayed.
-func assertNamesNoSignature(t *testing.T, err error, host string) {
+// assertNamesNoPeerValue checks the property every off-registry failure has to
+// have: it names only the original registry operation and fixed status, never
+// a target-selected host, path, query, or response body.
+func assertNamesNoPeerValue(t *testing.T, err error, host string) {
 	t.Helper()
 
 	message := err.Error()
 
-	assert.Contains(t, message, host, "a failure at a redirect target has to say where it happened")
+	assert.Contains(t, message, "/v2/"+authRepo+"/blobs/", "the original registry operation stays diagnostic")
+	assert.NotContains(t, message, host, "the target host is peer-selected direct reflection material")
 	assert.NotContains(t, message, "?", "a query is where a signature lives")
 	assert.NotContains(t, message, signatureParam+"=", "and this is what one looks like")
 	assert.NotContains(t, message, storagePrefix, "the location's path is not the registry's path")

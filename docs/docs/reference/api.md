@@ -27,10 +27,11 @@ has its own page: [Errors](errors.md). The wire format is in
 type Client struct { /* unexported fields */ }
 ```
 
-Holds the transport settings and nothing else — no connection to one registry
-and no state from one transfer. One `Client` serves any number of concurrent
-pushes and pulls against any number of repositories. The zero value is usable
-and behaves as one built with no options.
+Holds transfer-wide settings, its credential resolver, and one lazily prepared
+external connection pool — no connection to one registry and no state from one
+transfer. One `Client` serves any number of concurrent pushes and pulls against
+any number of repositories. The zero value is usable and behaves as one built
+with no options.
 
 ### New
 
@@ -134,8 +135,8 @@ Downloads the artifact `ref` names into the file `dest` names.
   serve a byte range, in which case it answers with the whole blob and the
   part is written again from its first byte. A part that arrives whole and
   hashes wrong is not retried.
-- **Cancellation.** A cancelled `ctx` stops the workers, cuts short any wait
-  in progress, and returns its error.
+- **Cancellation.** A cancelled `ctx` stops the workers, interrupts active
+  local resume hashing, cuts short any wait in progress, and returns its error.
 - **Sentinels.** [`ErrNotFound`](errors.md#errnotfound),
   [`ErrUnauthorized`](errors.md#errunauthorized),
   [`ErrNotBigociArtifact`](errors.md#errnotbigociartifact), and
@@ -258,9 +259,33 @@ Three consequences:
   shows it in full.
 
 bigoci copies this client rather than using it, and never writes to the
-original. The copies keep the transport and the timeout and set a redirect
-policy of their own. The copy a redirect's request is re-issued with carries no cookie jar,
-so nothing a registry set in one reaches the host it redirected to.
+original. The copies keep the transport and timeout, set a redirect policy of
+their own, and remove the cookie jar from registry-selected token, upload, and
+redirect requests.
+
+For a concrete `http.Transport`, cross-host requests use one shared clone and
+check the direct connection's peer before HTTP request bytes leave. A proxy,
+custom dial hook, custom `TLSNextProto`, or opaque `RoundTripper` hides that
+destination and therefore fails closed unless
+[`WithUnverifiedExternalTransport`](#withunverifiedexternaltransport)
+explicitly delegates the boundary to the caller.
+
+### WithUnverifiedExternalTransport
+
+```go
+func WithUnverifiedExternalTransport() Option
+```
+
+Authorizes registry-selected cross-host requests through a transport whose
+final destination bigoci cannot verify. This is a security escape hatch for a
+caller whose own transport or network policy enforces an equivalent boundary.
+
+The option uses the original transport for those requests, preserving proxy,
+dial, pooling, and `http.Transport.RegisterProtocol` behavior. The caller owns
+the full destination check on that path. Direct private-IP token realms and
+upload locations remain refused before the transport runs. See
+[Authenticate to a registry](../how-to/authenticate.md#if-you-need-a-credential-source-bigoci-does-not-have)
+for the threat boundary and a host-scoped authenticating transport.
 
 ### WithPlainHTTP
 

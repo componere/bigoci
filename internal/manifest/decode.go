@@ -3,8 +3,10 @@ package manifest
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"unicode/utf8"
 
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -32,21 +34,21 @@ import (
 // digest, a layer with the wrong media type, a missing or unparseable
 // annotation, or parts that disagree with the split rule (wrapping the plan
 // package's errors, including [plan.ErrTooManyParts]) — fails with a
-// descriptive error against an artifact that claims to be bigoci but is
-// broken.
+// structural error against an artifact that claims to be bigoci but is
+// broken. Decode errors never repeat manifest-selected values: registry
+// responses can reflect credentials into any manifest field, so callers that
+// log an error must not turn those values into a second credential channel.
 func Decode(data []byte) (Artifact, error) {
 	manifest, decodeErr := decodeManifest(data)
 	if decodeErr != nil {
-		return Artifact{}, fmt.Errorf("parse manifest JSON: %w", decodeErr)
+		return Artifact{}, safeCause("parse manifest JSON", decodeErr)
 	}
 
 	if err := checkKind(manifest.MediaType, manifest.ArtifactType); err != nil {
 		return Artifact{}, err
 	}
 	if manifest.SchemaVersion != schemaVersion {
-		return Artifact{}, fmt.Errorf(
-			"manifest schema version is %d, want %d", manifest.SchemaVersion, schemaVersion,
-		)
+		return Artifact{}, fmt.Errorf("manifest schema version must be %d", schemaVersion)
 	}
 	if err := checkConfig(manifest.Config); err != nil {
 		return Artifact{}, err
@@ -60,7 +62,7 @@ func Decode(data []byte) (Artifact, error) {
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := validate(artifact); err != nil {
+	if err := validateDecoded(artifact); err != nil {
 		return Artifact{}, fmt.Errorf("invalid manifest: %w", err)
 	}
 
@@ -229,12 +231,10 @@ func skipJSONSpace(data []byte, start int) int {
 // writer may omit it and let the registry's Content-Type carry the type.
 func checkKind(mediaType, artifactType string) error {
 	if mediaType != "" && mediaType != ocispec.MediaTypeImageManifest {
-		return fmt.Errorf(
-			"%w: media type is %q, want %q", ErrNotBigociArtifact, mediaType, ocispec.MediaTypeImageManifest,
-		)
+		return fmt.Errorf("%w: manifest media type is not an OCI image manifest", ErrNotBigociArtifact)
 	}
 	if artifactType != ArtifactType {
-		return fmt.Errorf("%w: artifact type is %q, want %q", ErrNotBigociArtifact, artifactType, ArtifactType)
+		return fmt.Errorf("%w: manifest artifact type is not bigoci", ErrNotBigociArtifact)
 	}
 
 	return nil
@@ -250,13 +250,13 @@ func checkConfig(config wireConfig) error {
 
 	switch {
 	case config.MediaType != want.MediaType:
-		return fmt.Errorf("config media type is %q, want %q", config.MediaType, want.MediaType)
+		return errors.New("config media type does not match the OCI empty descriptor")
 	case config.Digest != want.Digest:
-		return fmt.Errorf("config digest is %q, want %q", config.Digest.String(), want.Digest.String())
+		return errors.New("config digest does not match the OCI empty descriptor")
 	case config.Size != want.Size:
-		return fmt.Errorf("config size is %d, want %d", config.Size, want.Size)
+		return errors.New("config size does not match the OCI empty descriptor")
 	case len(config.Data) > 0 && !bytes.Equal(config.Data, want.Data):
-		return fmt.Errorf("config data is %q, want %q or no data at all", config.Data, want.Data)
+		return errors.New("config data does not match the OCI empty descriptor")
 	}
 
 	return nil
@@ -268,7 +268,7 @@ func readLayers(layers wireLayers) ([]Part, error) {
 	parts := make([]Part, len(layers))
 	for i, layer := range layers {
 		if layer.MediaType != MediaTypePart {
-			return nil, fmt.Errorf("layer %d media type is %q, want %q", i, layer.MediaType, MediaTypePart)
+			return nil, fmt.Errorf("layer %d media type is not a bigoci part", i)
 		}
 		parts[i] = Part{Digest: layer.Digest, Size: layer.Size}
 	}
@@ -325,8 +325,62 @@ func sizeAnnotation(value, key string) (int64, error) {
 
 	size, err := strconv.ParseInt(value, decimalBase, sizeBits)
 	if err != nil {
-		return 0, fmt.Errorf("annotation %s is %q, want a base-10 byte count: %w", key, value, err)
+		return 0, fmt.Errorf("annotation %s is not a base-10 byte count", key)
 	}
 
 	return size, nil
+}
+
+// validateDecoded checks a registry-provided artifact without rendering any
+// of its values. It mirrors validate's rules while keeping only fixed field
+// names and safe layer indexes in its diagnostics.
+func validateDecoded(a Artifact) error {
+	if a.Title != "" && !utf8.ValidString(a.Title) {
+		return errors.New("title is not valid UTF-8")
+	}
+	if err := validateDecodedDigest("file", a.FileDigest); err != nil {
+		return err
+	}
+
+	return validateDecodedParts(a)
+}
+
+// validateDecodedDigest checks a registry-provided digest without rendering
+// the digest or algorithm selected by the registry.
+func validateDecodedDigest(what string, d digest.Digest) error {
+	if err := d.Validate(); err != nil {
+		return fmt.Errorf("%s digest is invalid", what)
+	}
+	if d.Algorithm() != digest.SHA256 {
+		return fmt.Errorf("%s digest algorithm must be sha256", what)
+	}
+
+	return nil
+}
+
+// validateDecodedParts checks a registry-provided split without rendering its
+// counts, sizes, digests, or the messages returned by the plan package.
+func validateDecodedParts(a Artifact) error {
+	if len(a.Parts) == 0 {
+		return errors.New("artifact has no parts, want at least one")
+	}
+
+	split, err := plan.New(a.FileSize, a.PartSize)
+	if err != nil {
+		return safeCause("manifest split is invalid", err)
+	}
+	if split.NumParts() != len(a.Parts) {
+		return errors.New("artifact part count does not match its split")
+	}
+
+	for i, part := range a.Parts {
+		if err := validateDecodedDigest(fmt.Sprintf("part %d", i), part.Digest); err != nil {
+			return err
+		}
+		if part.Size != split.Part(i).Size {
+			return fmt.Errorf("part %d size does not match the split rule", i)
+		}
+	}
+
+	return nil
 }

@@ -1,17 +1,84 @@
 package oci
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/componere/bigoci/internal/retry"
 )
 
 // rfc850 is the obsolete date format RFC 9110 still requires a recipient to
 // accept, and [net/http.ParseTime] does. The layout is not in the standard
 // library's exported set, so it is spelled here.
 const rfc850 = "Monday, 02-Jan-06 15:04:05 MST"
+
+// reflectedFailureReader returns a peer-controlled parser failure without
+// producing bytes.
+type reflectedFailureReader struct {
+	// err is the failure returned by every read.
+	err error
+}
+
+// Read returns the configured failure.
+func (r *reflectedFailureReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+// TestHTTPBodyReadErrorsDoNotRenderPeerText pins every response-body path that
+// can receive an HTTP parser error containing malformed peer bytes. The cause
+// remains reachable for cancellation and typed diagnosis while its text is
+// excluded from the public message.
+func TestHTTPBodyReadErrorsDoNotRenderPeerText(t *testing.T) {
+	t.Parallel()
+
+	const reusableBearer = "Bearer reusable-body-parser-bearer-a8f4c2"
+	cause := errors.New("malformed response reflected " + reusableBearer)
+
+	t.Run("blob body", func(t *testing.T) {
+		t.Parallel()
+
+		body := &blobBody{rc: io.NopCloser(&reflectedFailureReader{err: cause})}
+		_, err := body.Read(make([]byte, 1))
+
+		require.ErrorIs(t, err, cause)
+		_, transient := retry.IsTransient(err)
+		assert.True(t, transient)
+		assert.Equal(t, "blob response body read failed", err.Error())
+		assert.NotContains(t, err.Error(), reusableBearer)
+	})
+
+	t.Run("manifest body", func(t *testing.T) {
+		t.Parallel()
+
+		resp := &http.Response{Body: io.NopCloser(&reflectedFailureReader{err: cause})}
+		_, err := readManifest(origin{method: http.MethodGet, path: "/v2/team/artifact/manifests/v1"}, resp)
+
+		require.ErrorIs(t, err, cause)
+		_, transient := retry.IsTransient(err)
+		assert.True(t, transient)
+		assert.Contains(t, err.Error(), "read manifest response body")
+		assert.NotContains(t, err.Error(), reusableBearer)
+	})
+
+	t.Run("token body", func(t *testing.T) {
+		t.Parallel()
+
+		resp := &http.Response{Body: io.NopCloser(&reflectedFailureReader{err: cause})}
+		_, _, err := readToken(resp)
+
+		require.ErrorIs(t, err, cause)
+		_, transient := retry.IsTransient(err)
+		assert.True(t, transient)
+		assert.Equal(t, "read the token endpoint's answer", err.Error())
+		assert.NotContains(t, err.Error(), reusableBearer)
+	})
+}
 
 func TestTransientStatus(t *testing.T) {
 	t.Parallel()
