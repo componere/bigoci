@@ -427,19 +427,32 @@ sentinel-error contract, documentation per Diátaxis, and the first release.
 
 **Success criteria:**
 
-- [ ] Manual: follow the tutorial verbatim on a clean machine/checkout (fresh
+- [x] Manual: follow the tutorial verbatim on a clean machine/checkout (fresh
       clone, no repo context) and reach a successful push + pull against a
       registry — the doc, not tribal knowledge, is sufficient.
-- [ ] Manual: progress output observed live in the CLI during a real
+      (2026-08-09: fresh-context agent ran the PUBLISHED page end to end,
+      no repo access, zero deviations, go get resolved v0.1.0 byte-for-byte
+      as documented; evidence in .journal/009/NOTES.md.)
+- [x] Manual: progress output observed live in the CLI during a real
       multi-part transfer, including sane behavior across an induced retry
-      and a resume.
-- [ ] Manual: docs site at componere.github.io/bigoci renders correctly
+      and a resume. (2026-08-09: four scenarios against zot behind toxiproxy
+      — cold push; induced retry with 25 live lines, visible backoff freeze,
+      retries=1..4, wire>total by the re-sent bytes; SIGINT exit-130 then
+      resume with skipped=4 and blob-read=4; warm re-push skipped=8/wire=0/
+      blob-write=0 — every log passing a mechanical monotonicity checker;
+      .journal/009/NOTES.md.)
+- [x] Manual: docs site at componere.github.io/bigoci renders correctly
       (nav, all four Diátaxis sections, design + format pages intact).
-- [ ] Manual: `go doc` / pkg.go.dev-style review of the public surface reads
-      clean; no accidental exports.
-- [ ] v0.1.0 tagged via release-please (merge the open release PR at ≥0.1.0);
+      (2026-08-09: verified in a real browser — all pages, the API counter
+      table, v0.1.0 header badge.)
+- [x] Manual: `go doc` / pkg.go.dev-style review of the public surface reads
+      clean; no accidental exports. (2026-08-09: fresh-eyes audit — exactly
+      the intended 49 identifiers, no internal types in signatures; its four
+      findings fixed in PR #47 before the tag.)
+- [x] v0.1.0 tagged via release-please (merge the open release PR at ≥0.1.0);
       `go get github.com/componere/bigoci@v0.1.0` works from a scratch
-      module.
+      module. (2026-08-09: PR #11 merged, tag v0.1.0 published; scratch
+      module compiled and ran against the tag.)
 
 ---
 
