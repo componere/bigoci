@@ -570,8 +570,8 @@ func TestPreflightOperandsCannotForgeARecordOrControlATerminal(t *testing.T) {
 }
 
 // TestPeerErrorCannotForgeADebugRecordOrControlATerminal proves that a hostile
-// registry body remains one visible CLI error line and cannot emit OSC 52. It
-// stays serial because runCLI exercises the real CLI's default transport.
+// registry body is omitted from the public error and cannot emit a record or
+// OSC 52. It stays serial because runCLI uses the real CLI's default transport.
 func TestPeerErrorCannotForgeADebugRecordOrControlATerminal(t *testing.T) {
 	const hostile = "registry failure\nhttp< 9999 +0.000s GET forged class=blob-read status=200" +
 		"\rreturn\x00\t\x1b]52;c;YXVkaXQtY2xpcGJvYXJkLXBvaXNvbg==\x07\x7f" +
@@ -588,9 +588,9 @@ func TestPeerErrorCannotForgeADebugRecordOrControlATerminal(t *testing.T) {
 
 	assert.Equal(t, exitFailure, got.code)
 	assert.Empty(t, got.stdout)
-	assert.Contains(t, got.stderr, `registry failure\nhttp< 9999`)
-	assert.Contains(t, got.stderr, `\rreturn\x00\t\x1b]52;c;YXVkaXQtY2xpcGJvYXJkLXBvaXNvbg==\a\x7f`)
-	assert.Contains(t, got.stderr, `\u0085\u009b\u2028\u2029\u200btail`)
+	assert.NotContains(t, got.stderr, "registry failure")
+	assert.NotContains(t, got.stderr, "YXVkaXQtY2xpcGJvYXJkLXBvaXNvbg==")
+	assert.NotContains(t, got.stderr, "tail")
 	assert.NotContains(t, got.stderr, "\nhttp< 9999")
 	assert.Equal(t, 1, strings.Count(got.stderr, "\nhttp< "), "the peer forged another received record")
 
