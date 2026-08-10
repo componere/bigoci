@@ -35,12 +35,16 @@ theme:
 
 nav:
   - Home: index.md
+  - Tutorial:
+      - Get started: tutorial/get-started.md
   - How-to:
       - Push and pull a file: how-to/push-and-pull.md
       - Authenticate to a registry: how-to/authenticate.md
   - Explanation:
       - Design: explanation/design.md
   - Reference:
+      - API: reference/api.md
+      - Errors: reference/errors.md
       - Format: reference/format.md
       - Benchmarks: reference/benchmarks.md
 

@@ -17,12 +17,12 @@ claims is only convincing when you watch it happen against a registry that
 nobody wrote for the occasion: that a re-push of an unchanged file sends no blob
 bytes, that an interrupted pull leaves a partial file behind, that no credential
 ends up in a log. This CLI's own tests check the first of those against a fake
-registry, which proves the wiring; a real one is what proves the claim. This is
-what a person watches it with.
+registry, which proves the wiring; a real one is what proves the claim.
 
-Concretely, it is the instrument for the manual gates of the library's
-implementation phases 2 through 5. Section [Reading the output](#reading-the-output)
-is the cookbook for those gates.
+It is the instrument for the library's manual gates: parallel push and pull,
+retries, pull resume, `docker login` credentials, and presigned redirects.
+Section [Reading the output](#reading-the-output) is the cookbook for those
+gates.
 
 It is thin by rule:
 
@@ -68,8 +68,8 @@ version the binary was built from.
 
 ### Flags
 
-Each flag maps onto one library option. The mapping is the whole point of the
-table, so it is easy to check that the CLI adds nothing of its own.
+Each flag maps onto one library option. The table is here so you can check
+that the CLI adds nothing of its own.
 
 | Flag | Applies to | Maps to |
 |---|---|---|
@@ -87,7 +87,7 @@ A flag you do not set contributes nothing. The CLI never restates a library
 default, so the library's own default applies, and re-measuring one changes what
 the CLI does with no change here.
 
-Two consequences worth stating outright:
+Two consequences:
 
 - `-title ""` and no `-title` are different. `-title ""` passes
   `WithTitle("")`, which writes no file name annotation. Omitting `-title`
@@ -338,7 +338,7 @@ bigoci: timed out after 1ns: pull …: fetch the manifest: … context deadline 
 bigoci: no sentinel matched (exit 1)
 ```
 
-Two judgment calls are worth stating, because both are arguable:
+Two judgment calls, both arguable:
 
 - A missing or unreadable local file is exit 1, not 3. `ErrNotFound` is about
   what the registry does not hold.
@@ -498,13 +498,13 @@ transport error, or any other status of 400 or more, is a failure. A blob check
 that failed outright is counted under `blob-check=` and under `failed=`, and
 shows up in neither the hits nor the misses.
 
-A 401 is counted the same way, which has one consequence worth stating up
-front: **against a registry that asks for a credential, a healthy transfer
-reports `failed>=1`.** The 401 that carries the challenge is how the protocol
-starts, and this instrument counts statuses rather than reading intent. So
-`failed=0` is a gate only against a registry that never challenges; against one
-that does, read the exit code and the counts of the classes you care about.
-Each token exchange lands in `other=`.
+A 401 is counted the same way, with one consequence: **against a registry that
+asks for a credential, a healthy transfer reports `failed>=1`.** The 401 that
+carries the challenge is how the protocol starts, and this instrument counts
+statuses rather than reading intent. So `failed=0` is a gate only against a
+registry that never challenges; against one that does, read the exit code and
+the counts of the classes you care about. Each token exchange lands in
+`other=`.
 
 ## Reading the output
 
@@ -956,18 +956,18 @@ is closer to the whole upload, because the server answers after reading the
 body. The two are not comparable, and neither is a throughput measurement.
 
 **Redirect hops are visible, and what they carry is the library's decision.**
-A registry that redirects blob reads to storage shows both hops, because the
-library derives the client that follows a redirect from the caller's rather
-than building one of its own: the re-issue crosses this tap exactly as the
-first request did, and so do the token exchanges, which show up as
-`class=other` lines. What a hop carries is no longer the standard library's
-rule either — automatic following is off, and each hop is built fresh with a
-two-header allow-list. A log with a `307` and no follow-up request line
-means one of two things: the instrument went blind, or the library refused
-the location — an empty or userinfo-carrying `Location`, a plain-http
-downgrade, a fourth hop. The failure line is what tells you which: a refusal
-ends the run with an error naming the registry request, while a blind
-instrument shows a transfer that carried on regardless.
+A registry that redirects blob reads to storage shows both hops. The library
+derives the client that follows a redirect from the caller's rather than
+building one of its own, so the re-issue crosses this tap exactly as the first
+request did. So do the token exchanges, which show up as `class=other` lines.
+What a hop carries is no longer the standard library's rule either — automatic
+following is off, and each hop is built fresh with a two-header allow-list. A
+log with a `307` and no follow-up request line means one of two things: the
+instrument went blind, or the library refused the location — an empty or
+userinfo-carrying `Location`, a plain-http downgrade, a fourth hop. The
+failure line is what tells you which: a refusal ends the run with an error
+naming the registry request, while a blind instrument shows a transfer that
+carried on regardless.
 
 **Against a redirecting registry, one part read is two requests.** The `307`
 from the registry is one and the read of the location it named is the other.

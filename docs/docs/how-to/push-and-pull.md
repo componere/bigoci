@@ -87,24 +87,22 @@ and the pull stops before contacting the registry. Other platforms reject a
 statically planted symbolic link or non-regular file, but do not claim the Unix
 ownership or race-free pathname guarantee.
 
-Three things follow from hashing rather than bookkeeping:
+Three things to know:
 
-- It is safe to interrupt a pull at any moment, including with `SIGKILL`. A
-  range that was never written reads back as zeros and fails its check, so
-  there is nothing to corrupt and nothing to reconcile.
+- Interrupting a pull is safe at any moment, including with `SIGKILL`. There
+  is nothing to corrupt and nothing to reconcile.
 - Moving or deleting the partial file is how you start over. Nothing else
   remembers the earlier run.
 - A partial file left by a *different* artifact is not reused. If its length
   does not match the manifest, bigoci resizes it and fetches everything.
 
-The cost is worth knowing. A pull that fails leaves a partial file the full
-size of the artifact, whatever it managed to download, so the disk space is
-committed from the first attempt. And every rerun hashes the whole partial
-before it fetches anything — the hashing runs across your workers and overlaps
-the downloads of the missing parts, but a pull that died at the very start
-still pays a read of a file that holds nothing useful.
-Cancelling the pull or reaching its deadline interrupts this hash pass between
-256 KiB reads; it does not finish hashing the rest of a large partial first.
+Plan for the disk: the partial file is created at the artifact's full length,
+so reserve that much. It is sparse, so it occupies only what has arrived.
+Every rerun also hashes the whole partial before it fetches anything;
+cancelling the pull or reaching its deadline interrupts that hash pass rather
+than finishing it. [What a resume
+proves](../explanation/design.md#what-a-resume-proves) covers why resume is
+built this way and what the hash pass costs.
 
 ## Choose a part size and worker count
 
@@ -121,25 +119,42 @@ The defaults suit the measured paths. Override the worker count when your path
 has different constraints. The part size is recorded in the manifest, so a
 pull never needs to be told it.
 
+## Watch a transfer
+
+Hand `bigoci.WithProgress` a callback. It applies to both directions, like
+`WithWorkers`:
+
+```go
+var mu sync.Mutex
+var last bigoci.Progress
+
+desc, err := client.Push(ctx, ref, bigoci.FromFile(path),
+    bigoci.WithProgress(func(p bigoci.Progress) {
+        mu.Lock()
+        last = p
+        mu.Unlock()
+    }),
+)
+```
+
+Store the snapshot and render it from somewhere else, as above. The callback
+runs on the transfer's own goroutines and blocks them for as long as it takes:
+a channel send, a network call, or a call back into the client stalls or
+deadlocks the transfer. The [API reference](../reference/api.md) lists what
+each snapshot carries and the full callback contract.
+
 ## What bigoci retries
 
 A registry that hiccups does not fail your transfer. Each part gets up to four
-attempts, with a short wait between them that grows and is jittered, so
-workers that failed together do not come back together. Dropped connections,
-429s, and 5xx answers are retried; so is a part whose body ends early. When a
-registry sends `Retry-After`, bigoci waits at least that long, up to 30
-seconds.
-
-A part whose stream breaks is asked for again from the byte it reached, so a
-retry near the end of a large part costs the tail and not the whole part. If
-the registry will not serve a byte range it sends the whole part instead, and
-bigoci writes it again from the start. A proxy or CDN that caps how much of a
-range it returns costs one retry per capped answer, so a very large part
-behind one can use up its retries before the tail arrives.
+attempts, with a short wait between them that grows and is jittered. Dropped
+connections, 429s, and 5xx answers are retried, and a part whose stream breaks
+is asked for again from the byte it reached.
 
 Some failures are not worth repeating and end the transfer at once: a part the
 registry refuses, a pulled part that fails verification, and a local file that
-will not take the bytes or will not read back.
+will not take the bytes or will not read back. The [retry
+policy](../explanation/design.md#retry-policy) covers what the numbers buy,
+how `Retry-After` is honored, and what a proxy that caps byte ranges costs.
 
 Two things to know if you configure the transport:
 

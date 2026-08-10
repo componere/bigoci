@@ -27,12 +27,11 @@ parts gave it only four parts and 512 MiB parts only two. A configured
 eight-worker cell therefore started at most four or two workers. The corrected
 4 GiB slice below has 16 or 8 parts, so every configured worker can be active.
 
-Two caveats frame the numbers. Pulls right after pushes read from the
-registry's page cache, which matches how hosted registries serve hot blobs
-but understates cold-disk cost. And a push reads and hashes its source once
-regardless of the network: on the client's hardware that single-pass
-sha256-plus-read floor measured ~1125 MB/s, which is the honest ceiling for
-low worker counts.
+Pulls right after pushes read from the registry's page cache, which matches
+how hosted registries serve hot blobs but understates cold-disk cost. A push
+also reads and hashes its source once regardless of the network: on the
+client's hardware that single-pass sha256-plus-read floor measured
+~1125 MB/s, which is the honest ceiling for low worker counts.
 
 ## Part size × workers, zot, 16 GiB file
 
