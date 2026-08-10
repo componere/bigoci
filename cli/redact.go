@@ -35,6 +35,11 @@ const (
 	// redactedTargetPath replaces the path and query of a withheld request to
 	// the registry itself.
 	redactedTargetPath = "/_redacted"
+	// redactedDigestSegment replaces the terminal value of a blob endpoint.
+	redactedDigestSegment = "_digest"
+	// redactedReferenceSegment replaces the terminal value of a manifest
+	// endpoint, whether the original reference was a tag or digest.
+	redactedReferenceSegment = "_reference"
 	// offOriginTarget replaces every URL outside the first registry origin. The
 	// reserved invalid domain remains a parseable URL without naming the peer.
 	offOriginTarget = "https://off-origin.invalid/_redacted"
@@ -136,7 +141,7 @@ func (t *tap) renderTargetURL(target *url.URL, kind class) string {
 		return safe.String()
 	}
 
-	return redactURL(target)
+	return redactURL(target, kind)
 }
 
 // redactSameRegistryTarget reports whether a request at the registry origin
@@ -253,18 +258,19 @@ func locationClass(path string) class {
 // this function.
 //
 // Userinfo is dropped outright. Every query parameter keeps its name and loses
-// its value, except a digest that verifiably is one, which is public and is
-// what correlates a line with a blob. Names are sorted so two runs of the same
-// transfer produce the same text. The path is rendered as it stands, digests
-// and all: being able to grep a digest out of the log is worth more than a
-// shorter line.
-func redactURL(u *url.URL) string {
+// its value. Blob digests and manifest references are replaced while the
+// registry origin, repository path, endpoint shape, and request class remain
+// visible. A syntactically valid digest is not evidence that bytes are public:
+// an authentication service can issue a bearer with that exact shape.
+func redactURL(u *url.URL, kind class) string {
 	if u == nil {
 		return ""
 	}
 
 	safe := *u
 	safe.User = nil
+	safe.Path = redactDistributionPath(safe.Path, kind)
+	safe.RawPath = ""
 	if safe.RawQuery != "" {
 		safe.RawQuery = redactQuery(safe.RawQuery)
 	}
@@ -272,15 +278,42 @@ func redactURL(u *url.URL) string {
 	return safe.String()
 }
 
+// redactDistributionPath replaces the terminal value chosen for a blob or
+// manifest endpoint without hiding the repository or endpoint shape.
+func redactDistributionPath(path string, kind class) string {
+	switch kind {
+	case classBlobCheck, classBlobRead:
+		return replaceEndpointValue(path, "/blobs/", redactedDigestSegment)
+	case classManifestRead, classManifestWrite, classManifestCheck:
+		return replaceEndpointValue(path, "/manifests/", redactedReferenceSegment)
+	case classUploadOpen, classBlobWrite, classOther:
+		return path
+	default:
+		return path
+	}
+}
+
+// replaceEndpointValue replaces everything after the final endpoint delimiter.
+// OCI blob digests and manifest references are terminal path values; using the
+// final delimiter also preserves repositories whose earlier components happen
+// to be named blobs or manifests.
+func replaceEndpointValue(path, delimiter, replacement string) string {
+	index := strings.LastIndex(path, delimiter)
+	if index < 0 {
+		return path
+	}
+
+	return path[:index+len(delimiter)] + replacement
+}
+
 // redactQuery renders a distribution query with its parameter names kept and
 // sorted and its values elided.
 //
 // Everything re-emitted here lands verbatim in the log line, and every byte of
-// it was chosen by the peer being logged, so nothing goes out unescaped: names
-// are query-escaped again, and the one value that may pass — a digest — only
-// does when [isDigest] says its bytes really are one. A query Go cannot parse
-// is summarized as the elision mark alone rather than rendered partially, so a
-// line never shows a shorter query than the request carried.
+// it was chosen by the peer being logged, so names are query-escaped again and
+// no value passes. A query Go cannot parse is summarized as the elision mark
+// alone rather than rendered partially, so a line never shows a shorter query
+// than the request carried.
 func redactQuery(rawQuery string) string {
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
@@ -295,24 +328,15 @@ func redactQuery(rawQuery string) string {
 		b.WriteString(url.QueryEscape(name))
 		b.WriteByte('=')
 
-		if value := values.Get(name); name == "digest" && isDigest(value) {
-			b.WriteString(value)
-
-			continue
-		}
 		b.WriteString(elided)
 	}
 
 	return b.String()
 }
 
-// isDigest reports whether value is a sha256 digest, the only kind the format's
-// first version writes.
-//
-// The check is on the value, not the parameter's name, because the name is the
-// peer's to choose: a host that calls its signed token "digest" must still see
-// it elided, and nothing that passes this check can carry one — sixty-four hex
-// bytes name a blob and split no log field.
+// isDigest reports whether value has the sha256 digest syntax written by the
+// format's first version. It establishes syntax only, not that the value is
+// non-secret; authentication services can issue digest-shaped bearers.
 func isDigest(value string) bool {
 	const prefix = "sha256:"
 	rest, ok := strings.CutPrefix(value, prefix)

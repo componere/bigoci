@@ -494,10 +494,11 @@ func parseRequestLines(t *testing.T, log string) []requestLine {
 //
 // Uploading these is safe by construction rather than by review. The tap logs
 // no body in either direction, renders an Authorization header as its scheme
-// alone with no prefix and no length, elides the value of every query parameter
-// but a verified digest, and drops userinfo from every URL. There is no code
-// path from raw response header or transport-error bytes to a line in these
-// files, and response Content-Length retains only a fixed known/unknown marker.
+// alone with no prefix and no length, elides every query value, replaces blob
+// digests and manifest references, and drops userinfo from every URL. There is
+// no code path from raw response header or transport-error bytes to a line in
+// these files, and response Content-Length retains only a fixed known/unknown
+// marker.
 func writeConformanceLog(t *testing.T, name, body string) {
 	t.Helper()
 

@@ -162,7 +162,8 @@ func TestTapLogsOneRequestAsTwoLines(t *testing.T) {
 	assert.True(t, strings.HasPrefix(log.sent[0], "http> 0001 "), log.sent[0])
 	assert.True(t, strings.HasPrefix(log.received[0], "http< 0001 "), log.received[0])
 
-	assert.Contains(t, log.sent[0], "GET  "+srv.URL+"/v2/team/m/blobs/sha256:ab")
+	assert.Contains(t, log.sent[0], "GET  "+srv.URL+"/v2/team/m/blobs/"+redactedDigestSegment)
+	assert.NotContains(t, log.sent[0], "sha256:ab")
 	assert.Contains(t, log.sent[0], "class=blob-read")
 	assert.Contains(t, log.sent[0], "auth=none")
 	assert.Contains(t, log.sent[0], "type=- range=- accept=-")

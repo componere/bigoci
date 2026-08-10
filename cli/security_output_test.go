@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,6 +137,115 @@ func TestDebugLogDoesNotExposeRedeemableRealmTickets(t *testing.T) {
 			assert.NotContains(t, log, issuedToken)
 		})
 	}
+}
+
+// TestDebugLogDoesNotExposeADigestShapedBearerFromAManifest proves that a
+// syntactically valid layer digest is not automatically public. The registry
+// issues that exact value as a reusable bearer, names it in an authenticated
+// manifest, and receives a real blob request without the value reaching debug.
+func TestDebugLogDoesNotExposeADigestShapedBearerFromAManifest(t *testing.T) {
+	t.Parallel()
+
+	const token = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	backend := newFakeRegistry(t)
+	source, _ := fixture(t)
+	setupClient, err := bigoci.New(
+		bigoci.WithPlainHTTP(),
+		bigoci.WithHTTPClient(&http.Client{Transport: isolatedTransport(t)}),
+	)
+	require.NoError(t, err)
+	_, err = setupClient.Push(
+		t.Context(), bigoci.Reference(backend.taggedRef(fakeTag)), bigoci.FromFile(source),
+		bigoci.WithPartSize(1<<20), bigoci.WithWorkers(1),
+	)
+	require.NoError(t, err)
+	stored := backend.manifestAt(t, fakeTag)
+
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(stored.body, &document))
+	layers, ok := document["layers"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, layers)
+	first, ok := layers[0].(map[string]any)
+	require.True(t, ok)
+	originalDigest, ok := first["digest"].(string)
+	require.True(t, ok)
+	first["digest"] = token
+	manifestBody, err := json.Marshal(document)
+	require.NoError(t, err)
+	blob, ok := backend.blob(originalDigest)
+	require.True(t, ok)
+
+	var authenticated, replayed atomic.Int64
+	var registry *httptest.Server
+	registry = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prefix := "/v2/" + fakeRepo
+		switch {
+		case r.URL.Path == "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"token":%q,"expires_in":3600}`, token)
+		case r.URL.Path == "/redeem":
+			if r.Header.Get("Authorization") == "Bearer "+token {
+				replayed.Add(1)
+				w.WriteHeader(http.StatusOK)
+
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		case r.Header.Get("Authorization") == "":
+			w.Header().Set(
+				"WWW-Authenticate",
+				fmt.Sprintf(`Bearer realm=%q,service="registry"`, registry.URL+"/token"),
+			)
+			w.WriteHeader(http.StatusUnauthorized)
+		case strings.HasPrefix(r.URL.Path, prefix+"/manifests/"):
+			authenticated.Add(1)
+			w.Header().Set("Content-Type", stored.ctype)
+			_, _ = w.Write(manifestBody)
+		case r.URL.Path == prefix+"/blobs/"+token:
+			authenticated.Add(1)
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(blob)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(registry.Close)
+
+	var debug bytes.Buffer
+	probe := newTap(&debug, isolatedTransport(t))
+	client, err := bigoci.New(
+		bigoci.WithPlainHTTP(),
+		bigoci.WithHTTPClient(&http.Client{Transport: probe}),
+	)
+	require.NoError(t, err)
+
+	ref := bigoci.Reference(strings.TrimPrefix(registry.URL, "http://") + "/" + fakeRepo + ":" + fakeTag)
+	err = client.Pull(
+		t.Context(), ref, bigoci.ToFile(filepath.Join(t.TempDir(), "out.bin")), bigoci.WithWorkers(1),
+	)
+	require.Error(t, err)
+	require.GreaterOrEqual(
+		t,
+		authenticated.Load(),
+		int64(2),
+		"the registry never received an authenticated blob request",
+	)
+
+	log := debug.String()
+	assert.Contains(t, log, registry.URL+"/v2/"+fakeRepo+"/manifests/"+redactedReferenceSegment)
+	assert.Contains(t, log, registry.URL+"/v2/"+fakeRepo+"/blobs/"+redactedDigestSegment+
+		" class=blob-read auth=bearer")
+	assert.NotContains(t, log, token)
+
+	replay, err := http.NewRequestWithContext(t.Context(), http.MethodGet, registry.URL+"/redeem", nil)
+	require.NoError(t, err)
+	replay.Header.Set("Authorization", "Bearer "+token)
+	replayResponse, err := registry.Client().Do(replay)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = replayResponse.Body.Close() })
+	assert.Equal(t, http.StatusOK, replayResponse.StatusCode)
+	assert.EqualValues(t, 1, replayed.Load(), "the separately copied bearer was not reusable")
 }
 
 // TestDebugLogDoesNotExposeAReflectedBearer proves that a registry which has
@@ -303,8 +413,10 @@ func TestDebugLogDoesNotExposeRedeemableUploadSession(t *testing.T) {
 	assert.Contains(t, log, registry.URL+prefix+"/blobs/uploads/ class=upload-open")
 	assert.Contains(t, log, `loc="`+registry.URL+redactedTargetPath+`"`)
 	assert.Contains(t, log, registry.URL+redactedTargetPath+" class=blob-write")
-	assert.Contains(t, log, registry.URL+prefix+"/blobs/sha256:", "direct public blob checks stay useful")
-	assert.Contains(t, log, registry.URL+prefix+"/manifests/v1", "direct public manifest paths stay useful")
+	assert.Contains(t, log, registry.URL+prefix+"/blobs/"+redactedDigestSegment,
+		"the blob endpoint and repository stay useful")
+	assert.Contains(t, log, registry.URL+prefix+"/manifests/"+redactedReferenceSegment,
+		"the manifest endpoint and repository stay useful")
 	assert.NotContains(t, log, sessionTicket)
 	assert.NotContains(t, log, queryTicket)
 
@@ -387,7 +499,9 @@ func TestDebugLogDoesNotExposeRedeemableSameOriginRedirect(t *testing.T) {
 	require.EqualValues(t, 1, acceptedBefore, "the real pull never redeemed the Location")
 
 	log := debug.String()
-	assert.Contains(t, log, registry.URL+prefix+"/blobs/"+digestOf(content), "the direct public blob path stays useful")
+	assert.Contains(t, log, registry.URL+prefix+"/blobs/"+redactedDigestSegment,
+		"the direct blob endpoint and repository stay useful")
+	assert.NotContains(t, log, digestOf(content))
 	assert.Contains(t, log, `loc="`+registry.URL+redactedTargetPath+`"`)
 	assert.Contains(t, log, registry.URL+redactedTargetPath+" class=blob-read")
 	assert.NotContains(t, log, locationTicket)

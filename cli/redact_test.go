@@ -107,6 +107,7 @@ func TestRedactURL(t *testing.T) {
 	tests := []struct {
 		name        string
 		target      string
+		kind        class
 		want        string
 		notContains []string
 	}{
@@ -121,11 +122,10 @@ func TestRedactURL(t *testing.T) {
 			want:   "https://reg.example.com/v2/team/m/blobs/uploads/9f?alpha=…&state=…&zeta=…",
 		},
 		{
-			name: "the digest parameter keeps its value",
+			name: "a valid digest parameter is still elided",
 			target: "https://reg.example.com/v2/team/m/blobs/uploads/9f?state=" + secret +
 				"&digest=sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-			want: "https://reg.example.com/v2/team/m/blobs/uploads/9f?digest=sha256:" +
-				"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08&state=…",
+			want: "https://reg.example.com/v2/team/m/blobs/uploads/9f?digest=…&state=…",
 		},
 		{
 			name:   "a digest parameter whose value is not a digest",
@@ -154,11 +154,23 @@ func TestRedactURL(t *testing.T) {
 			want:   "https://reg.example.com/v2/team/m/blobs/uploads/9f?…",
 		},
 		{
-			name: "a digest in the path is never shortened",
+			name: "a digest-shaped blob value is replaced",
 			target: "https://reg.example.com/v2/team/m/blobs/sha256:" +
 				"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-			want: "https://reg.example.com/v2/team/m/blobs/sha256:" +
-				"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+			kind: classBlobRead,
+			want: "https://reg.example.com/v2/team/m/blobs/" + redactedDigestSegment,
+		},
+		{
+			name:   "a manifest reference is replaced",
+			target: "https://reg.example.com/v2/team/m/manifests/redeemable-reference",
+			kind:   classManifestRead,
+			want:   "https://reg.example.com/v2/team/m/manifests/" + redactedReferenceSegment,
+		},
+		{
+			name:   "endpoint-like repository components are preserved",
+			target: "https://reg.example.com/v2/blobs/manifests/team/blobs/redeemable-digest",
+			kind:   classBlobRead,
+			want:   "https://reg.example.com/v2/blobs/manifests/team/blobs/" + redactedDigestSegment,
 		},
 		{
 			name:   "nothing to redact",
@@ -174,7 +186,7 @@ func TestRedactURL(t *testing.T) {
 			parsed, err := url.Parse(tt.target)
 			require.NoError(t, err)
 
-			got := redactURL(parsed)
+			got := redactURL(parsed, tt.kind)
 			assert.Equal(t, tt.want, got)
 			assert.NotContains(t, got, secret)
 			assert.NotContains(t, got, secret[:8])
@@ -187,7 +199,7 @@ func TestRedactURL(t *testing.T) {
 func TestRedactURLOfNothing(t *testing.T) {
 	t.Parallel()
 
-	assert.Empty(t, redactURL(nil))
+	assert.Empty(t, redactURL(nil, classBlobRead))
 }
 
 // TestRedactURLReescapesParameterNames is the injection check. A parameter name is
@@ -204,7 +216,7 @@ func TestRedactURLReescapesParameterNames(t *testing.T) {
 	parsed, err := url.Parse(target)
 	require.NoError(t, err)
 
-	got := redactURL(parsed)
+	got := redactURL(parsed, classBlobWrite)
 	assert.Equal(t, "https://reg.example.com/v2/team/m/blobs/uploads/9f?%0Ahttp%3C+forged=…", got)
 
 	_, query, found := strings.Cut(got, "?")
@@ -221,9 +233,8 @@ func TestRedactURLReescapesParameterNames(t *testing.T) {
 	assert.NotContains(t, line, "http< ", "a forged line prefix must not survive into the log")
 }
 
-// TestIsDigest checks the gate on the one query value that passes through. The
-// check is on the value and never on the parameter's name, because the name is
-// the peer's to choose.
+// TestIsDigest checks the syntax helper used for CLI and conformance outputs.
+// Redaction never trusts this syntax as proof that a value is public.
 func TestIsDigest(t *testing.T) {
 	t.Parallel()
 

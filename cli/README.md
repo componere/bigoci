@@ -462,8 +462,10 @@ Responses: the presence of `Content-Type` as `ctype`, `Content-Range` as
   authenticated peer therefore cannot expose a high-entropy decimal bearer
   through the numeric `clen=` field.
 - The first request fixes the registry origin. A normal distribution request
-  to that origin keeps its path. A non-distribution request to the same origin,
-  including a token exchange, renders as `<scheme>://<registry>/_redacted`.
+  to that origin keeps its repository and endpoint shape, while the terminal
+  blob digest or manifest reference becomes `_digest` or `_reference`. A
+  non-distribution request to the same origin, including a token exchange,
+  renders as `<scheme>://<registry>/_redacted`.
 - Every same-origin target carrying the `scope` query parameter is also replaced
   whole. bigoci adds that parameter to each bearer exchange, so a peer cannot
   expose a realm credential by making its token path look like `/v2/.../blobs/...`.
@@ -477,25 +479,24 @@ Responses: the presence of `Content-Type` as `ctype`, `Content-Range` as
   or upload-session path. The remembered identity is a fixed-size SHA-256 of
   the normalized origin and escaped path, not retained peer URL bytes; query
   changes therefore still match. A collision can only hide an additional URL,
-  never reveal a remembered one. Direct public distribution paths remain
-  visible.
+  never reveal a remembered one. Direct distribution requests retain only
+  their origin, repository, and endpoint shape.
 - Preserved registry URLs lose their userinfo outright. Their query parameter
   values are replaced with `…`; parameter names are kept and sorted, so two
   runs of the same transfer produce the same text.
 - Parameter names are escaped again on the way out. Every byte of a name was
   chosen by the peer being logged, and a name that decodes to a newline would
   otherwise forge a second log line.
-- One value passes through on a preserved distribution URL: a `digest` whose
-  value verifiably **is** a sha256 digest, meaning `sha256:` and 64 lowercase hex
-  bytes. That value is public and is the key that correlates a line with a blob.
-  Token endpoints and `Location`-derived targets never reach this exception
-  because their complete path and query are redacted first.
+- No query value passes through, including a syntactically valid `digest`.
+  Syntax does not establish that bytes are public: an authentication service
+  can issue a reusable bearer shaped exactly like `sha256:` plus 64 hex bytes.
 - A query Go cannot parse renders as a single `…` in place of the whole query,
   rather than as the parameters that happened to parse. A line never shows a
   shorter query than the request carried.
-- Same-registry distribution paths are printed as they stand, digests and all.
-  Being able to grep a digest out of the log beats a shorter line where the
-  target is already inside the trusted registry boundary.
+- Same-registry blob and manifest paths retain the repository and endpoint but
+  replace the final value. For example, `/v2/team/model/blobs/sha256:...`
+  renders as `/v2/team/model/blobs/_digest`, and any tag or digest after
+  `/manifests/` renders as `_reference`.
 - `Location` is resolved against the URL of the request that got it, then
   rendered only as the registry placeholder or the off-origin placeholder. The
   followed request uses the same placeholder.
@@ -671,17 +672,17 @@ blobs at all.
 echo "exit=$?"
 ```
 
-Every request that goes out gets an `http!` line with `err="dial tcp …:
-connect: connection refused"`. A refused connection is worth another attempt,
-so the digest whose worker runs out of attempts first shows exactly four
-`http!` lines. The other digests show fewer — between one and four — because
-that first exhaustion cancels the peers mid-backoff, which is itself the
-behavior worth seeing: nobody waits out a schedule for a transfer that is
-already over. The total is at most four per worker (sixteen here), eight to
-thirteen on a typical run. Then `failed=` matching whatever was sent, then
-exit 1 with `no sentinel matched`.
+Every request that goes out gets an `http!` line with
+`err="transport failure detail redacted"`. A refused connection is worth
+another attempt, so the operation whose worker runs out of attempts first shows
+exactly four `http!` lines. Peer-selected digests are intentionally not present,
+but `seq`, `<t>`, `class`, and the summary still show how many requests ran and
+when the transfer stopped. The total is at most four per worker (sixteen here),
+eight to thirteen on a typical run. Then `failed=` matches whatever was sent,
+and the CLI exits 1 with `no sentinel matched`.
 
-The first failure line says how many attempts it took:
+The ordinary final error, separately from the debug record, says how many
+attempts the operation took and gives the safe failure context:
 
 ```
 bigoci: push /tmp/model.bin to 127.0.0.1:5999/team/model:v1: after 4 attempts: check
@@ -700,9 +701,9 @@ got an answer is neither.
 
 ### A broken connection is retried, and you can see it
 
-Put something between the client and the registry that breaks connections, and
-read the log for the same digest twice. toxiproxy is what the library's own
-end-to-end tests use:
+Put something between the client and the registry that breaks connections.
+toxiproxy is what the library's own end-to-end tests use. Run one worker so a
+failed operation must retry before another part can start:
 
 ```
 docker network create bigoci-gate
@@ -714,31 +715,26 @@ curl -s -XPOST localhost:8474/proxies \
 curl -s -XPOST localhost:8474/proxies/zot/toxics \
   -d '{"name":"cut","type":"limit_data","stream":"upstream","toxicity":0.3,"attributes":{"bytes":2000000}}'
 
-./bin/bigoci push -plain-http -part-size 16MiB -debug /tmp/model.bin \
+./bin/bigoci push -plain-http -workers 1 -part-size 16MiB -debug /tmp/model.bin \
   127.0.0.1:8666/gate/model:v1 2>push.log
 echo "exit=$?"
 ```
 
 A retried request is a fresh request: it gets a new `http>` line with a **new**
-`seq` and the same URL, never a second line under the old one. So the evidence
-is a digest that shows up more than once:
+`seq`, never a second line under the old one. With one worker, an `http!` for a
+blob operation followed by another `http>` of the same class is its retry:
 
 ```
-# part digests that were uploaded more than once
-grep 'http> .*class=blob-write' push.log \
-  | grep -o 'digest=sha256:[0-9a-f]\{64\}' | sort | uniq -d
-
-# part digests that were checked more than once
-grep 'http> .*class=blob-check' push.log \
-  | grep -o 'blobs/sha256:[0-9a-f]\{64\}' | sort | uniq -d
+grep -E '^http[>!].*class=(blob-check|blob-write)' push.log
 ```
 
-Take the `http>` lines for one duplicated digest and read the `<t>` column:
-the gap between them is the wait the library took. The waits are drawn from a
-window that doubles with each attempt — one second, then two, then four — so
-they grow as a part runs out of attempts, though any single one may be short.
-`grep -c '^http!' push.log` counts the failures that caused them, the summary
-line's `failed=` agrees with that count, and the push still exits 0.
+Read the `<t>` column around a failure and its next send: the gap is the wait the
+library took. The waits are drawn from a window that doubles with each attempt
+— one second, then two, then four — so they grow as an operation runs out of
+attempts, though any single one may be short. `grep -c '^http!' push.log` counts
+the failures that caused them, the summary line's `failed=` agrees with that
+count, and the push still exits 0. The log deliberately proves the retry without
+identifying the peer-selected digest that was retried.
 
 ### Nothing named is nothing found
 
@@ -864,7 +860,7 @@ Three things to know before reading a run:
   its evidence too — and the job uploads all of them as one artifact. Those
   files are what a journal entry quotes. Uploading them is safe for the reason
   this whole section is: the tap renders schemes and never credentials, elides
-  every query value but a verified digest, and logs no body at all.
+  every query value and terminal digest or reference, and logs no body at all.
 - **The refusal runs first, and it is the whole argument.** Every row after it
   differs only in which directory `DOCKER_CONFIG` names. If the target
   repository ever stops being private, that first row fails and the run stops,
@@ -945,15 +941,10 @@ checked against, so it is fetched before anything can be verified. A cold pull
 of this file reads four blobs, so `blob-read=2` means two parts came off the
 disk.
 
-Which two is the digest grep, the same idiom the retry recipe uses:
-
-```
-grep 'http> .*class=blob-read' resume.log \
-  | grep -o 'blobs/sha256:[0-9a-f]\{64\}' | sort
-```
-
-Those digests are a subset of the manifest's layers, in whatever order the
-workers got to them.
+The debug log intentionally does not identify which two digests were missing.
+A manifest can select a syntactically valid digest that is also a reusable
+credential, so `blob-read=2` proves the amount of resumed work without exposing
+the peer-selected layer values.
 
 The gate at the other end is a partial that is already complete. Pull once to
 get a good file, then put it back under the partial name and pull again:
