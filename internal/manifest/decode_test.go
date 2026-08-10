@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	digest "github.com/opencontainers/go-digest"
@@ -32,8 +33,36 @@ const (
 	docSecondPartDigest = "sha256:1f8f9a0a3e9c0f5a02cf47a1a2f8c0be7a05a2f0d5a5b3c67e2f0a8f9b0c1d2e"
 )
 
-// overLimitPartCount is one part past the 4096-part cap the format sets.
-const overLimitPartCount = 4097
+const (
+	// overLimitPartCount is one part past the format's part cap.
+	overLimitPartCount = plan.MaxParts + 1
+	// layerBombPartCount fills almost the complete four-MiB manifest-body limit
+	// with empty descriptors, matching the compact audit payload.
+	layerBombPartCount = 1_397_950
+	// maxLayerBombAlloc is the allocation ceiling for rejecting a layer bomb.
+	// It leaves headroom over the bounded decoder's measured cost while staying
+	// far below the descriptor storage an unbounded decoder requires.
+	maxLayerBombAlloc = 8 << 20
+	// duplicateLayerArrayCount is the number of maximum-size arrays that fit in
+	// the audit payload while keeping its JSON body below four MiB.
+	duplicateLayerArrayCount = 341
+	// duplicateLayerBombSize is the exact size of the compact audit payload.
+	duplicateLayerBombSize = 4_193_960
+	// maxDuplicateLayerBombAlloc allows parser overhead while ensuring repeated
+	// layers members cannot allocate a fresh bounded slice apiece.
+	maxDuplicateLayerBombAlloc = 16 << 20
+	// descriptorURLBombSize is the exact size of one allowed descriptor carrying
+	// almost four MiB of ignored URL entries.
+	descriptorURLBombSize = 4_193_873
+	// maxIgnoredFieldBombAlloc leaves room for syntax parsing while ensuring an
+	// ignored descriptor field cannot allocate storage per nested entry.
+	maxIgnoredFieldBombAlloc = 8 << 20
+	// unknownAnnotationBombCount is how many unique, unused annotation keys fit
+	// comfortably under the manifest body limit.
+	unknownAnnotationBombCount = 300_000
+	// unknownAnnotationBombSize is the exact compact payload size at that count.
+	unknownAnnotationBombSize = 3_488_907
+)
 
 // docExampleManifest is the example manifest from the format reference, copied
 // verbatim. Its indentation is deliberate: a reader must accept a manifest it
@@ -107,6 +136,14 @@ func TestDecodeIgnoresWhatTheFormatDoesNotDefine(t *testing.T) {
 					"mediaType": ocispec.MediaTypeImageManifest,
 					"digest":    digest.FromString("some other manifest").String(),
 					"size":      int64(1),
+				}
+			},
+		},
+		{
+			name: "top-level member from outside the OCI schema",
+			add: func(m map[string]any) {
+				m["com.example.metadata"] = map[string]any{
+					"nested": []any{map[string]any{"build": "42"}},
 				}
 			},
 		},
@@ -189,11 +226,6 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 			name:    "no layers",
 			corrupt: func(m map[string]any) { m["layers"] = []any{} },
 			wantErr: "no parts",
-		},
-		{
-			name:    "more layers than the format allows",
-			corrupt: overLimitLayers,
-			wantErr: "too many parts",
 		},
 		{
 			name: "file size that needs more parts than the format allows",
@@ -283,6 +315,253 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 	}
 }
 
+func TestDecodeEnforcesTheLayerLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		count   int
+		wantErr bool
+	}{
+		{name: "the maximum layer count is accepted", count: plan.MaxParts},
+		{name: "the first layer over the maximum is refused", count: overLimitPartCount, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := manifestJSON(t, func(m map[string]any) {
+				setOneByteLayers(m, tt.count)
+			})
+
+			decoded, err := manifest.Decode(data)
+			if tt.wantErr {
+				require.ErrorIs(t, err, plan.ErrTooManyParts)
+				assert.Equal(t, manifest.Artifact{}, decoded)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Len(t, decoded.Parts, plan.MaxParts)
+			assert.Equal(t, digest.FromString("byte-4095"), decoded.Parts[plan.MaxParts-1].Digest)
+		})
+	}
+}
+
+func TestDecodeEnforcesTheLayerLimitAcrossJSONFieldSpellings(t *testing.T) {
+	tests := []string{
+		"layers",
+		"Layers",
+		"LAYERS",
+		`lay\u0065rs`,
+		`layer\u017f`,
+	}
+
+	for _, field := range tests {
+		t.Run(field, func(t *testing.T) {
+			decoded, err := manifest.Decode(compactLayerBombField(field, overLimitPartCount))
+			require.ErrorIs(t, err, plan.ErrTooManyParts)
+			assert.Equal(t, manifest.Artifact{}, decoded)
+		})
+	}
+}
+
+func TestDecodeUsesTheLastDuplicateLayersMember(t *testing.T) {
+	valid := manifestJSON(t, func(map[string]any) {})
+	maximumArray := compactLayerBomb(plan.MaxParts)
+	withValidLast := make([]byte, 0, len(maximumArray)+len(valid))
+	withValidLast = append(withValidLast, maximumArray[:len(maximumArray)-1]...)
+	withValidLast = append(withValidLast, ',')
+	withValidLast = append(withValidLast, valid[1:]...)
+
+	decoded, err := manifest.Decode(withValidLast)
+	require.NoError(t, err)
+	assert.Equal(t, fixtureArtifact(t, multiPartFileSize, "model.bin"), decoded)
+
+	withNullLast := make([]byte, 0, len(valid)+len(`,"layers":null`))
+	withNullLast = append(withNullLast, valid[:len(valid)-1]...)
+	withNullLast = append(withNullLast, `,"layers":null}`...)
+
+	decoded, err = manifest.Decode(withNullLast)
+	require.ErrorContains(t, err, "no parts")
+	assert.Equal(t, manifest.Artifact{}, decoded)
+}
+
+func TestDecodeRejectsAnOversizedEarlierDuplicateLayersMember(t *testing.T) {
+	oversizedArray := compactLayerBomb(overLimitPartCount)
+	valid := manifestJSON(t, func(map[string]any) {})
+	withValidLast := make([]byte, 0, len(oversizedArray)+len(valid))
+	withValidLast = append(withValidLast, oversizedArray[:len(oversizedArray)-1]...)
+	withValidLast = append(withValidLast, ',')
+	withValidLast = append(withValidLast, valid[1:]...)
+
+	decoded, err := manifest.Decode(withValidLast)
+	require.ErrorIs(t, err, plan.ErrTooManyParts)
+	assert.Equal(t, manifest.Artifact{}, decoded)
+}
+
+func TestDecodePreservesDuplicateAnnotationObjectBehavior(t *testing.T) {
+	valid := manifestJSON(t, func(map[string]any) {})
+	withEmptyLast := make([]byte, 0, len(valid)+len(`,"annotations":{}`))
+	withEmptyLast = append(withEmptyLast, valid[:len(valid)-1]...)
+	withEmptyLast = append(withEmptyLast, `,"annotations":{}}`...)
+
+	decoded, err := manifest.Decode(withEmptyLast)
+	require.NoError(t, err)
+	assert.Equal(t, fixtureArtifact(t, multiPartFileSize, "model.bin"), decoded)
+
+	withNullLast := make([]byte, 0, len(valid)+len(`,"annotations":null`))
+	withNullLast = append(withNullLast, valid[:len(valid)-1]...)
+	withNullLast = append(withNullLast, `,"annotations":null}`...)
+
+	decoded, err = manifest.Decode(withNullLast)
+	require.ErrorContains(t, err, manifest.AnnotationFileDigest)
+	assert.Equal(t, manifest.Artifact{}, decoded)
+}
+
+func TestDecodeBoundsAllocationForExcessLayers(t *testing.T) {
+	data := compactLayerBomb(layerBombPartCount)
+
+	decoded, err := manifest.Decode(data)
+	require.ErrorIs(t, err, plan.ErrTooManyParts)
+	assert.Equal(t, manifest.Artifact{}, decoded)
+
+	var benchmarkErr error
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, benchmarkErr = manifest.Decode(data)
+		}
+	})
+
+	require.ErrorIs(t, benchmarkErr, plan.ErrTooManyParts)
+	t.Logf(
+		"bounded rejection of a %d-byte manifest allocated %d bytes/op",
+		len(data),
+		result.AllocedBytesPerOp(),
+	)
+	assert.Less(
+		t,
+		result.AllocedBytesPerOp(),
+		int64(maxLayerBombAlloc),
+		"rejecting %d layers must not allocate storage proportional to the complete array",
+		layerBombPartCount,
+	)
+}
+
+func TestDecodeBoundsAllocationAcrossDuplicateLayerMembers(t *testing.T) {
+	data := compactDuplicateLayerBomb(duplicateLayerArrayCount)
+	require.Len(t, data, duplicateLayerBombSize)
+	require.Less(t, len(data), 4<<20)
+
+	decoded, err := manifest.Decode(data)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, plan.ErrTooManyParts)
+	assert.Equal(t, manifest.Artifact{}, decoded)
+
+	var benchmarkErr error
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, benchmarkErr = manifest.Decode(data)
+		}
+	})
+
+	require.Error(t, benchmarkErr)
+	require.NotErrorIs(t, benchmarkErr, plan.ErrTooManyParts)
+	t.Logf(
+		"bounded decoding of a %d-byte manifest with %d duplicate layers arrays allocated %d bytes/op",
+		len(data),
+		duplicateLayerArrayCount,
+		result.AllocedBytesPerOp(),
+	)
+	assert.Less(
+		t,
+		result.AllocedBytesPerOp(),
+		int64(maxDuplicateLayerBombAlloc),
+		"duplicate layers members must reuse bounded descriptor storage",
+	)
+}
+
+func TestDecodeBoundsAllocationForIgnoredDescriptorFields(t *testing.T) {
+	data := compactDescriptorURLBomb(layerBombPartCount)
+	require.Len(t, data, descriptorURLBombSize)
+	require.Less(t, len(data), 4<<20)
+
+	decoded, err := manifest.Decode(data)
+	require.ErrorIs(t, err, manifest.ErrNotBigociArtifact)
+	assert.Equal(t, manifest.Artifact{}, decoded)
+
+	var benchmarkErr error
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, benchmarkErr = manifest.Decode(data)
+		}
+	})
+
+	require.ErrorIs(t, benchmarkErr, manifest.ErrNotBigociArtifact)
+	t.Logf(
+		"bounded decoding of a %d-byte ignored descriptor field allocated %d bytes/op",
+		len(data),
+		result.AllocedBytesPerOp(),
+	)
+	assert.Less(
+		t,
+		result.AllocedBytesPerOp(),
+		int64(maxIgnoredFieldBombAlloc),
+		"ignored OCI descriptor fields must not allocate storage proportional to nested entries",
+	)
+}
+
+func TestDecodeBoundsAllocationForUnknownAnnotations(t *testing.T) {
+	data := compactUnknownAnnotationsBomb(unknownAnnotationBombCount)
+	require.Len(t, data, unknownAnnotationBombSize)
+	require.Less(t, len(data), 4<<20)
+
+	decoded, err := manifest.Decode(data)
+	require.ErrorIs(t, err, manifest.ErrNotBigociArtifact)
+	assert.Equal(t, manifest.Artifact{}, decoded)
+
+	var benchmarkErr error
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, benchmarkErr = manifest.Decode(data)
+		}
+	})
+
+	require.ErrorIs(t, benchmarkErr, manifest.ErrNotBigociArtifact)
+	t.Logf(
+		"bounded decoding of %d unknown annotation keys allocated %d bytes/op",
+		unknownAnnotationBombCount,
+		result.AllocedBytesPerOp(),
+	)
+	assert.Less(t, result.AllocedBytesPerOp(), int64(maxIgnoredFieldBombAlloc))
+}
+
+func TestDecodeBoundsAllocationBeforeReportingMalformedJSON(t *testing.T) {
+	data := append(compactLayerBomb(layerBombPartCount), '!')
+
+	decoded, err := manifest.Decode(data)
+	require.ErrorContains(t, err, "parse manifest JSON")
+	assert.Equal(t, manifest.Artifact{}, decoded)
+
+	var benchmarkErr error
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, benchmarkErr = manifest.Decode(data)
+		}
+	})
+
+	require.ErrorContains(t, benchmarkErr, "parse manifest JSON")
+	t.Logf(
+		"rejecting a malformed %d-byte layer payload allocated %d bytes/op",
+		len(data),
+		result.AllocedBytesPerOp(),
+	)
+	assert.Less(t, result.AllocedBytesPerOp(), int64(maxLayerBombAlloc))
+}
+
 func TestDecodeRejectsMalformedJSON(t *testing.T) {
 	tests := []struct {
 		name string
@@ -292,6 +571,8 @@ func TestDecodeRejectsMalformedJSON(t *testing.T) {
 		{name: "not JSON at all", data: "this is not a manifest"},
 		{name: "empty input", data: ""},
 		{name: "layers of the wrong JSON type", data: `{"layers": "none"}`},
+		{name: "second document after a manifest", data: `{} {}`},
+		{name: "second document after null", data: `null {}`},
 	}
 
 	for _, tt := range tests {
@@ -368,11 +649,10 @@ func validManifest(t *testing.T) map[string]any {
 	}
 }
 
-// overLimitLayers replaces the layers and sizes with one more one-byte part
-// than the format's cap allows.
-func overLimitLayers(m map[string]any) {
-	layers := make([]any, 0, overLimitPartCount)
-	for i := range overLimitPartCount {
+// setOneByteLayers replaces the layers and sizes with count one-byte parts.
+func setOneByteLayers(m map[string]any, count int) {
+	layers := make([]any, 0, count)
+	for i := range count {
 		layers = append(layers, map[string]any{
 			"mediaType": manifest.MediaTypePart,
 			"digest":    digest.FromString(fmt.Sprintf("byte-%d", i)).String(),
@@ -381,8 +661,93 @@ func overLimitLayers(m map[string]any) {
 	}
 
 	m["layers"] = layers
-	annotationsOf(m)[manifest.AnnotationFileSize] = strconv.Itoa(overLimitPartCount)
+	annotationsOf(m)[manifest.AnnotationFileSize] = strconv.Itoa(count)
 	annotationsOf(m)[manifest.AnnotationPartSize] = "1"
+}
+
+// compactLayerBomb builds a small-on-the-wire array whose empty descriptors
+// used to expand into allocation proportional to count before validation.
+func compactLayerBomb(count int) []byte {
+	return compactLayerBombField("layers", count)
+}
+
+// compactLayerBombField builds a compact layer array under field, which is
+// already JSON-escaped but does not include its surrounding quotes.
+func compactLayerBombField(field string, count int) []byte {
+	var document strings.Builder
+	document.Grow(len(field) + len(`{"":[]}`) + count*3)
+	document.WriteString(`{"`)
+	document.WriteString(field)
+	document.WriteString(`":[`)
+	for i := range count {
+		if i > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteString(`{}`)
+	}
+	document.WriteString(`]}`)
+
+	return []byte(document.String())
+}
+
+// compactDescriptorURLBomb builds one allowed layer descriptor whose ignored
+// URLs field used to allocate a string slice proportional to count.
+func compactDescriptorURLBomb(count int) []byte {
+	var document strings.Builder
+	document.Grow(len(`{"layers":[{"urls":[]}]}`) + count*3)
+	document.WriteString(`{"layers":[{"urls":[`)
+	for i := range count {
+		if i > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteString(`""`)
+	}
+	document.WriteString(`]}]}`)
+
+	return []byte(document.String())
+}
+
+// compactUnknownAnnotationsBomb builds distinct annotations that bigoci does
+// not consume and therefore must not retain in a map.
+func compactUnknownAnnotationsBomb(count int) []byte {
+	var document strings.Builder
+	document.Grow(12 * count)
+	document.WriteString(`{"annotations":{`)
+	for i := range count {
+		if i > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteByte('"')
+		document.WriteString(strconv.Itoa(i))
+		document.WriteString(`":""`)
+	}
+	document.WriteString(`}}`)
+
+	return []byte(document.String())
+}
+
+// compactDuplicateLayerBomb builds arrayCount duplicate layers members, each
+// containing the maximum individually valid number of descriptors.
+func compactDuplicateLayerBomb(arrayCount int) []byte {
+	var document strings.Builder
+	document.Grow(arrayCount * (len(`"layers":[]`) + plan.MaxParts*3))
+	document.WriteByte('{')
+	for arrayIndex := range arrayCount {
+		if arrayIndex > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteString(`"layers":[`)
+		for layerIndex := range plan.MaxParts {
+			if layerIndex > 0 {
+				document.WriteByte(',')
+			}
+			document.WriteString(`{}`)
+		}
+		document.WriteByte(']')
+	}
+	document.WriteByte('}')
+
+	return []byte(document.String())
 }
 
 // configOf returns the config descriptor of a generic manifest document.
