@@ -9,9 +9,9 @@ This guide gives bigoci a credential for a registry that will not serve you
 without one. It assumes you can already push and pull against a registry that
 needs no credential — see [Push and pull a file](push-and-pull.md).
 
-Nothing here is needed for public artifacts. bigoci talks to a registry that
-never asks for anything exactly as it did before, and a registry that hands out
-tokens for public reads gets the token exchange with no credential in it.
+Nothing here is needed for public artifacts. A registry that never asks for a
+credential behaves exactly as it did before. A registry that hands out tokens
+for public reads still gets that token exchange, with no credential in it.
 
 ## Use the credentials you logged in with
 
@@ -52,9 +52,7 @@ or a `credHelpers` entry for one registry — then resolving a credential means
 thing the Docker command line does. Cloud helpers such as
 `docker-credential-ecr-login` work for that reason and need no bigoci-side code.
 
-This is why the option exists at all. A library that read your configuration and
-executed programs named in it without being asked would be a surprise worth
-avoiding, so bigoci does neither until you name
+bigoci reads no configuration and runs no helper until you name
 [`WithDockerCredentials`](https://pkg.go.dev/github.com/componere/bigoci#WithDockerCredentials).
 
 A helper that hangs does not hang your transfer: a lookup gives up after ten

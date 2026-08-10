@@ -263,12 +263,12 @@ the rerun commits without a single blob request. Between the rename and the
 directory flush: the destination is complete and the partial is gone, so a
 rerun starts over — wasteful, correct.
 
-Two facts underneath that are worth naming. A killed process does not lose its
-dirty pages: the kernel still owns them and writes them out, which is why the
-partial file needs no per-part flush and the sink flushes once, at commit. A
-machine that loses power is different — the partial may then hold ranges that
-are half old and half new — and the resume catches those too, because it
-hashes the ranges rather than counting them.
+Two facts underneath. A killed process does not lose its dirty pages: the
+kernel still owns them and writes them out, which is why the partial file
+needs no per-part flush and the sink flushes once, at commit. A machine that
+loses power is different — the partial may then hold ranges that are half old
+and half new — and the resume catches those too, because it hashes the ranges
+rather than counting them.
 
 The cost is a full hash pass over whatever is on disk before the first byte
 moves, at the pull's own worker count, overlapping the fetches of the parts
@@ -290,8 +290,8 @@ digest is the same trust model as pulling a container image.
 The whole-file digest annotation exists for humans and third-party tools: it
 lets anyone confirm what file an artifact carries without bigoci. Verifying
 it during pull would require a second sequential read of the assembled file,
-so it is off by default. Callers who want the independent check can turn it
-on.
+so bigoci does not do it. Callers who want the independent check can hash the
+pulled file themselves and compare it against the annotation.
 
 ## Authentication
 
@@ -334,12 +334,12 @@ request has had its chance.
 | A 403 carrying no challenge | terminal: a permission answer, or a firewall in front of the registry | 0 |
 | A challenge bigoci cannot read or cannot answer | terminal, quoting what arrived | 0 |
 
-Two consequences worth stating. A blob `PUT` that meets an expired token costs
-the part one of its four attempts even though nothing was wrong — the
-alternative is resending a body that has already been read off the disk, which
-is the one thing the transport must never do. And a 403 from a proxy or a web
-application firewall reports as unauthorized, which is admitted the same way a
-413 answering a manifest write is admitted: sniffing bodies to tell them apart
+Two consequences. A blob `PUT` that meets an expired token costs the part one
+of its four attempts even though nothing was wrong — the alternative is
+resending a body that has already been read off the disk, which is the one
+thing the transport must never do. And a 403 from a proxy or a web application
+firewall reports as unauthorized, which is admitted the same way a 413
+answering a manifest write is admitted: sniffing bodies to tell them apart
 would be a table of vendor behaviors in another shape.
 
 Failures of the token endpoint itself classify through the ordinary table: a
@@ -386,7 +386,7 @@ slice used enough parts to keep all eight configured workers active; the
 | Retry policy | 4 attempts; exponential backoff, 1 s base, 30 s cap, full jitter; honors `Retry-After` when sent | A transient failure should never surface to the caller. Network errors, 429, and 5xx retry; other 4xx fail fast. |
 | Digest algorithm | sha256 | The OCI default; universally supported. |
 
-Part size and worker count are per-push and per-pull options. Part size is
+Worker count is a per-push and per-pull option. Part size is a push option,
 recorded in the manifest, so pull never guesses it.
 
 ### Retry policy
@@ -578,10 +578,27 @@ err = client.Pull(ctx, ref, bigoci.ToFile(path), opts ...bigoci.PullOption)
 ```
 
 Progress reporting is an option accepting a callback. Domain terms get types:
-`Reference`, `Digest`, `PartSize`. Sentinel errors cover the cases callers
+`Reference`, `PartSize`, `Progress`. Sentinel errors cover the cases callers
 branch on: not found, unauthorized, digest mismatch, a manifest that is not a
 bigoci artifact, and a part `PUT` the registry rejected as too large — which
 is how registry caps surface, since bigoci carries no table of vendor limits.
+
+**Why progress carries two byte counters.** One number cannot be both
+monotone and honest here. A retried upload re-sends bytes; a registry that
+ignores a range request answers with the whole blob and the part is written
+again from its first byte; a part whose bytes all arrived under a failed
+attempt is restarted whole. A single counter either double-counts that redone
+work or regresses in front of the caller. So the snapshot splits the
+question: `CompletedBytes` is how much of the file is provably in its final
+place and only ever grows, in whole-part steps; `WireBytes` is how many bytes
+actually crossed the registry boundary and grows past the file size exactly
+when work was redone. A percentage reads off the first; a throughput reading
+off the second; neither lies. The same split is why a transfer's end is a
+phase and not a byte count — every part can be placed while the manifest
+write is still retrying — and why the callback is synchronous on the
+transfer's own goroutines: a snapshot delivered later is a snapshot that can
+contradict the transfer's own return, and the accounting stops being worth
+trusting the moment its order does.
 
 ## Testing
 
@@ -595,17 +612,18 @@ Three layers, plus measurement:
 - **End-to-end:** testcontainers running CNCF Distribution and zot. Because
   part size is an option, small inputs exercise every large-file code path at
   full fidelity: per-commit runs push and pull 64 MiB files at a 4 MiB part
-  size, killing and resuming transfers mid-flight. Multi-gigabyte volume runs
-  in a nightly job, not per commit (CI runners have ~14 GB of disk). A
-  feature is done when it works against a real registry, not when its unit
-  tests pass.
-- **Benchmarks:** a harness measuring throughput against a local registry
-  under different part sizes and worker counts. It exists to set the defaults
-  above and to keep them honest as the implementation evolves.
+  size, killing and resuming transfers mid-flight (CI runners have ~14 GB of
+  disk, so per-commit fixtures stay small). Multi-gigabyte transfers are the
+  benchmark harness's job, below. A feature is done when it works against a
+  real registry, not when its unit tests pass.
+- **Benchmarks:** a harness measuring throughput against local registries
+  and, on demand, GHCR, under different part sizes and worker counts. It
+  exists to set the defaults above and to keep them honest as the
+  implementation evolves.
 
-Cloud registries (GHCR, ECR, ACR, Artifact Registry, Docker Hub, Harbor) get
-a manually triggered conformance job, since they need credentials and cost
-money to exercise at size.
+GHCR gets a hand-triggered conformance job, since a real registry needs
+credentials and costs money to exercise at size. Other cloud registries (ECR,
+ACR, Artifact Registry, Docker Hub, Harbor) are not covered yet.
 
 ## First slice
 
