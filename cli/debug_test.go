@@ -235,7 +235,7 @@ func TestTapLogsRanges(t *testing.T) {
 	log := splitLog(t, buf.String())
 	require.Len(t, log.sent, 1)
 	require.Len(t, log.received, 1)
-	assert.Contains(t, log.sent[0], `range="bytes=0-4"`)
+	assert.Contains(t, log.sent[0], `range="present"`)
 	assert.Contains(t, log.received[0], "status=206")
 	assert.Contains(t, log.received[0], `crange="present"`)
 }

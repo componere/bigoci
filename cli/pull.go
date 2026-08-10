@@ -73,7 +73,7 @@ func runPull(ctx context.Context, e env, args []string) error {
 		return err
 	}
 
-	writePulled(e, dest, time.Since(started).Round(resultPrecision))
+	writePulled(e, time.Since(started).Round(resultPrecision))
 
 	return nil
 }
@@ -123,18 +123,10 @@ func destMustBeFile(dest string) error {
 	return nil
 }
 
-// writePulled reports a finished pull and how big the file it published is.
-//
-// The size is read back from the file rather than counted during the transfer,
-// so it is the size on disk. When that read fails the count is left out and the
-// line still reports the pull.
-func writePulled(e env, dest string, took time.Duration) {
-	info, err := os.Stat(dest)
-	if err != nil {
-		fmt.Fprintf(e.stderr, "bigoci: pulled in %s\n", took)
-
-		return
-	}
-
-	fmt.Fprintf(e.stderr, "bigoci: pulled %d bytes in %s\n", info.Size(), took)
+// writePulled reports a finished pull without repeating its registry-selected
+// file size. A registry can choose an all-decimal bearer and serve exactly that
+// many bytes, so even a size read back from the published file is not safe to
+// copy into CLI output.
+func writePulled(e env, took time.Duration) {
+	fmt.Fprintf(e.stderr, "bigoci: pulled in %s\n", took)
 }

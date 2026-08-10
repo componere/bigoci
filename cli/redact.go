@@ -17,7 +17,7 @@ const (
 	// It is bare and never quoted, so it cannot be read as a header whose value
 	// happened to be a dash.
 	absent = "-"
-	// elided replaces the value of every query parameter but the digest.
+	// elided replaces the value of every query parameter.
 	elided = "…"
 	// authNone is the auth field of a request that carried no credential.
 	authNone = "none"
@@ -92,11 +92,12 @@ func authScheme(h http.Header) string {
 // The three named here are the whole allow-list for a request, alongside the
 // scheme of the Authorization header. There is no escape hatch and no way to add
 // one at runtime: a cookie, a private header, anything a later phase starts
-// sending, has no path to the log at all.
+// sending, has no path to the log at all. Range retains presence only because a
+// peer-selected partial-body length becomes the next request's byte offset.
 func requestHeaderFields(h http.Header) string {
 	return fmt.Sprintf(
 		"type=%s range=%s accept=%s",
-		headerField(h, "Content-Type"), headerField(h, "Range"), headerField(h, "Accept"),
+		headerField(h, "Content-Type"), headerPresenceField(h, "Range"), headerField(h, "Accept"),
 	)
 }
 
@@ -110,11 +111,11 @@ func requestHeaderFields(h http.Header) string {
 func (t *tap) responseHeaderFields(base *url.URL, h http.Header) string {
 	return fmt.Sprintf(
 		"ctype=%s crange=%s loc=%s ddigest=%s retry-after=%s challenge=%s",
-		responsePresenceField(h, "Content-Type"),
-		responsePresenceField(h, "Content-Range"),
+		headerPresenceField(h, "Content-Type"),
+		headerPresenceField(h, "Content-Range"),
 		quoteOrAbsent(t.renderLocation(base, h.Get("Location"))),
-		responsePresenceField(h, "Docker-Content-Digest"),
-		responsePresenceField(h, "Retry-After"),
+		headerPresenceField(h, "Docker-Content-Digest"),
+		headerPresenceField(h, "Retry-After"),
 		challengeField(h),
 	)
 }
@@ -371,9 +372,9 @@ func quoteOrAbsent(value string) string {
 	return strconv.Quote(value)
 }
 
-// responsePresenceField reports whether a peer response header was present
-// without rendering or interpreting any of its values.
-func responsePresenceField(h http.Header, name string) string {
+// headerPresenceField reports whether a header was present without rendering
+// or interpreting any of its values.
+func headerPresenceField(h http.Header, name string) string {
 	if len(h.Values(name)) == 0 {
 		return absent
 	}
@@ -384,5 +385,5 @@ func responsePresenceField(h http.Header, name string) string {
 // challengeField reports whether any authentication challenge header value was
 // present, without rendering the challenge or interpreting its syntax.
 func challengeField(h http.Header) string {
-	return responsePresenceField(h, "Www-Authenticate")
+	return headerPresenceField(h, "Www-Authenticate")
 }

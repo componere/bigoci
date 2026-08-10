@@ -356,6 +356,286 @@ func TestDebugLogDoesNotExposeAReflectedBearer(t *testing.T) {
 	}
 }
 
+// TestPullProgressDoesNotExposeAManifestSizeBearer proves that the exact byte
+// total selected by a registry never reaches progress output. The registry
+// issues an all-decimal bearer, repeats it as every size in a valid one-part
+// manifest, and receives an authenticated request. A separate request proves
+// the hidden value remains a reusable credential.
+func TestPullProgressDoesNotExposeAManifestSizeBearer(t *testing.T) {
+	t.Parallel()
+
+	const (
+		token      = "7319458260184726931"
+		partDigest = "sha256:fdf9aadb4eab87b259634f1b43ecfa46b7064582e217e370120661577bc6fdd4"
+	)
+	manifestBody := onePartManifest(token, partDigest)
+
+	var authenticated, replayed atomic.Int64
+	var registry *httptest.Server
+	registry = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"token":%q,"expires_in":3600}`, token)
+		case r.URL.Path == "/redeem":
+			if r.Header.Get("Authorization") == "Bearer "+token {
+				replayed.Add(1)
+				w.WriteHeader(http.StatusOK)
+
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		case r.Header.Get("Authorization") == "":
+			w.Header().Set(
+				"WWW-Authenticate",
+				fmt.Sprintf(`Bearer realm=%q,service="registry"`, registry.URL+"/token"),
+			)
+			w.WriteHeader(http.StatusUnauthorized)
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			authenticated.Add(1)
+			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			_, _ = w.Write(manifestBody)
+		default:
+			authenticated.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(registry.Close)
+
+	host := strings.TrimPrefix(registry.URL, "http://")
+	got := runCLI(
+		t,
+		cmdPull, "-plain-http", "-debug", "-progress", "1h",
+		host+"/team/artifact:v1", filepath.Join(t.TempDir(), "out.bin"),
+	)
+
+	assert.Equal(t, exitFailure, got.code)
+	assert.Empty(t, got.stdout)
+	require.Positive(t, authenticated.Load(), "the registry never received the issued bearer")
+	lines := progressLines(got.stderr)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], "bigoci: progress pull failed")
+	assert.Contains(t, lines[0], "bytes=?/? wire=? hashed=?")
+	assert.NotContains(t, got.stderr, token)
+
+	replay, err := http.NewRequestWithContext(t.Context(), http.MethodGet, registry.URL+"/redeem", nil)
+	require.NoError(t, err)
+	replay.Header.Set("Authorization", "Bearer "+token)
+	replayResponse, err := registry.Client().Do(replay)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = replayResponse.Body.Close() })
+	assert.Equal(t, http.StatusOK, replayResponse.StatusCode)
+	assert.EqualValues(t, 1, replayed.Load(), "the separately copied bearer was not reusable")
+}
+
+// TestPullProgressDoesNotExposeCompletedOrWireBytes proves a successful pull
+// cannot repeat a practical-sized numeric bearer through measured byte fields.
+// The registry serves the exact number of authenticated bytes named by the
+// token, and a separate request proves the hidden value remains reusable.
+func TestPullProgressDoesNotExposeCompletedOrWireBytes(t *testing.T) {
+	t.Parallel()
+
+	const token = "16777216"
+	content := bytes.Repeat([]byte("p"), 16<<20)
+	partDigest := digestOf(content)
+	manifestBody := onePartManifest(token, partDigest)
+
+	var authenticated, replayed atomic.Int64
+	var registry *httptest.Server
+	registry = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"token":%q,"expires_in":3600}`, token)
+		case r.URL.Path == "/redeem":
+			if r.Header.Get("Authorization") == "Bearer "+token {
+				replayed.Add(1)
+				w.WriteHeader(http.StatusOK)
+
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		case r.Header.Get("Authorization") == "":
+			w.Header().Set(
+				"WWW-Authenticate",
+				fmt.Sprintf(`Bearer realm=%q,service="registry"`, registry.URL+"/token"),
+			)
+			w.WriteHeader(http.StatusUnauthorized)
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			authenticated.Add(1)
+			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			_, _ = w.Write(manifestBody)
+		case strings.Contains(r.URL.Path, "/blobs/"):
+			authenticated.Add(1)
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(content)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(registry.Close)
+
+	host := strings.TrimPrefix(registry.URL, "http://")
+	got := runCLI(
+		t,
+		cmdPull, "-plain-http", "-debug", "-progress", "1h", "-workers", "1",
+		host+"/team/artifact:v1", filepath.Join(t.TempDir(), "out.bin"),
+	)
+
+	require.Equal(t, exitOK, got.code, got.stderr)
+	assert.Empty(t, got.stdout)
+	require.GreaterOrEqual(
+		t,
+		authenticated.Load(),
+		int64(2),
+		"the registry did not receive authenticated manifest and blob requests",
+	)
+	lines := progressLines(got.stderr)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], "bigoci: progress pull done")
+	assert.Contains(t, lines[0], "bytes=?/? wire=? hashed=?")
+	assert.NotContains(t, got.stderr, token)
+
+	replay, err := http.NewRequestWithContext(t.Context(), http.MethodGet, registry.URL+"/redeem", nil)
+	require.NoError(t, err)
+	replay.Header.Set("Authorization", "Bearer "+token)
+	replayResponse, err := registry.Client().Do(replay)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = replayResponse.Body.Close() })
+	assert.Equal(t, http.StatusOK, replayResponse.StatusCode)
+	assert.EqualValues(t, 1, replayed.Load(), "the separately copied bearer was not reusable")
+}
+
+// TestPullDebugDoesNotExposeARangeOffsetBearer proves that an interrupted blob
+// cannot copy a numeric bearer into the retry request's logged Range value. The
+// registry sends exactly the token's number of bytes before closing, observes
+// the resulting offset on a successful retry, and accepts a separate replay of
+// the hidden credential.
+func TestPullDebugDoesNotExposeARangeOffsetBearer(t *testing.T) {
+	const (
+		token      = "16777216"
+		offset     = 16 << 20
+		contentLen = 32 << 20
+	)
+	content := bytes.Repeat([]byte("r"), contentLen)
+	partDigest := digestOf(content)
+	manifestBody := onePartManifest(strconv.Itoa(contentLen), partDigest)
+
+	var authenticated, replayed atomic.Int64
+	var partialSent, sawRange atomic.Bool
+	var registry *httptest.Server
+	registry = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"token":%q,"expires_in":3600}`, token)
+		case r.URL.Path == "/redeem":
+			if r.Header.Get("Authorization") == "Bearer "+token {
+				replayed.Add(1)
+				w.WriteHeader(http.StatusOK)
+
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		case r.Header.Get("Authorization") == "":
+			w.Header().Set(
+				"WWW-Authenticate",
+				fmt.Sprintf(`Bearer realm=%q,service="registry"`, registry.URL+"/token"),
+			)
+			w.WriteHeader(http.StatusUnauthorized)
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			authenticated.Add(1)
+			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			_, _ = w.Write(manifestBody)
+		case strings.Contains(r.URL.Path, "/blobs/"):
+			authenticated.Add(1)
+			if r.Header.Get("Range") == "" && partialSent.CompareAndSwap(false, true) {
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					t.Error("server response writer cannot hijack")
+
+					return
+				}
+				conn, rw, err := hijacker.Hijack()
+				if err != nil {
+					t.Errorf("hijack response: %v", err)
+
+					return
+				}
+				defer conn.Close()
+
+				_, _ = fmt.Fprintf(
+					rw,
+					"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+					len(content),
+				)
+				_, _ = rw.Write(content[:offset])
+				_ = rw.Flush()
+
+				return
+			}
+
+			if r.Header.Get("Range") != "bytes="+token+"-" {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+
+				return
+			}
+			sawRange.Store(true)
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set(
+				"Content-Range",
+				fmt.Sprintf("bytes %d-%d/%d", offset, len(content)-1, len(content)),
+			)
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(content[offset:])
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(registry.Close)
+
+	host := strings.TrimPrefix(registry.URL, "http://")
+	got := runCLI(
+		t,
+		cmdPull, "-plain-http", "-debug", "-progress", "1h", "-workers", "1",
+		host+"/team/artifact:v1", filepath.Join(t.TempDir(), "out.bin"),
+	)
+
+	require.Equal(t, exitOK, got.code, got.stderr)
+	assert.Empty(t, got.stdout)
+	require.GreaterOrEqual(t, authenticated.Load(), int64(3))
+	assert.True(t, sawRange.Load(), "the registry never received the token-shaped retry offset")
+	assert.Contains(t, got.stderr, `range="present"`)
+	assert.Contains(t, got.stderr, "bytes=?/? wire=? hashed=?")
+	assert.Contains(t, got.stderr, "bigoci: pulled in ")
+	assert.NotContains(t, got.stderr, token)
+
+	replay, err := http.NewRequestWithContext(t.Context(), http.MethodGet, registry.URL+"/redeem", nil)
+	require.NoError(t, err)
+	replay.Header.Set("Authorization", "Bearer "+token)
+	replayResponse, err := registry.Client().Do(replay)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = replayResponse.Body.Close() })
+	assert.Equal(t, http.StatusOK, replayResponse.StatusCode)
+	assert.EqualValues(t, 1, replayed.Load(), "the separately copied bearer was not reusable")
+}
+
+// onePartManifest returns a valid one-part bigoci manifest whose byte sizes
+// equal decimalSize and whose file and part digest both name contentDigest.
+func onePartManifest(decimalSize, contentDigest string) []byte {
+	return fmt.Appendf(
+		nil,
+		`{"schemaVersion":2,`+
+			`"mediaType":"application/vnd.oci.image.manifest.v1+json",`+
+			`"artifactType":"application/vnd.bigoci.file.v1",`+
+			`"config":{"mediaType":"application/vnd.oci.empty.v1+json",`+
+			`"digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2},`+
+			`"layers":[{"mediaType":"application/vnd.bigoci.file.part.v1","digest":%q,"size":%s}],`+
+			`"annotations":{"io.bigoci.file.digest":%q,"io.bigoci.file.size":%q,"io.bigoci.part.size":%q}}`,
+		contentDigest, decimalSize, contentDigest, decimalSize, decimalSize,
+	)
+}
+
 // TestDebugLogDoesNotExposeRedeemableUploadSession proves that a same-origin
 // upload Location remains absent from loc= and the completing PUT even though a
 // separate client can replay the capability and make the server accept bytes.

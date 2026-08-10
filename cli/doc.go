@@ -85,16 +85,16 @@
 // The observer never touches a request, never reads a body in either
 // direction, and renders only the headers it names one by one. A credential is
 // unrepresentable in the output: the Authorization header shows its scheme and
-// nothing else, peer response headers show presence only, response lengths show
-// only known or unknown, and arbitrary transport error detail is replaced by a
-// fixed marker. The first request fixes the registry origin. Distribution URLs
-// at that origin retain their repository and endpoint shape but replace blob
-// digests, manifest references, and every query value. Same-origin token
-// endpoints lose their path and query even when their peer-chosen path mimics a
-// distribution endpoint, and every off-origin target becomes a stable URL under
-// the reserved off-origin.invalid host. Every server-issued Location is hidden
-// and remembered so its followed request stays hidden too. See README.md for
-// the whole grammar and the recipes that read it.
+// nothing else, request Range and peer response headers show presence only,
+// response lengths show only known or unknown, and arbitrary transport error
+// detail is replaced by a fixed marker. The first request fixes the registry
+// origin. Distribution URLs at that origin retain their repository and endpoint
+// shape but replace blob digests, manifest references, and every query value.
+// Same-origin token endpoints lose their path and query even when their
+// peer-chosen path mimics a distribution endpoint, and every off-origin target
+// becomes a stable URL under the reserved off-origin.invalid host. Every
+// server-issued Location is hidden and remembered so its followed request stays
+// hidden too. See README.md for the whole grammar and the recipes that read it.
 //
 // # Extraction trigger
 //

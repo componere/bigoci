@@ -233,9 +233,9 @@ bigoci: progress push transferring pct=40 parts=17/40 skipped=0 bytes=8589934592
 | `pct` | `bytes` placed over `bytes` total, floored; `100` only when every byte is placed |
 | `parts` | parts provably in place, over the parts the file splits into |
 | `skipped` | parts of those that cost no bytes of their own |
-| `bytes` | bytes provably in place, over the file size |
-| `wire` | bytes of the file that crossed the registry boundary, every attempt counted |
-| `hashed` | bytes read off the local disk and hashed |
+| `bytes` | bytes provably in place over the local source size for a push; a pull shows `?/?` |
+| `wire` | bytes of a push that crossed the registry boundary, every attempt counted; a pull shows `?` |
+| `hashed` | bytes read off the local disk and hashed for a push; a pull shows `?` |
 | `retries` | re-entries into a retry budget, across the whole transfer |
 | `elapsed` | wall time since the transfer started, to a tenth of a second |
 
@@ -247,8 +247,11 @@ the run. Divide the change in `wire` by the change in `elapsed` across two
 lines for throughput; there is deliberately no rate and no estimate on the
 line, because every one this CLI could compute would be wrong somewhere.
 
-The byte counts are exact, so `bytes=` compares directly against the preflight
-line's own count.
+Push byte counts are exact, and `bytes=` compares directly against the
+preflight line's local-file count. Pull byte fields are `?`: its manifest and
+response bodies are untrusted, and a registry can choose an all-decimal bearer
+then make the total, completed, or wire count equal that credential. The
+in-process percentage still uses the validated counters.
 
 The phase is what says a transfer finished, never the counters: `pct=100` with
 `finalizing` is a push whose parts are all in the registry and whose manifest
@@ -280,17 +283,18 @@ bigoci: push /data/model.bin (204800 bytes) -> 127.0.0.1:5050/team/model:v1 (par
 bigoci: pushed sha256:829c96af3ccd… in 12.4s
 
 bigoci: pull 127.0.0.1:5050/team/model:v1 -> /data/out.bin (workers=8, plain-http)
-bigoci: pulled 204800 bytes in 9.1s
+bigoci: pulled in 9.1s
 ```
 
 The preflight line reports the values the transfer will really run with: the
 flags where they were set, the library's own defaults where they were not.
 `plain-http` appears only when the flag is set. The push line's byte count comes
 from a stat of the file; if that fails the whole line is left out, because the
-library is the one that reports an unreadable file. A pull's byte count is read
-back from the file it published. User-supplied source, reference, and destination
-operands preserve graphic text and visibly escape every non-graphic rune or
-invalid UTF-8 byte, so an operand cannot add a log record or terminal control.
+library is the one that reports an unreadable file. Pull output omits the file
+size because a registry selects it. User-supplied source, reference, and
+destination operands preserve graphic text and visibly escape every
+non-graphic rune or invalid UTF-8 byte, so an operand cannot add a log record or
+terminal control.
 
 There is no terminal detection, no color, no progress bar, and no line
 rewriting. The output is byte-identical piped and interactive. Progress
@@ -422,11 +426,12 @@ arrive. `http!` is written when the request never got a response.
 | `clen` | exact request `Content-Length`; on a response, `-2` means known and `-1` means unknown, with no peer numeric value retained |
 | `err` | the fixed quoted marker `"transport failure detail redacted"`; arbitrary transport detail is never rendered |
 
-Every other field represents a header. Request fields keep their quoted value
-or use a bare `-` when absent. A response field is `"present"` or `-`, except
-for the separately redacted `loc` URL. A registry sees each request credential
-and can reflect it into any ordinary response header, so peer header bytes are
-not safe diagnostic text even when the field name itself is allow-listed.
+Every other field represents a header. Request `type` and `accept` keep their
+quoted values; `range` is `"present"` or `-`. A response field is `"present"`
+or `-`, except for the separately redacted `loc` URL. A registry sees each
+request credential and can reflect it into any ordinary response header, so
+peer header bytes are not safe diagnostic text even when the field name itself
+is allow-listed.
 
 An `http> clen=-1` on a blob upload would mean a chunked `PUT`, which would be a
 regression of the library's explicit Content-Length invariant. Response lines
@@ -440,8 +445,8 @@ no way to add one at runtime — a header not on the list has no code path to th
 log, so a private header or a cookie a later phase starts sending cannot leak
 by being forgotten.
 
-Requests: `Authorization` (scheme only), `Content-Type` as `type`, `Range` as
-`range`, `Accept` as `accept`.
+Requests: `Authorization` (scheme only), `Content-Type` as `type`, the presence
+of `Range` as `range`, and `Accept` as `accept`.
 
 Responses: the presence of `Content-Type` as `ctype`, `Content-Range` as
 `crange`, `Docker-Content-Digest` as `ddigest`, `Retry-After` as
@@ -458,6 +463,8 @@ Responses: the presence of `Content-Type` as `ctype`, `Content-Range` as
 - Ordinary response headers retain presence only. A peer that copies a bearer
   into `Content-Type`, `Content-Range`, `Docker-Content-Digest`, or
   `Retry-After` therefore changes no logged value.
+- Request `Range` retains presence only. The offset comes from bytes a peer
+  delivered before interrupting a response, so it can equal a numeric bearer.
 - Response `Content-Length` retains only the fixed known or unknown marker. An
   authenticated peer therefore cannot expose a high-entropy decimal bearer
   through the numeric `clen=` field.
@@ -1041,7 +1048,8 @@ which build ran, not as proof of which source it was built from.
 ## Limits
 
 - No progress bar, no rate, and no estimate. `-progress` prints whole lines
-  with exact counts; see [Progress output](#progress-output).
+  with exact push counts; pull byte counters are `?`. See
+  [Progress output](#progress-output).
 - No credentials flag. Authentication is the library's `docker login`
   credentials, always, and the way to run without them is an empty
   `DOCKER_CONFIG`.

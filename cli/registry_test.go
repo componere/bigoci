@@ -520,7 +520,7 @@ func TestEndToEndPushAndPull(t *testing.T) {
 		"bigoci: http requests=5 failed=0 blob-check=0 (0 hit, 0 miss) blob-write=0 upload-open=0 "+
 			"blob-read=4 manifest-read=1 manifest-write=0 manifest-check=0 other=0\n",
 	)
-	assert.Contains(t, pull.stderr, fmt.Sprintf("bigoci: pulled %d bytes in ", fixtureSize))
+	assert.Contains(t, pull.stderr, "bigoci: pulled in ")
 
 	pulled, err := os.ReadFile(dest)
 	require.NoError(t, err)
