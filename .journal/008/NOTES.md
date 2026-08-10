@@ -1,6 +1,6 @@
 ---
 id: 008
-title: Fresh work session
+title: Benchmark audit and corrected GHCR rerun
 started: 2026-08-09
 ---
 
@@ -30,3 +30,11 @@ Validated cohort: 24 unique schema-2 rows, three repeats for every 256/512 MiB x
 Medians: 256 MiB push was 111.2 MB/s at w4 and 112.3 at w8; pull was 163.2 and 273.4. 512 MiB push was 109.0 and 109.5; pull was 161.6 and 262.1. At both part sizes, eight workers changed push by at most about 1% and raised pull by 62-68%. At a fixed worker count, 512 MiB stayed within 1-4% of 256 MiB.
 Cleanup: Destroyed exact server ID `sv_bBmw0K2Mra9VR`; `servers get` returned `not_found` and the ID was absent from project inventory. Deleted the four exact GHCR packages created under `bigoci-bench/latitude-sv_bbmw0k2mra9vr/b055068e917eb00a/`; the post-delete `bigoci-bench` package query was empty. Raw results and the generated summary are preserved under `.journal/008/results/`.
 Conclusion to implement: Retain the 512 MiB part size, increase the default worker count from four to eight because the corrected GHCR pull benefit is large and the zot/Distribution 512 MiB rows show no material regression, remove every per-connection interpretation, and keep adaptation out of v1 while zero measured throttle responses remain the observed trigger data.
+
+## 2026-08-09 17:18 — Audit remediation complete
+Implementation: Feature head `5095109` now closes every reproduced harness defect. Schema-3 rows carry a fingerprint of the effective post-override spec, row schema, and exact harness identity; resume refuses legacy or mismatched cohorts while archived schema-1/2 files remain summarizable. Fresh attempt namespaces and pre-timer partial-file cleanup preserve cold boundaries. Non-resume append, duplicate axes and successes, mixed runs/builds/cohorts, and silent prerequisite failures are rejected. The Latitude wrapper isolates SSH trust, stamps the full clean revision, gives each spec/client pair a distinct run identity, quotes the remote argv, and returns remote failures after collecting partial rows.
+Measured decision: `DefaultWorkers` is eight and `DefaultPartSize` remains 512 MiB. At 512 MiB, w4 to w8 changed zot push/pull by +1.238%/-0.089%, Distribution by +0.134%/-0.035%, and GHCR by +0.424%/+62.173%. Published language now treats throughput as aggregate, marks the original capped GHCR slice as superseded, and makes no unsupported per-connection or above-eight claim.
+Independent review: Separate harness, timing/resume, and result-reporting passes found no remaining concrete defect after the cohort and wrapper fixes. All five archived raw files summarize under the final code.
+Verification: `moon run root:test root:build root:build-windows root:format cli:check bench:check docs:build`, benchmark `go test -race -count=1 ./...`, `bash -n`, and `git diff --check` pass. `root:lint` still reports the three pre-existing G704 findings in unchanged `internal/oci/redirect.go` and `internal/oci/repository.go`; no audit change touches those files.
+External closeout: Exact Latitude server `sv_bBmw0K2Mra9VR` remains destroyed and absent from inventory; all four exact GHCR packages from the corrected attempt remain deleted. No paid or registry resource is left running.
+Next: Push `feat/bench-audit-fixes`, open the review PR, and monitor its exact-head checks. Keep session 008 open until the user requests session closeout.
