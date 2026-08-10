@@ -32,20 +32,39 @@ func runPush(ctx context.Context, e env, args []string) error {
 		return validateErr
 	}
 
-	client, probe, err := newClient(f.common, e.stderr)
+	// The tap and the progress renderer are the only two writers this program
+	// ever runs at once, so they share one guarded stream and everything else
+	// keeps writing to stderr directly.
+	lines := sharedStderr(e.stderr, f.common.progress)
+
+	client, probe, err := newClient(f.common, lines)
 	if err != nil {
 		return err
 	}
 	fmt.Fprint(e.stderr, f.preflight(set, src, ref))
 
+	watch := startProgress(e, lines, f.common.progress)
+
+	// The callback is added here rather than in options, which stays a pure
+	// function of the command line: a watcher is something this run built, not
+	// a value a flag carried.
+	opts := f.options(set)
+	if watch != nil {
+		opts = append(opts, bigoci.WithProgress(watch.record))
+	}
+
 	started := time.Now()
 	var digest string
 	err = withDeadline(ctx, f.common.timeout, func(ctx context.Context) error {
-		desc, pushErr := client.Push(ctx, bigoci.Reference(ref), bigoci.FromFile(src), f.options(set)...)
+		desc, pushErr := client.Push(ctx, bigoci.Reference(ref), bigoci.FromFile(src), opts...)
 		digest = desc.Digest.String()
 
 		return pushErr
 	})
+
+	// The final progress line comes first, so the last thing said about the
+	// transfer while it ran sits above everything said about how it ended.
+	watch.stop()
 
 	if probe != nil {
 		probe.writeSummary()

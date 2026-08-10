@@ -20,8 +20,13 @@
 // that is recorded anywhere: the bytes on disk are the whole of the state, and
 // a range nothing ever wrote reads back as zeros and fails its check.
 //
-// Progress accounting is not here yet: a transfer says nothing about how far
-// along it is while it runs.
+// A transfer reports on itself when somebody asks. [PushSpec.Progress] and
+// [PullSpec.Progress] take a [Report], and the orchestrator hands it a
+// [Snapshot] of the whole transfer at each milestone and every few megabytes
+// in between. Two byte counters carry it: what is provably in place, and what
+// crossing the registry boundary cost to put it there. A transfer nobody is
+// watching keeps no account — the counting wrappers are not installed and the
+// recording calls return on a nil check.
 //
 // # The port model
 //

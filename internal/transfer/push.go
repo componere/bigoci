@@ -43,6 +43,10 @@ type PushSpec struct {
 	// budget. The zero value is the library's default policy, so a caller
 	// that has nothing to say about retries leaves it out.
 	Retry retry.Policy
+	// Progress receives a snapshot of the push whenever there is one worth
+	// delivering. It is optional, and a nil one is not a callback that does
+	// nothing: a push nobody is watching keeps no account at all.
+	Progress Report
 }
 
 // Push uploads the source as a bigoci artifact and returns the descriptor of
@@ -75,6 +79,11 @@ type PushSpec struct {
 // and surfaces, wrapped in context naming the part it came from. A cancelled
 // ctx does the same and cuts short any wait in progress, so a worker between
 // attempts leaves as promptly as one between parts.
+//
+// A caller that named a [PushSpec.Progress] gets snapshots from the moment the
+// split is planned until the moment the push ends, and none afterwards.
+// Failures before that point — a spec that does not describe a transfer, a
+// file that will not split — report nothing at all.
 func Push(ctx context.Context, spec PushSpec) (ocispec.Descriptor, error) {
 	if err := spec.validate(); err != nil {
 		return ocispec.Descriptor{}, err
@@ -85,6 +94,22 @@ func Push(ctx context.Context, spec PushSpec) (ocispec.Descriptor, error) {
 		return ocispec.Descriptor{}, fmt.Errorf("plan the split: %w", err)
 	}
 
+	report := newReporter(spec.Progress)
+	report.begin(PhaseTransferring, split.FileSize(), split.NumParts())
+
+	descriptor, err := push(ctx, spec, split, report)
+	report.finish(err)
+
+	return descriptor, err
+}
+
+// push is the whole of a push, from the hash pass to the manifest.
+//
+// It is split out of [Push] so that every way a push can end passes through
+// one return, and the terminal snapshot is delivered there. A deferred report
+// would do the same job with a named return, which this repository does not
+// use; a report at each return would be five copies of one rule.
+func push(ctx context.Context, spec PushSpec, split plan.Plan, report *reporter) (ocispec.Descriptor, error) {
 	parts := make([]manifest.Part, split.NumParts())
 
 	var fileDigest digest.Digest
@@ -103,7 +128,7 @@ func Push(ctx context.Context, spec PushSpec) (ocispec.Descriptor, error) {
 	group.Go(func() error {
 		defer close(jobs)
 
-		hashed, hashErr := hashParts(groupCtx, spec.Source, split, parts, jobs)
+		hashed, hashErr := hashParts(groupCtx, spec.Source, split, parts, jobs, report)
 		if hashErr != nil {
 			return hashErr
 		}
@@ -114,7 +139,13 @@ func Push(ctx context.Context, spec PushSpec) (ocispec.Descriptor, error) {
 
 	// One uploader serves every worker: it holds no per-worker scratch, and
 	// the claim set it carries is the thing the workers have to share.
-	up := &uploader{blobs: spec.Blobs, source: spec.Source, claims: newClaimSet(), policy: spec.Retry}
+	up := &uploader{
+		blobs:  spec.Blobs,
+		source: spec.Source,
+		claims: newClaimSet(),
+		policy: spec.Retry,
+		report: report,
+	}
 	// A worker beyond the part count would only ever take one closed-channel
 	// receive and leave, so its goroutine is never started.
 	for range min(spec.Workers, split.NumParts()) {
@@ -127,11 +158,13 @@ func Push(ctx context.Context, spec PushSpec) (ocispec.Descriptor, error) {
 		return ocispec.Descriptor{}, err
 	}
 
-	if err := ensureEmptyConfig(ctx, spec.Blobs, spec.Retry); err != nil {
+	report.finalizing()
+
+	if err := ensureEmptyConfig(ctx, spec.Blobs, spec.Retry, report); err != nil {
 		return ocispec.Descriptor{}, err
 	}
 
-	return writeManifest(ctx, spec.Manifests, spec.Retry, manifest.Artifact{
+	return writeManifest(ctx, spec.Manifests, spec.Retry, report, manifest.Artifact{
 		FileDigest: fileDigest,
 		FileSize:   split.FileSize(),
 		PartSize:   spec.PartSize,
@@ -164,18 +197,22 @@ func (s PushSpec) validate() error {
 //
 // The pass checks for cancellation between parts rather than inside one, so a
 // cancelled push stops after at most one more part is hashed.
+//
+// It is also where a push's hashed byte count comes from, which is the only
+// thing a watcher has to look at while the first part is still being read.
 func hashParts(
 	ctx context.Context,
 	source Source,
 	split plan.Plan,
 	parts []manifest.Part,
 	jobs chan<- partJob,
+	report *reporter,
 ) (digest.Digest, error) {
 	fileHasher := sha256.New()
 	partHasher := sha256.New()
 	// Both hashers see every byte, and resetting the part hasher between parts
 	// does not disturb the writer, so one multi-writer serves the whole pass.
-	hashers := io.MultiWriter(partHasher, fileHasher)
+	hashers := hashesInto(io.MultiWriter(partHasher, fileHasher), report)
 	buf := make([]byte, copyBufferSize)
 
 	for part := range split.Parts() {
@@ -218,6 +255,9 @@ type uploader struct {
 	claims *claimSet
 	// policy is how often and how patiently a part is attempted.
 	policy retry.Policy
+	// report is where the push's progress is recorded, nil when nobody is
+	// watching.
+	report *reporter
 }
 
 // drain takes jobs until the channel closes, uploading every part the
@@ -249,14 +289,44 @@ func (u *uploader) drain(ctx context.Context, jobs <-chan partJob) error {
 // instead of waiting is sound because a part that exhausts its attempts fails
 // the whole push — there is no path where a skipped part needs the blob and
 // the claiming worker's upload quietly never happened.
+//
+// Crediting a skipped part is the one thing that cannot be settled here and
+// now. A worker that skips because the claiming upload has already finished
+// knows its part is in place; a worker that skips while that upload is still
+// running does not, and saying otherwise would report a file of identical
+// parts as nearly complete for the whole duration of the one upload that is
+// really moving it. So the ledger holds such a worker's part until the
+// claimer settles, and the claimer credits it then.
 func (u *uploader) upload(ctx context.Context, job partJob) error {
-	if !u.claims.claim(job.dgst) {
+	claimed, credit := u.claims.take(job.dgst)
+	if !claimed {
+		if credit > 0 {
+			u.report.complete(job.part.Index, job.part.Size, true)
+		}
+
 		return nil
 	}
 
-	return retry.Do(ctx, u.policy, func(ctx context.Context) error {
-		return u.attempt(ctx, job)
-	})
+	// uploaded outlives the attempts on purpose: the skip rule asks whether
+	// this transfer moved the part's own bytes across the whole budget, not
+	// on the attempt that happened to succeed. An upload whose bytes landed
+	// and whose answer was lost is found by the next attempt's existence
+	// check, and that part was not skipped.
+	var uploaded bool
+
+	if err := attempted(ctx, u.report, u.policy, func(ctx context.Context) error {
+		return u.attempt(ctx, job, &uploaded)
+	}); err != nil {
+		return err
+	}
+
+	// The settle names every part this upload put in place: the claimer's own,
+	// which it credits by index, and the twins that were waiting on it.
+	placed := u.claims.settle(job.dgst)
+	u.report.complete(job.part.Index, job.part.Size, !uploaded)
+	u.report.completeTwins(placed-1, job.part.Size)
+
+	return nil
 }
 
 // attempt makes one try at getting the part into the repository: ask whether
@@ -280,7 +350,7 @@ func (u *uploader) upload(ctx context.Context, job partJob) error {
 // The orchestrator knows better: it unwraps its own tag and reports the disk
 // failure plain, so a source that went away ends the push at once instead of
 // costing three more reads of a range that will not read.
-func (u *uploader) attempt(ctx context.Context, job partJob) error {
+func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) error {
 	exists, err := u.blobs.Exists(ctx, job.dgst)
 	if err != nil {
 		return fmt.Errorf("check whether part %d (%s) exists: %w", job.part.Index, job.dgst, err)
@@ -289,7 +359,15 @@ func (u *uploader) attempt(ctx context.Context, job partJob) error {
 		return nil
 	}
 
-	content := tagSourceReads{r: io.NewSectionReader(u.source, job.part.Offset, job.part.Size)}
+	content := tagSourceReads{
+		r:      io.NewSectionReader(u.source, job.part.Offset, job.part.Size),
+		report: u.report,
+	}
+
+	// Set before the upload rather than after it, because an upload that dies
+	// mid-body still moved the part's bytes and still spends them.
+	*uploaded = true
+
 	if err := u.blobs.Put(ctx, job.dgst, job.part.Size, content); err != nil {
 		var src *sourceError
 		if errors.As(err, &src) {
@@ -308,14 +386,26 @@ func (u *uploader) attempt(ctx context.Context, job partJob) error {
 // failure the source raises stays recognizable after the adapter has wrapped
 // it as a failed request. [io.EOF] passes through untouched — the transport
 // reads it as the end of the body.
+//
+// It is also where a push counts the bytes it puts on the wire. This is as
+// close to the transport as the core can get: the adapter hands this reader
+// to [net/http.Request], so a byte read out of it is a byte the transport
+// has taken to send. Bytes an attempt read and never got an answer for are
+// counted too, which is the honest account — they crossed the boundary.
 type tagSourceReads struct {
 	// r is the range of the file being uploaded.
 	r io.Reader
+	// report is where the bytes handed over are counted, nil when nobody is
+	// watching.
+	report *reporter
 }
 
-// Read reads from the source's range and tags every failure except EOF.
+// Read reads from the source's range, counts what the transport took, and
+// tags every failure except EOF.
 func (t tagSourceReads) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
+	t.report.wire(int64(n))
+
 	if err != nil && !errors.Is(err, io.EOF) {
 		return n, &sourceError{err: err}
 	}
@@ -342,32 +432,78 @@ func (e *sourceError) Unwrap() error {
 	return e.err
 }
 
+// claim is what a push knows about one digest: whether the worker that took
+// it has finished putting it in the registry, and how many workers skipped it
+// before that happened and are owed the credit for their parts.
+type claim struct {
+	// done says the upload of this digest has settled, so the bytes are in
+	// the registry and a part that holds them is in place.
+	done bool
+	// waiting counts the workers that skipped this digest while its upload
+	// was still running. The settling worker credits their parts.
+	waiting int
+}
+
 // claimSet tracks the digests some worker of this push already owns, so a
-// digest that appears in several parts is uploaded exactly once.
+// digest that appears in several parts is uploaded exactly once — and so the
+// parts sharing it are credited exactly once, by the worker whose upload put
+// their bytes where they belong.
 type claimSet struct {
-	// mu guards claimed: workers claim concurrently.
+	// mu guards claims: workers claim concurrently.
 	mu sync.Mutex
-	// claimed holds every digest a worker has taken responsibility for.
-	claimed map[digest.Digest]struct{}
+	// claims holds what is known about every digest a worker has taken.
+	claims map[digest.Digest]claim
 }
 
 // newClaimSet returns an empty claim set for one push.
 func newClaimSet() *claimSet {
-	return &claimSet{claimed: make(map[digest.Digest]struct{})}
+	return &claimSet{claims: make(map[digest.Digest]claim)}
 }
 
-// claim reports whether the caller is the first worker to take dgst. Only the
-// first caller uploads; every later one skips the part.
-func (c *claimSet) claim(dgst digest.Digest) bool {
+// take records the caller's interest in dgst and reports what to do about it:
+// whether the caller is the first worker to take it and must upload it, and
+// how many parts the caller may credit for itself.
+//
+// The first value is the rule that has always been here — only the first
+// caller uploads, every later one skips. The second is the accounting under
+// it. A caller that skips a digest whose upload has already settled may
+// credit its own part at once, so it comes back a one. A caller that skips
+// one still being uploaded may not, so it comes back a zero and the ledger
+// remembers a part is owed. A caller told to upload credits nothing yet.
+func (c *claimSet) take(dgst digest.Digest) (bool, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, taken := c.claimed[dgst]; taken {
-		return false
-	}
-	c.claimed[dgst] = struct{}{}
+	held, taken := c.claims[dgst]
+	switch {
+	case !taken:
+		c.claims[dgst] = claim{}
 
-	return true
+		return true, 0
+	case held.done:
+		return false, 1
+	default:
+		held.waiting++
+		c.claims[dgst] = held
+
+		return false, 0
+	}
+}
+
+// settle marks the upload of dgst finished and returns how many parts it put
+// in place: the settling worker's own, plus every part whose worker skipped
+// the digest while the upload was still running.
+//
+// A worker whose upload fails never calls it, so nothing it was carrying is
+// ever credited — which is right, because the push it belongs to is over.
+func (c *claimSet) settle(dgst digest.Digest) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	waiting := c.claims[dgst].waiting
+	c.claims[dgst] = claim{done: true}
+
+	return 1 + waiting
 }
 
 // ensureEmptyConfig uploads the empty config blob the manifest references
@@ -379,10 +515,15 @@ func (c *claimSet) claim(dgst digest.Digest) bool {
 // built inside the attempt: a reader is consumed exactly once, and a second
 // attempt handed the first one's would send nothing under a Content-Length
 // that promises two bytes.
-func ensureEmptyConfig(ctx context.Context, blobs Blobs, policy retry.Policy) error {
+//
+// The two bytes are not counted as wire bytes. Progress accounting is about
+// the file, and a watcher reading a blob's worth of movement here would be
+// reading noise; that this step is happening at all is what [PhaseFinalizing]
+// says, and a retry of it is what the retry count says.
+func ensureEmptyConfig(ctx context.Context, blobs Blobs, policy retry.Policy, report *reporter) error {
 	descriptor, content := manifest.EmptyConfig()
 
-	return retry.Do(ctx, policy, func(ctx context.Context) error {
+	return attempted(ctx, report, policy, func(ctx context.Context) error {
 		exists, err := blobs.Exists(ctx, descriptor.Digest)
 		if err != nil {
 			return fmt.Errorf("check whether the empty config blob exists: %w", err)
@@ -413,6 +554,7 @@ func writeManifest(
 	ctx context.Context,
 	manifests Manifests,
 	policy retry.Policy,
+	report *reporter,
 	artifact manifest.Artifact,
 ) (ocispec.Descriptor, error) {
 	body, err := manifest.Encode(artifact)
@@ -422,7 +564,7 @@ func writeManifest(
 
 	var dgst digest.Digest
 
-	if err := retry.Do(ctx, policy, func(ctx context.Context) error {
+	if err := attempted(ctx, report, policy, func(ctx context.Context) error {
 		written, putErr := manifests.Put(ctx, ocispec.MediaTypeImageManifest, body)
 		if putErr != nil {
 			return fmt.Errorf("write the manifest: %w", putErr)

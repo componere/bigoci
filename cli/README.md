@@ -79,6 +79,7 @@ table, so it is easy to check that the CLI adds nothing of its own.
 | `-plain-http` | both | `bigoci.WithPlainHTTP` |
 | `-debug` | both | `bigoci.WithHTTPClient` with an observing transport |
 | `-timeout <duration>` | both | `context.WithTimeout` around the call |
+| `-progress <duration>` | both | `bigoci.WithProgress` with a snapshot-storing callback |
 
 ### Unset means absent
 
@@ -194,6 +195,69 @@ bigoci: push: -timeout must not be negative, got -30s
 A deadline that expires is exit 1, not 2. It says so on the first failure line
 and still reports the failure underneath it.
 
+### -progress
+
+`-progress` prints one line on standard error every interval while a transfer
+runs, and one more when it ends. Leaving it unset prints nothing and installs
+no library option, so a run without it writes exactly the bytes it always did.
+
+An explicit `-progress 0` means the same as leaving it alone: no lines. A
+negative duration is a usage error, exit 2, for the same reason a negative
+`-timeout` is:
+
+```
+$ bigoci push -progress -5s model.bin 127.0.0.1:5050/team/model:v1
+bigoci: push: -progress must not be negative, got -5s
+```
+
+The interval is how often a line is printed and nothing else. The library
+reports when it has something to report; the CLI stores the last snapshot and
+a goroutine on its own clock prints it. That is why the line keeps appearing
+with unchanged counters through a thirty-second backoff — which is exactly the
+window worth watching, and the window a printer driven by the library's
+callbacks would go silent through.
+
+## Progress output
+
+Every line has the same shape, whatever the transfer is doing:
+
+```
+bigoci: progress push transferring pct=40 parts=17/40 skipped=0 bytes=8589934592/21474836480 wire=9126805504 hashed=21474836480 retries=1 elapsed=29.3s
+```
+
+| Field | Meaning |
+|---|---|
+| `push`/`pull` | which way the transfer is moving |
+| phase | `resolving`, `transferring`, `finalizing`, `done`, or `failed` |
+| `pct` | `bytes` placed over `bytes` total, floored; `100` only when every byte is placed |
+| `parts` | parts provably in place, over the parts the file splits into |
+| `skipped` | parts of those that cost no bytes of their own |
+| `bytes` | bytes provably in place, over the file size |
+| `wire` | bytes of the file that crossed the registry boundary, every attempt counted |
+| `hashed` | bytes read off the local disk and hashed |
+| `retries` | re-entries into a retry budget, across the whole transfer |
+| `elapsed` | wall time since the transfer started, to a tenth of a second |
+
+`bytes` and `wire` are two different questions, and the difference is the
+point. `bytes` is how much of the file is done — a warm re-push reaches the
+full count with `wire=0`. `wire` is what that cost, and a broken attempt that
+sent half a part before dropping leaves `wire` above `bytes` for the rest of
+the run. Divide the change in `wire` by the change in `elapsed` across two
+lines for throughput; there is deliberately no rate and no estimate on the
+line, because every one this CLI could compute would be wrong somewhere.
+
+The byte counts are exact, so `bytes=` compares directly against the preflight
+line's own count.
+
+The phase is what says a transfer finished, never the counters: `pct=100` with
+`finalizing` is a push whose parts are all in the registry and whose manifest
+is still being written. Only `done` is success, and `failed` is the last line
+of a run that ended badly — the failure lines under it say why.
+
+The final line is printed the instant the transfer returns, above the `-debug`
+summary line and above the line that says how the run ended. Progress goes to
+standard error only; nothing about stdout changes.
+
 ## Output contract
 
 This is a contract, not a description. Recipes read these streams.
@@ -226,8 +290,8 @@ library is the one that reports an unreadable file. A pull's byte count is read
 back from the file it published.
 
 There is no terminal detection, no color, no progress bar, and no line
-rewriting. The output is byte-identical piped and interactive. Progress, when
-it arrives, will arrive as whole lines.
+rewriting. The output is byte-identical piped and interactive. Progress
+arrives as whole lines, and only when `-progress` asks for it.
 
 ## Exit codes
 
@@ -939,7 +1003,8 @@ which build ran, not as proof of which source it was built from.
 
 ## Limits
 
-- No progress output. It arrives with the library phase that implements it.
+- No progress bar, no rate, and no estimate. `-progress` prints whole lines
+  with exact counts; see [Progress output](#progress-output).
 - No credentials flag. Authentication is the library's `docker login`
   credentials, always, and the way to run without them is an empty
   `DOCKER_CONFIG`.

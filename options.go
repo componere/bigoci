@@ -66,7 +66,8 @@ type PullOption interface {
 
 // TransferOption configures either direction. An option is one of these when
 // what it sets means the same thing to a push and to a pull, which today is
-// [WithWorkers] alone: part size and title describe how a file is stored and
+// [WithWorkers] and [WithProgress]: how many parts move at once, and who
+// watches them move. Part size and title describe how a file is stored and
 // belong to the push that decides it.
 type TransferOption interface {
 	PushOption
@@ -261,6 +262,8 @@ type pushSettings struct {
 	title string
 	// workers is how many parts upload at once.
 	workers int
+	// progress receives the push's snapshots, nil when nobody is watching.
+	progress ProgressFunc
 }
 
 // validate rejects settings that cannot describe a transfer. [Client.Push]
@@ -280,6 +283,8 @@ func (s pushSettings) validate() error {
 type pullSettings struct {
 	// workers is how many parts download at once.
 	workers int
+	// progress receives the pull's snapshots, nil when nobody is watching.
+	progress ProgressFunc
 }
 
 // validate rejects settings that cannot describe a transfer. [Client.Pull]

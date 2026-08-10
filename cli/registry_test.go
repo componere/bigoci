@@ -99,6 +99,13 @@ type fakeRegistry struct {
 	// denying answers every request with 401, for a registry that will not
 	// serve this repository to whoever is asking.
 	denying bool
+	// arrived, when set, runs before the first request is served and blocks
+	// it until it returns, for a test that needs a transfer held part way
+	// through while it looks at what the CLI has printed so far. It runs once
+	// and on the server's goroutine, so it must not touch the registry.
+	arrived func()
+	// arrivals counts requests, so arrived runs for the first one only.
+	arrivals int
 	// server is the HTTP server the registry is served by.
 	server *httptest.Server
 	// host is the address the server listens on: the registry half of a
@@ -236,6 +243,10 @@ func (r *fakeRegistry) denied() bool {
 // so at the first request, whatever that request was for.
 func (r *fakeRegistry) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if hold := r.firstArrival(); hold != nil {
+			hold()
+		}
+
 		if !r.denied() {
 			next.ServeHTTP(w, req)
 
@@ -245,6 +256,38 @@ func (r *fakeRegistry) guard(next http.Handler) http.Handler {
 		w.Header().Set("WWW-Authenticate", r.challenge())
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 	})
+}
+
+// holdFirstRequest arranges for hold to run, on the server's goroutine and
+// before anything is served, when the first request of a transfer arrives.
+//
+// It is the seam a test uses to look at a transfer while it is still running.
+// The first request is a useful place to stand because everything the library
+// does before it — validating, planning the split, opening the first progress
+// snapshot — has provably already happened.
+func (r *fakeRegistry) holdFirstRequest(hold func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.arrived = hold
+}
+
+// firstArrival returns the hold to run for this request, and nil for every
+// request after the first. It clears the hook as it hands it over, so a hold
+// that blocks does not block the requests behind it too.
+func (r *fakeRegistry) firstArrival() func() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.arrivals++
+	if r.arrivals > 1 {
+		return nil
+	}
+
+	hold := r.arrived
+	r.arrived = nil
+
+	return hold
 }
 
 // challenge is the WWW-Authenticate value the guard sends beside its 401,

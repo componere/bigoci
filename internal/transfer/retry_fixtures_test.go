@@ -522,7 +522,7 @@ func (c *blobCalls) blob(dgst digest.Digest) upload {
 // whatever it is written and answers with the digest of those bytes, for a
 // test whose subject is somewhere else. The expectation is optional because a
 // push that fails never reaches the manifest.
-func acceptingManifests(t *testing.T) *ocimocks.MockManifests {
+func acceptingManifests(t testing.TB) *ocimocks.MockManifests {
 	t.Helper()
 
 	manifests := ocimocks.NewMockManifests(t)

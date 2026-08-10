@@ -61,7 +61,7 @@ func fileContent(size int64) []byte {
 // It applies the split rule directly instead of calling the plan package, so a
 // test states its own expectation rather than borrowing the one the code under
 // test works from.
-func splitParts(t *testing.T, content []byte) []manifest.Part {
+func splitParts(t testing.TB, content []byte) []manifest.Part {
 	t.Helper()
 
 	size := int64(len(content))
@@ -82,7 +82,7 @@ func splitParts(t *testing.T, content []byte) []manifest.Part {
 
 // artifactFor returns the artifact a push of content at [fixturePartSize]
 // writes, together with the canonical manifest bytes that artifact encodes to.
-func artifactFor(t *testing.T, content []byte, title string) (manifest.Artifact, []byte) {
+func artifactFor(t testing.TB, content []byte, title string) (manifest.Artifact, []byte) {
 	t.Helper()
 
 	artifact := manifest.Artifact{
@@ -105,7 +105,7 @@ func artifactFor(t *testing.T, content []byte, title string) (manifest.Artifact,
 // every worker can read the same content at once. Both expectations are
 // optional because a push of an empty file reads nothing and a push that fails
 // its spec check reads nothing either.
-func mockSource(t *testing.T, content []byte) *filemocks.MockSource {
+func mockSource(t testing.TB, content []byte) *filemocks.MockSource {
 	t.Helper()
 
 	source := filemocks.NewMockSource(t)
@@ -187,7 +187,7 @@ func (u *uploads) digests() []digest.Digest {
 //
 // Both expectations are optional, because a push that fails early may reach
 // neither.
-func mockBlobs(t *testing.T, held map[digest.Digest]bool) (*ocimocks.MockBlobs, *uploads) {
+func mockBlobs(t testing.TB, held map[digest.Digest]bool) (*ocimocks.MockBlobs, *uploads) {
 	t.Helper()
 
 	recorded := newUploads()
@@ -342,7 +342,7 @@ func (b *blobBody) Close() error {
 // from store by a registry that honors every byte range it is given. The
 // expectation is optional because a pull that stops at the manifest fetches
 // nothing.
-func mockBlobsServing(t *testing.T, store *blobStore) *ocimocks.MockBlobs {
+func mockBlobsServing(t testing.TB, store *blobStore) *ocimocks.MockBlobs {
 	t.Helper()
 
 	blobs := ocimocks.NewMockBlobs(t)
@@ -460,7 +460,7 @@ func (f *memFile) commitCount() int {
 // Commit is deliberately left unwired: a test that expects a pull to succeed
 // adds the expectation itself, and one that expects a failure leaves it off,
 // so a pull that publishes a file it should not have fails loudly.
-func mockSink(t *testing.T, file *memFile) *filemocks.MockSink {
+func mockSink(t testing.TB, file *memFile) *filemocks.MockSink {
 	t.Helper()
 
 	sink := filemocks.NewMockSink(t)
