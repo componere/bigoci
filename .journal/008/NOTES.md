@@ -38,3 +38,7 @@ Independent review: Separate harness, timing/resume, and result-reporting passes
 Verification: `moon run root:test root:build root:build-windows root:format cli:check bench:check docs:build`, benchmark `go test -race -count=1 ./...`, `bash -n`, and `git diff --check` pass. `root:lint` still reports the three pre-existing G704 findings in unchanged `internal/oci/redirect.go` and `internal/oci/repository.go`; no audit change touches those files.
 External closeout: Exact Latitude server `sv_bBmw0K2Mra9VR` remains destroyed and absent from inventory; all four exact GHCR packages from the corrected attempt remain deleted. No paid or registry resource is left running.
 Next: Push `feat/bench-audit-fixes`, open the review PR, and monitor its exact-head checks. Keep session 008 open until the user requests session closeout.
+
+## 2026-08-09 17:21 — Published for review
+PR: Opened ready-for-review PR [#40](https://github.com/componere/bigoci/pull/40), `fix(bench): preserve measurement validity and correct defaults`, from `feat/bench-audit-fixes` at exact head `50951092ef307a88a9bf6128f6753537ef964d03`.
+Hosted proof: CI, GitHub Pages, CodeQL actions analysis, and CodeQL Go analysis all completed successfully on that exact head. GitHub reports the PR merge state clean. It remains open and unmerged pending human review; session 008 remains open.
