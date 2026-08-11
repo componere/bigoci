@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // The bearer gateway's own vocabulary: the endpoint it issues tokens at, the

@@ -6,7 +6,7 @@ import (
 
 	digest "github.com/opencontainers/go-digest"
 
-	"github.com/componere/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/plan"
 )
 
 // copyBufferSize is the size of the scratch buffer a transfer streams a part

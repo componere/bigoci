@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/file"
+	"github.com/imgoci/bigoci/internal/file"
 )
 
 // The content a pull assembles in these tests. It is three parts of partLen

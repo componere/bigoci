@@ -5,11 +5,11 @@ description: Every exported identifier of package bigoci, with its signature, be
 
 # API reference
 
-Package `bigoci`, import path `github.com/componere/bigoci`. Everything the
+Package `bigoci`, import path `github.com/imgoci/bigoci`. Everything the
 package exports is listed on this page.
 
 The godoc at
-[pkg.go.dev/github.com/componere/bigoci](https://pkg.go.dev/github.com/componere/bigoci)
+[pkg.go.dev/github.com/imgoci/bigoci](https://pkg.go.dev/github.com/imgoci/bigoci)
 is the canonical rendering: it is generated from the source and carries the
 full doc comments. This page groups the same surface by what a reader looks
 up. Where the two disagree, the godoc is right.

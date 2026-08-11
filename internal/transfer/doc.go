@@ -7,7 +7,7 @@
 // a transfer, [Source] and [Sink] for the file end.
 //
 // Every registry operation runs under the policy in the
-// [github.com/componere/bigoci/internal/retry] package: a part, the empty
+// [github.com/imgoci/bigoci/internal/retry] package: a part, the empty
 // config blob, and each manifest call are attempted again while some layer
 // under the failure marked it worth repeating, and a failure nobody marked is
 // terminal. The orchestrator is the only thing in bigoci that repeats an
@@ -47,5 +47,5 @@
 // bigoci itself, without the core noticing.
 //
 // The design is documented at
-// https://componere.github.io/bigoci/explanation/design/.
+// https://imgoci.github.io/bigoci/explanation/design/.
 package transfer

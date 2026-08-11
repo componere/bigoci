@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
-	"github.com/componere/bigoci/internal/file"
+	"github.com/imgoci/bigoci"
+	"github.com/imgoci/bigoci/internal/file"
 )
 
 // absentTag is a tag no fixture ever writes.

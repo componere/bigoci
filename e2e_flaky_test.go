@@ -16,9 +16,9 @@ import (
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/componere/bigoci"
-	"github.com/componere/bigoci/internal/file"
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci"
+	"github.com/imgoci/bigoci/internal/file"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // The proxy this suite puts between the client and zot, so a row can break

@@ -5,10 +5,10 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
-	filemocks "github.com/componere/bigoci/internal/file/mocks"
-	ocimocks "github.com/componere/bigoci/internal/oci/mocks"
-	"github.com/componere/bigoci/internal/plan"
-	"github.com/componere/bigoci/internal/transfer"
+	filemocks "github.com/imgoci/bigoci/internal/file/mocks"
+	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
+	"github.com/imgoci/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // The pairs below measure what watching a whole transfer costs: the same

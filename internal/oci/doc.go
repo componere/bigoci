@@ -6,7 +6,7 @@
 // that never buffers a part — lives in the HTTP layer. The protocol surface
 // it needs is six endpoints: HEAD and GET on a blob, POST and PUT to upload
 // one, and GET and PUT on a manifest. The reasoning is documented at
-// https://componere.github.io/bigoci/explanation/design/.
+// https://imgoci.github.io/bigoci/explanation/design/.
 //
 // [NewRepository] parses a reference into the repository it names.
 // [Repository.Blobs] and [Repository.Manifests] return the two adapters,

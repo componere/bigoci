@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // newTargetClient builds the library client one cell talks through, plus

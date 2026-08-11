@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
-	"github.com/componere/bigoci/internal/manifest"
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci"
+	"github.com/imgoci/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // The credential a reflected-error fixture gives the client. Its value is

@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
-	"github.com/componere/bigoci/internal/file"
-	"github.com/componere/bigoci/internal/manifest"
-	"github.com/componere/bigoci/internal/plan"
+	"github.com/imgoci/bigoci"
+	"github.com/imgoci/bigoci/internal/file"
+	"github.com/imgoci/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/plan"
 )
 
 // otherTitle is the title the option tests set in place of the file name.

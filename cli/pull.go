@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // runPull parses pull's command line and runs the pull it describes.

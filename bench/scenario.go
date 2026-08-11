@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // iteration runs one repeat of one cell: generate a unique fixture, push it

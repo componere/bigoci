@@ -17,7 +17,7 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // maxManifestSize is the largest manifest body this adapter reads. Registries

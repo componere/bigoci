@@ -1,7 +1,7 @@
 package mocks
 
 import (
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // The generated mock must keep satisfying the port it doubles. This assert

@@ -9,7 +9,7 @@ tags:
 project:
   title: 'bigoci docs'
   description: 'MkDocs documentation site for bigoci.'
-  owner: 'componere'
+  owner: 'imgoci'
   maintainers:
     - 'jmgilman'
 

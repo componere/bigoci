@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // This file is the gate on the claim that a transfer nobody is watching pays

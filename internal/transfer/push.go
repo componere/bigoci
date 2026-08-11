@@ -13,9 +13,9 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/componere/bigoci/internal/manifest"
-	"github.com/componere/bigoci/internal/plan"
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // PushSpec wires one push: the file end of the transfer, the registry end,

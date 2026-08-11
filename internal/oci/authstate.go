@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // tokenMargin is the most of a token's stated lifetime bigoci gives back. A

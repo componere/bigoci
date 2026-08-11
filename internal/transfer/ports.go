@@ -23,7 +23,7 @@ import (
 //
 // What an implementation does owe is a verdict. A failure that repeating the
 // request could fix is returned tagged with
-// [github.com/componere/bigoci/internal/retry.Transient], carrying whatever
+// [github.com/imgoci/bigoci/internal/retry.Transient], carrying whatever
 // wait the far end asked for; everything else is returned untagged and ends
 // the transfer at once. The tag is what lets the orchestrator decide without
 // knowing how the implementation talks to a registry, so an implementation is

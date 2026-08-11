@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // retryAfterHeader is the response header a registry asks for a pause in.

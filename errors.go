@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/componere/bigoci/internal/manifest"
-	"github.com/componere/bigoci/internal/oci"
-	"github.com/componere/bigoci/internal/transfer"
+	"github.com/imgoci/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // ErrNotFound reports that the registry does not hold what a transfer named:

@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // The query parameters a token request carries beside whatever the realm

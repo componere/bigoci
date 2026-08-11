@@ -9,7 +9,7 @@ import (
 
 	"oras.land/oras-go/v2/registry/remote/credentials"
 
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // credLookupTimeout is how long one credential lookup may take.

@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // Static answers every registry with one credential the caller supplied.

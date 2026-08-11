@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // progressPrefix is what every progress line starts with. It shares no prefix

@@ -7,7 +7,7 @@ package mocks
 import (
 	"context"
 
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/oci"
 	mock "github.com/stretchr/testify/mock"
 )
 

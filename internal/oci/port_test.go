@@ -1,8 +1,8 @@
 package oci_test
 
 import (
-	"github.com/componere/bigoci/internal/oci"
-	"github.com/componere/bigoci/internal/transfer"
+	"github.com/imgoci/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // The adapter satisfies the ports the core depends on. Nothing in the oci

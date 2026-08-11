@@ -6,7 +6,7 @@
 // order as the layers of a standard OCI image manifest. This makes push and
 // pull parallel, retryable, and resumable on every registry. The design and
 // the artifact format are documented at
-// https://componere.github.io/bigoci/.
+// https://imgoci.github.io/bigoci/.
 //
 // # Usage
 //

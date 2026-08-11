@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // maxRedirectHops is how many times one request may be re-issued at a location
