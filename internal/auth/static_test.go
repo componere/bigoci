@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/auth"
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/auth"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // TestStaticAnswersEveryRegistryWithTheSameCredential pins what Static is

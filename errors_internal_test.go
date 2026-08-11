@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/manifest"
-	"github.com/componere/bigoci/internal/oci"
-	"github.com/componere/bigoci/internal/transfer"
+	"github.com/imgoci/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 func TestClassifyKeepsTheWholeChain(t *testing.T) {

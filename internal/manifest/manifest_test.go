@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/manifest"
 )
 
 // Sizes shared by the fixtures. They are small on purpose: neither the split

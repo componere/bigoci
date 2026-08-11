@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/plan"
 )
 
 // This file probes stream from inside the package, because the rule it pins

@@ -12,7 +12,7 @@ per-registry layer size caps.
 ## Installation
 
 ```sh
-go get github.com/componere/bigoci
+go get github.com/imgoci/bigoci
 ```
 
 Requires Go 1.26.4 or newer.
@@ -44,8 +44,8 @@ if err := client.Pull(ctx, ref, bigoci.ToFile("/data/model.bin")); err != nil {
 A push splits at 512 MiB and moves 8 parts at once; `WithPartSize` and
 `WithWorkers` change that. For a registry that asks for a credential, build
 the client with `bigoci.WithDockerCredentials()`. The
-[documentation site](https://componere.github.io/bigoci/) has the guides, and
-[pkg.go.dev](https://pkg.go.dev/github.com/componere/bigoci) has the API.
+[documentation site](https://imgoci.github.io/bigoci/) has the guides, and
+[pkg.go.dev](https://pkg.go.dev/github.com/imgoci/bigoci) has the API.
 
 ## Status
 
@@ -65,10 +65,10 @@ A benchmark matrix run on bare metal against zot, CNCF Distribution, and
 GHCR confirmed the 512 MiB part size and set the worker default at 8, and
 closed the design's one open question: worker count does not self-tune (zero
 throttling observed; `WithWorkers` is the escape hatch). The numbers live in the
-[benchmarks reference](https://componere.github.io/bigoci/reference/benchmarks/).
+[benchmarks reference](https://imgoci.github.io/bigoci/reference/benchmarks/).
 A manually-triggered conformance job exercises GHCR; the
-[design document](https://componere.github.io/bigoci/explanation/design/) and
-the [artifact format contract](https://componere.github.io/bigoci/reference/format/)
+[design document](https://imgoci.github.io/bigoci/explanation/design/) and
+the [artifact format contract](https://imgoci.github.io/bigoci/reference/format/)
 are settled.
 
 Progress reporting and the documentation site land in v0.1.0: `WithProgress`

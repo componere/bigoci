@@ -1,8 +1,8 @@
 package file_test
 
 import (
-	"github.com/componere/bigoci/internal/file"
-	"github.com/componere/bigoci/internal/transfer"
+	"github.com/imgoci/bigoci/internal/file"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // The adapter satisfies the transfer ports structurally: nothing in the

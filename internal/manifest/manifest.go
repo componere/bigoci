@@ -19,7 +19,7 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"github.com/componere/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/plan"
 )
 
 // The bigoci media types. The ".v1" suffix is the format version: a breaking

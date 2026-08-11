@@ -84,12 +84,12 @@ enough to split into several parts, and it copies in seconds.
 
 ```sh
 go mod init bigoci-tutorial
-go get github.com/componere/bigoci
+go get github.com/imgoci/bigoci
 ```
 
 ```text
 go: creating new go.mod: module bigoci-tutorial
-go: added github.com/componere/bigoci v0.1.0
+go: added github.com/imgoci/bigoci v0.1.1
 go: added github.com/distribution/reference v0.6.0
 go: added github.com/opencontainers/go-digest v1.0.0
 go: added github.com/opencontainers/image-spec v1.1.1
@@ -112,7 +112,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // repo is the registry and the repository on it that we push to and pull from.

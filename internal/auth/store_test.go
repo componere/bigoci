@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"oras.land/oras-go/v2/registry/remote/credentials/trace"
 
-	"github.com/componere/bigoci/internal/auth"
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/auth"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // The registries the rows below are written for and looked up under.

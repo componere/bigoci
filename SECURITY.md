@@ -9,7 +9,7 @@ latest release is supported.
 ## Reporting a Vulnerability
 
 Report vulnerabilities privately through [GitHub's private vulnerability
-reporting](https://github.com/componere/bigoci/security/advisories/new) for
+reporting](https://github.com/imgoci/bigoci/security/advisories/new) for
 this repository.
 
 Do not use public GitHub issues, pull requests, discussions, or other public

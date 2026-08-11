@@ -13,7 +13,7 @@ import (
 	"github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // The URL schemes a repository talks. Registries are https; plain HTTP is

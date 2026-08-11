@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	ocimocks "github.com/componere/bigoci/internal/oci/mocks"
-	"github.com/componere/bigoci/internal/retry"
-	"github.com/componere/bigoci/internal/transfer"
+	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
+	"github.com/imgoci/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // This file is about what happens inside one part once its fetch has started:

@@ -17,8 +17,8 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
-	"github.com/componere/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci"
+	"github.com/imgoci/bigoci/internal/manifest"
 )
 
 // The repository the fake registries in these tests serve. The path has two

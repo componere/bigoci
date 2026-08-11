@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // progressStep is how many bytes of movement pile up before they are worth a

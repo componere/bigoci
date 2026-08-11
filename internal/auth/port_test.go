@@ -1,8 +1,8 @@
 package auth_test
 
 import (
-	"github.com/componere/bigoci/internal/auth"
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/auth"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // The adapter satisfies the credentials port structurally: the oci package

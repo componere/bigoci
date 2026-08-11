@@ -1,7 +1,7 @@
 package mocks
 
 import (
-	"github.com/componere/bigoci/internal/transfer"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // The generated mocks must keep satisfying the ports they double. These

@@ -301,7 +301,7 @@ matched.
 
 Every sentinel the library exports has a row, 3 through 7 with no gaps. The
 CLI's own documentation — flags, the request log, and evidence recipes — is
-[`cli/README.md`](https://github.com/componere/bigoci/blob/master/cli/README.md),
+[`cli/README.md`](https://github.com/imgoci/bigoci/blob/master/cli/README.md),
 which owns this table.
 
 Three rules govern the table:

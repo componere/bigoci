@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // repoName is the repository path the fake registries in these tests serve.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 const (

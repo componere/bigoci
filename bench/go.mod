@@ -1,9 +1,9 @@
-module github.com/componere/bigoci/bench
+module github.com/imgoci/bigoci/bench
 
 go 1.26.4
 
 require (
-	github.com/componere/bigoci v0.0.0
+	github.com/imgoci/bigoci v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -18,4 +18,4 @@ require (
 	oras.land/oras-go/v2 v2.6.2 // indirect
 )
 
-replace github.com/componere/bigoci => ../
+replace github.com/imgoci/bigoci => ../

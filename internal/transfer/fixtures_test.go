@@ -15,10 +15,10 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	filemocks "github.com/componere/bigoci/internal/file/mocks"
-	"github.com/componere/bigoci/internal/manifest"
-	ocimocks "github.com/componere/bigoci/internal/oci/mocks"
-	"github.com/componere/bigoci/internal/plan"
+	filemocks "github.com/imgoci/bigoci/internal/file/mocks"
+	"github.com/imgoci/bigoci/internal/manifest"
+	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
+	"github.com/imgoci/bigoci/internal/plan"
 )
 
 // The sizes every fixture is built from. They are tiny on purpose: the

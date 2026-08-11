@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/oci"
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // blobPayload is the content the blob fixtures move. The bytes are

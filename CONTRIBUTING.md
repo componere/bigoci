@@ -3,7 +3,7 @@
 Thank you for contributing to bigoci.
 
 bigoci has one purpose: efficient upload and download of large files to and from OCI registries.
-Changes that add other use cases are out of scope; see the [design document](https://componere.github.io/bigoci/explanation/design/) before proposing features.
+Changes that add other use cases are out of scope; see the [design document](https://imgoci.github.io/bigoci/explanation/design/) before proposing features.
 For private vulnerability reporting, use [SECURITY.md](SECURITY.md) instead of public channels.
 
 ## Reporting Bugs

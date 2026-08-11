@@ -18,7 +18,7 @@ jobs:
   conformance:
     # A fork has no package of ours to push to, and dispatching this workflow
     # from one must not try.
-    if: github.repository == 'componere/bigoci'
+    if: github.repository == 'imgoci/bigoci'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,7 +33,7 @@ jobs:
       # assembled from the context because the guard above already pins which
       # repository may run this, and one literal reads better than three
       # expressions naming the same thing.
-      BIGOCI_CONFORMANCE_REPO: ghcr.io/componere/bigoci/conformance
+      BIGOCI_CONFORMANCE_REPO: ghcr.io/imgoci/bigoci/conformance
       # The same package as the packages API names it: everything after the
       # owner, URL-encoded, because a container package name may hold slashes.
       CONFORMANCE_PACKAGE: bigoci%2Fconformance

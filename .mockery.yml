@@ -26,7 +26,7 @@ pkgname: mocks
 structname: '{{.Mock}}{{.InterfaceName}}'
 
 packages:
-  github.com/componere/bigoci/internal/transfer:
+  github.com/imgoci/bigoci/internal/transfer:
     interfaces:
       # Registry ports: implemented by internal/oci, the net/http
       # distribution client.
@@ -47,7 +47,7 @@ packages:
         config:
           dir: internal/file/mocks
           filename: sink.go
-  github.com/componere/bigoci/internal/oci:
+  github.com/imgoci/bigoci/internal/oci:
     interfaces:
       # Credential port: implemented by internal/auth, the Docker
       # configuration and credential-helper adapter.

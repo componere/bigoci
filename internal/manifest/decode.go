@@ -11,7 +11,7 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"github.com/componere/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/plan"
 )
 
 // Decode parses manifest JSON and returns the artifact it describes.

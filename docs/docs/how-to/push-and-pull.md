@@ -11,7 +11,7 @@ project and a registry you can write to.
 ## Install
 
 ```sh
-go get github.com/componere/bigoci
+go get github.com/imgoci/bigoci
 ```
 
 ## Push a file

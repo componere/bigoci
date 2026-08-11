@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // The example compiles with the package, so the usage it shows can never

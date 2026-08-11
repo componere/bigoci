@@ -11,7 +11,7 @@
 // stays the single source of truth for how a file divides into parts.
 //
 // The format contract — media types, annotations, manifest layout, and limits
-// — is documented at https://componere.github.io/bigoci/reference/format/.
+// — is documented at https://imgoci.github.io/bigoci/reference/format/.
 //
 // The package is pure: it performs no I/O and holds no state.
 package manifest

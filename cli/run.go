@@ -17,7 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 const (

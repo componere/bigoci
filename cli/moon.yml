@@ -5,7 +5,7 @@ stack: 'backend'
 project:
   title: 'bigoci reference CLI'
   description: 'Reference CLI that demonstrates the bigoci library. Never published, never released.'
-  owner: 'componere'
+  owner: 'imgoci'
   maintainers:
     - 'jmgilman'
 

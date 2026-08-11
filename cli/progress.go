@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 const (

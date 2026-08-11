@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // runPush parses push's command line and runs the push it describes.

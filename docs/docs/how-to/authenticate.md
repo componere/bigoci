@@ -53,7 +53,7 @@ thing the Docker command line does. Cloud helpers such as
 `docker-credential-ecr-login` work for that reason and need no bigoci-side code.
 
 bigoci reads no configuration and runs no helper until you name
-[`WithDockerCredentials`](https://pkg.go.dev/github.com/componere/bigoci#WithDockerCredentials).
+[`WithDockerCredentials`](https://pkg.go.dev/github.com/imgoci/bigoci#WithDockerCredentials).
 
 A helper that hangs does not hang your transfer: a lookup gives up after ten
 seconds and fails the transfer with what the helper was doing.
@@ -135,7 +135,7 @@ or a service principal.
 ## If you need a credential source bigoci does not have
 
 The escape hatch is your own transport, through
-[`WithHTTPClient`](https://pkg.go.dev/github.com/componere/bigoci#WithHTTPClient).
+[`WithHTTPClient`](https://pkg.go.dev/github.com/imgoci/bigoci#WithHTTPClient).
 go-containerregistry's `authn` keychain is the usual reason: it resolves ECR,
 ACR, and Artifact Registry credentials in process, with no helper binaries.
 

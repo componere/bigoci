@@ -15,10 +15,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
-	filemocks "github.com/componere/bigoci/internal/file/mocks"
-	"github.com/componere/bigoci/internal/manifest"
-	ocimocks "github.com/componere/bigoci/internal/oci/mocks"
-	"github.com/componere/bigoci/internal/retry"
+	filemocks "github.com/imgoci/bigoci/internal/file/mocks"
+	"github.com/imgoci/bigoci/internal/manifest"
+	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // This file holds the fixtures the retry suites drive transfers with: the

@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
-	"github.com/componere/bigoci/internal/file"
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci"
+	"github.com/imgoci/bigoci/internal/file"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // The fixture the kill rows move, and the moment they stop it.

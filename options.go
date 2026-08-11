@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/componere/bigoci/internal/auth"
-	"github.com/componere/bigoci/internal/oci"
+	"github.com/imgoci/bigoci/internal/auth"
+	"github.com/imgoci/bigoci/internal/oci"
 )
 
 // PartSize is the size in bytes of the parts a file is split into: the P of
@@ -24,7 +24,7 @@ type PartSize int64
 // CNCF Distribution cell. Against GHCR its push and pull medians were within
 // 2.5 and 4.1 percent of 256 MiB parts, while smaller parts paid visible
 // per-part overhead at local scale (bare-metal matrix, 2026-08; see
-// https://componere.github.io/bigoci/reference/benchmarks/).
+// https://imgoci.github.io/bigoci/reference/benchmarks/).
 const DefaultPartSize PartSize = 512 << 20
 
 // DefaultWorkers is how many parts a push or a pull moves at once when the
@@ -36,7 +36,7 @@ const DefaultPartSize PartSize = 512 << 20
 // same-site median changed by at most 1.3 percent. The corrected GHCR matrix
 // kept all eight workers active and recorded no 429 or 503 response
 // (bare-metal matrix, 2026-08; see
-// https://componere.github.io/bigoci/reference/benchmarks/). Callers can
+// https://imgoci.github.io/bigoci/reference/benchmarks/). Callers can
 // override the count with [WithWorkers].
 const DefaultWorkers = 8
 

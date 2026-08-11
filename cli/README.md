@@ -5,7 +5,7 @@ versioned.** There is no compatibility promise of any kind. It exists so a
 human can watch the bigoci library work against a real registry. Nothing in
 this repository publishes it, no release job builds it, and the `replace`
 directive in its `go.mod` points at the working tree, which makes
-`go install github.com/componere/bigoci/cli@latest` impossible on purpose.
+`go install github.com/imgoci/bigoci/cli@latest` impossible on purpose.
 
 If you are looking for a supported way to move large files to a registry, use
 the library.

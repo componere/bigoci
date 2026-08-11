@@ -17,7 +17,7 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci"
+	"github.com/imgoci/bigoci"
 )
 
 // The bounds the counting proxy puts on a kill it is delivering. Neither sits

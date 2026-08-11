@@ -38,7 +38,7 @@ import (
 // one would be a way to push to somebody's repository by accident.
 const (
 	// repoEnv names the repository every row transfers to, written the way a
-	// reference writes it with no tag: "ghcr.io/componere/bigoci/conformance".
+	// reference writes it with no tag: "ghcr.io/imgoci/bigoci/conformance".
 	// Unset means there is no registry to run against and the suite skips.
 	repoEnv = "BIGOCI_CONFORMANCE_REPO"
 	// credentialEnv names the directory holding the config.json the

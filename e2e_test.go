@@ -23,8 +23,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/componere/bigoci"
-	"github.com/componere/bigoci/internal/file"
+	"github.com/imgoci/bigoci"
+	"github.com/imgoci/bigoci/internal/file"
 )
 
 // The registry these tests run against: a real zot in a container, which is

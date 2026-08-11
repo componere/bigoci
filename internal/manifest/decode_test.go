@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/componere/bigoci/internal/manifest"
-	"github.com/componere/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/plan"
 )
 
 // The example artifact from the format reference: a 732.5 MiB file pushed at

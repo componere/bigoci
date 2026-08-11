@@ -16,5 +16,5 @@
 // from.
 //
 // The push and pull paths this serves are described at
-// https://componere.github.io/bigoci/explanation/design/.
+// https://imgoci.github.io/bigoci/explanation/design/.
 package file

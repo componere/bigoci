@@ -1,4 +1,4 @@
-module github.com/componere/bigoci
+module github.com/imgoci/bigoci
 
 go 1.26.4
 

@@ -5,7 +5,7 @@
 // part i covers bytes [i*P, min((i+1)*P, size)). The last part may be
 // shorter than P, a file of size P or smaller has exactly one part, and the
 // number of parts never exceeds [MaxParts]. The contract is documented at
-// https://componere.github.io/bigoci/reference/format/.
+// https://imgoci.github.io/bigoci/reference/format/.
 //
 // A [Plan] is an immutable value that answers questions about one split
 // arithmetically. It never materializes a slice, so planning a transfer

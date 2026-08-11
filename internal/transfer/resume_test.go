@@ -13,11 +13,11 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	filemocks "github.com/componere/bigoci/internal/file/mocks"
-	"github.com/componere/bigoci/internal/manifest"
-	ocimocks "github.com/componere/bigoci/internal/oci/mocks"
-	"github.com/componere/bigoci/internal/plan"
-	"github.com/componere/bigoci/internal/transfer"
+	filemocks "github.com/imgoci/bigoci/internal/file/mocks"
+	"github.com/imgoci/bigoci/internal/manifest"
+	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
+	"github.com/imgoci/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // This file is about the pull that finds something already on disk: which

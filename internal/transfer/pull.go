@@ -11,9 +11,9 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/componere/bigoci/internal/manifest"
-	"github.com/componere/bigoci/internal/plan"
-	"github.com/componere/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/manifest"
+	"github.com/imgoci/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/retry"
 )
 
 // PullSpec wires one pull: the registry end of the transfer, the file end,
