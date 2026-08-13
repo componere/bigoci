@@ -12,3 +12,4 @@
 | 008 | 2026-08-09 | Benchmark audit and corrected GHCR rerun | complete | Audited and repaired benchmark measurement boundaries, reran GHCR with real eight-worker cells, changed the measured default to eight workers, and merged PR #40 with all external resources cleaned. |
 | 009 | 2026-08-09 | Phase 7 — progress, docs set, and v0.1.0 released | complete | Shipped the progress reporting option, the full Diátaxis docs set, and the API surface pass (PRs #44, #45, #47), passed all five phase-7 manual gates, and released v0.1.0 via PR #11 — closing all seven phases of the plan. |
 | 010 | 2026-08-09 | Independent security audit and remediation | complete | Proved six exploitable security boundaries, merged six regression-backed fixes, and passed the final integrated exploit matrix on master. |
+| 011 | 2026-08-13 | New work session | in-progress | Created a fresh session and reserved it for the next substantive request. |
