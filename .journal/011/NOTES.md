@@ -30,3 +30,6 @@ Two discrepancies prevent an unconditional approval. First, v1.1.0 declares Go 1
 
 ## 2026-08-13 14:33 — Past Retry-After fix opened
 Dispatched an isolated agent in go-oci-blob. PR #35 (`fix: clamp elapsed Retry-After dates to zero`) is open and non-draft at commit `af45bd3`; it changes only `retry.go` and `retryable_test.go`. The regression fails against v1.1.0 with a negative duration and passes with `max(at.Sub(now), 0)`. Reviewed the diff: it preserves retryability and changes only the unusable past-date delay. CI, CodeQL for Go and Actions, and Pages all passed; GitHub reports the PR mergeable and CLEAN.
+
+## 2026-08-13 14:40 — v1.1.1 released
+Squash-merged fix PR #35 as verified master commit `5eeca6d`. Release Please created PR #36 with only the 1.1.1 manifest bump and changelog entry; its CI, CodeQL, and Pages checks passed, then it was squash-merged as `3290a98`. Release Please created the protected tag and draft release. After all workflows on the release commit passed (Release Please, CI including e2e, both CodeQL runs, and Pages), published the draft. `v1.1.1` is public at `https://github.com/imgoci/go-oci-blob/releases/tag/v1.1.1`; `go list -m -json github.com/imgoci/go-oci-blob@v1.1.1` resolves the tag to `3290a98fe9db7d2be2dc92cacdb9c64ea978af2e`.
