@@ -47,3 +47,6 @@ Pushed `feat/go-oci-blob` at `c210f20` and opened non-draft PR #53, `refactor(oc
 
 ## 2026-08-14 08:51 — Close
 Merged approved bigoci PR #53 by squash as master commit `56d6a26`, fast-forwarded the local `master`, and removed the `feat/go-oci-blob` worktree and branch. The session leaves `go-oci-blob` v1.1.1 public and bigoci fully cut over to it with the repository check suite and live zot cold/warm push smoke green. No migration work remains; normal Release Please automation owns the next bigoci release.
+
+## 2026-08-14 08:54 — Close cleanup completed
+Fast-forwarded the local `imgoci/go-oci-blob` `master` to released commit `3290a98` and removed the five merged session worktrees for the error model, destination hardening, wire progress, embedding docs, and elapsed Retry-After fix. Both repositories' local default branches are current and all session implementation worktrees are removed.
