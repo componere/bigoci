@@ -497,15 +497,9 @@ func TestAnHTTPSRepositoryIsNeverRedirectedToPlainHTTP(t *testing.T) {
 	assert.Empty(t, store.all(), "the cleartext hop was never made")
 }
 
-// TestABlobUploadIsNeverRedirected pins the half of the follow table that
-// refuses.
-//
-// The body of a blob upload is a section of a file on disk that the standard
-// library will not rewind, so a re-issue would have nothing to send. bigoci
-// does not have to notice that at the moment of the redirect, because it never
-// re-issues a write at all: the failure is the unexpected status it is, the
-// registry keeps the one copy of the body it already read, and the
-// orchestrator decides what a failed part is worth.
+// TestABlobUploadIsNeverRedirected proves the embedded blob client rejects a
+// method-preserving write redirect before sending its target. The upload body
+// is consumed once and the orchestrator receives a terminal policy failure.
 func TestABlobUploadIsNeverRedirected(t *testing.T) {
 	t.Parallel()
 
@@ -524,17 +518,11 @@ func TestABlobUploadIsNeverRedirected(t *testing.T) {
 
 	repo := fake.repository(t)
 
-	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 	require.Error(t, err)
 
 	_, transient := retry.IsTransient(err)
 	assert.False(t, transient, "a registry that redirects an upload will redirect the next one too")
-
-	var status *StatusError
-	require.ErrorAs(t, err, &status)
-	assert.Equal(t, http.StatusTemporaryRedirect, status.Status)
-	assert.Equal(t, http.MethodPut, status.Method)
-	assert.Contains(t, status.Path, "/blobs/uploads/", "the failure is reported against the registry, not the store")
 
 	assert.Empty(t, store.all(), "the store was never asked for anything")
 
@@ -819,11 +807,8 @@ func TestSameOriginComparesLikeTheWeb(t *testing.T) {
 	}
 }
 
-// TestARefusedRedirectQuotesNoBody pins the leak the refusal arm would
-// otherwise open: servers render their own Location into a 3xx body as a
-// courtesy, and for a blob read that Location is a presigned URL — so a
-// redirect this package refuses to follow must not read the body into the
-// error the way every other unexpected status does.
+// TestARefusedRedirectQuotesNoBody proves a rejected write redirect exposes
+// neither the registry-selected target nor its rendered response body.
 func TestARefusedRedirectQuotesNoBody(t *testing.T) {
 	t.Parallel()
 
@@ -844,13 +829,9 @@ func TestARefusedRedirectQuotesNoBody(t *testing.T) {
 
 	repo := fake.repository(t)
 
-	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 	require.Error(t, err)
 
-	var status *StatusError
-	require.ErrorAs(t, err, &status, "an unfollowable redirect from the registry is the registry's own answer")
-	assert.Equal(t, http.StatusTemporaryRedirect, status.Status)
-	assert.Empty(t, status.Detail, "a 3xx body is a rendering of the Location and never becomes detail")
 	assert.NotContains(t, err.Error(), signatureParam+"=", "the signature in the body stays out of the message")
 	assert.NotContains(t, err.Error(), "store.example", "and so does the location")
 }

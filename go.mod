@@ -1,10 +1,11 @@
 module github.com/imgoci/bigoci
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/Shopify/toxiproxy/v2 v2.12.0
 	github.com/distribution/reference v0.6.0
+	github.com/imgoci/go-oci-blob v1.1.1
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/stretchr/testify v1.11.1

@@ -8,6 +8,10 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+// WireProgress records upload bytes consumed by the transport. The adapter
+// calls it with positive deltas and stops before [Blobs.Put] returns.
+type WireProgress func(delta int64)
+
 // Blobs is the distribution-spec blob surface of one repository: the three
 // blob operations a transfer performs, and nothing else the spec offers.
 //
@@ -29,6 +33,7 @@ import (
 // knowing how the implementation talks to a registry, so an implementation is
 // the only thing that can supply it — nothing above this port can tell a
 // dropped connection from a refused request.
+
 type Blobs interface {
 	// Exists reports whether the repository holds the blob with digest dgst.
 	//
@@ -100,7 +105,7 @@ type Blobs interface {
 	// Retrying is the caller's job, because only the caller can produce a
 	// fresh reader over the same bytes. An implementation that receives a
 	// spent reader has been handed a bug, not a retry.
-	Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader) error
+	Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader, wire WireProgress) error
 }
 
 // Manifests is the manifest surface of one repository, bound at construction

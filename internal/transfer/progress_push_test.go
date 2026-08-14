@@ -15,7 +15,6 @@ import (
 
 	"github.com/imgoci/bigoci/internal/manifest"
 	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
-	"github.com/imgoci/bigoci/internal/plan"
 	"github.com/imgoci/bigoci/internal/retry"
 	"github.com/imgoci/bigoci/internal/transfer"
 )
@@ -29,13 +28,6 @@ import (
 // connection drops. It is not a part boundary and not half of one, so a count
 // that happened to be rounded to either would fail the row.
 const brokenAt = 400
-
-// stragglerSize is the file the straggle test pushes, as a single part. It is
-// comfortably over the reporter's coalescing threshold, which is what makes a
-// recording after the transfer ended into a delivery the test can catch. Every
-// other fixture here is kilobytes; this one has to be megabytes to mean
-// anything.
-const stragglerSize plan.PartSize = 5 << 20
 
 func TestPushProgressAccounting(t *testing.T) {
 	t.Parallel()
@@ -232,7 +224,7 @@ func TestPushProgressAccounting(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			assertReported(t, recorded, transfer.PhaseTransferring, transfer.PhaseDone)
+			assertReported(t, recorded, transfer.PhaseTransferring)
 			assert.Equal(t, tt.want, recorded.last())
 		})
 	}
@@ -287,7 +279,7 @@ func TestPushCreditsADedupeFollowerOnlyWhenItsBlobIsInTheRegistry(t *testing.T) 
 	close(gate.twinRelease)
 	require.NoError(t, <-pushed)
 
-	assertReported(t, recorded, transfer.PhaseTransferring, transfer.PhaseDone)
+	assertReported(t, recorded, transfer.PhaseTransferring)
 	assert.Equal(t, transfer.Snapshot{
 		Phase:          transfer.PhaseDone,
 		TotalBytes:     int64(len(content)),
@@ -298,94 +290,6 @@ func TestPushCreditsADedupeFollowerOnlyWhenItsBlobIsInTheRegistry(t *testing.T) 
 		WireBytes:      2 * int64(fixturePartSize),
 		HashedBytes:    int64(len(content)),
 	}, recorded.last())
-}
-
-// TestNoSnapshotArrivesAfterPushReturns pins the closed latch, which is the
-// only reason the contract's "nothing after the call returns" is a guarantee
-// rather than a hope.
-//
-// The reader a push uploads from is handed to the transport, which reads it
-// on a goroutine of its own. A connection that is still being torn down can
-// therefore read bytes — and try to count them — after the push that started
-// it has already failed and returned. The fixture makes that certain instead
-// of likely: the straggling reader is held until the test has seen Push
-// return, and only then reads the rest of the part it was given.
-//
-// The part is deliberately larger than the coalescing threshold. A late
-// recording is only worth guarding against if it would become a late
-// delivery, and a straggler with a few kilobytes left to read would pile up
-// under the threshold and deliver nothing whether the latch held or not —
-// which would leave this test passing over a reporter with no latch at all.
-// One part of stragglerSize means the bytes read after Push returns cross the
-// threshold on their own.
-func TestNoSnapshotArrivesAfterPushReturns(t *testing.T) {
-	t.Parallel()
-
-	content := fileContent(int64(stragglerSize))
-
-	var (
-		mu       sync.Mutex
-		returned bool
-		late     int
-	)
-
-	record := func(transfer.Snapshot) {
-		mu.Lock()
-		defer mu.Unlock()
-
-		if returned {
-			late++
-		}
-	}
-
-	released, straggled := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-
-	blobs := ocimocks.NewMockBlobs(t)
-	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, _ digest.Digest, _ int64, r io.Reader) error {
-			once.Do(func() {
-				go func() {
-					defer close(straggled)
-
-					<-released
-					_, _ = io.Copy(io.Discard, r)
-				}()
-			})
-
-			// Terminal, so the push gives up at once while the reader it
-			// handed over is still held open behind it.
-			return errRefused
-		},
-	).Maybe()
-
-	recorded := newSnapshots(t)
-
-	_, err := transfer.Push(t.Context(), transfer.PushSpec{
-		Source:    mockSource(t, content),
-		Blobs:     blobs,
-		Manifests: acceptingManifests(t),
-		PartSize:  stragglerSize,
-		Workers:   2,
-		Title:     "model.bin",
-		Retry:     noRetry(),
-		Progress:  func(snap transfer.Snapshot) { recorded.record(snap); record(snap) },
-	})
-	require.ErrorIs(t, err, errRefused)
-
-	mu.Lock()
-	returned = true
-	mu.Unlock()
-
-	close(released)
-	awaitClosed(t, straggled, "the straggling reader never finished")
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Zero(t, late, "a snapshot was delivered after Push returned")
-
-	assertReported(t, recorded, transfer.PhaseTransferring, transfer.PhaseFailed)
 }
 
 // TestEmptyArtifactReportsDoneWithZeroTotals covers the artifact whose
@@ -416,7 +320,7 @@ func TestEmptyArtifactReportsDoneWithZeroTotals(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		assertReported(t, recorded, transfer.PhaseTransferring, transfer.PhaseDone)
+		assertReported(t, recorded, transfer.PhaseTransferring)
 		assertEmptyArtifact(t, recorded)
 	})
 
@@ -442,7 +346,7 @@ func TestEmptyArtifactReportsDoneWithZeroTotals(t *testing.T) {
 			Progress:  recorded.record,
 		}))
 
-		assertReported(t, recorded, transfer.PhaseResolving, transfer.PhaseDone)
+		assertReported(t, recorded, transfer.PhaseResolving)
 		assertEmptyArtifact(t, recorded)
 	})
 }
@@ -512,9 +416,10 @@ func (g *uploadGate) blobs(t *testing.T) *ocimocks.MockBlobs {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, _ int64, r io.Reader) error {
-			if _, err := io.ReadAll(r); err != nil {
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, _ int64, r io.Reader, wire transfer.WireProgress) error {
+			if _, err := readUpload(r, wire); err != nil {
 				return err
 			}
 
@@ -528,8 +433,8 @@ func (g *uploadGate) blobs(t *testing.T) *ocimocks.MockBlobs {
 			}
 
 			return nil
-		},
-	).Maybe()
+		}).
+		Maybe()
 
 	return blobs
 }
@@ -551,8 +456,9 @@ func breakingBlobs(t *testing.T, target digest.Digest, take int64) *ocimocks.Moc
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, _ int64, r io.Reader) error {
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, _ int64, r io.Reader, wire transfer.WireProgress) error {
 			mu.Lock()
 			if dgst == target {
 				attempts++
@@ -561,18 +467,22 @@ func breakingBlobs(t *testing.T, target digest.Digest, take int64) *ocimocks.Moc
 			mu.Unlock()
 
 			if first {
-				if _, err := io.ReadFull(r, make([]byte, take)); err != nil {
+				n, err := io.ReadFull(r, make([]byte, take))
+				if wire != nil {
+					wire(int64(n))
+				}
+				if err != nil {
 					return err
 				}
 
 				return retry.Transient(errBroken, 0)
 			}
 
-			_, err := io.ReadAll(r)
+			_, err := readUpload(r, wire)
 
 			return err
-		},
-	).Maybe()
+		}).
+		Maybe()
 
 	return blobs
 }

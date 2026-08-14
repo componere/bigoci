@@ -435,7 +435,7 @@ func TestAnUploadNeverProbesBecauseItsSessionAlreadyAsked(t *testing.T) {
 	repo := fake.repository(t)
 
 	require.NoError(t, repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)),
-		strings.NewReader(authPayload)))
+		strings.NewReader(authPayload), nil))
 
 	for _, one := range fake.all() {
 		assert.NotEqual(t, apiPrefix, one.path, "the session's own POST is what learned the challenge")
@@ -455,10 +455,16 @@ func TestASpentBodyOnAVirginRepositoryProbesFirst(t *testing.T) {
 	session, err := url.Parse(fake.server.URL + apiPrefix + authRepo + "/blobs/uploads/session-1")
 	require.NoError(t, err)
 
-	err = repo.Blobs().completeUpload(
-		t.Context(), session, authDigest(), int64(len(authPayload)), strings.NewReader(authPayload),
+	req, err := http.NewRequestWithContext(
+		t.Context(), http.MethodPut, session.String(), struct{ io.Reader }{strings.NewReader(authPayload)},
 	)
 	require.NoError(t, err)
+	req.ContentLength = int64(len(authPayload))
+
+	resp, err := (registryBlobTransport{repo: repo}).RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	var probes int
 

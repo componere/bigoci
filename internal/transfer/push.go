@@ -360,15 +360,14 @@ func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) err
 	}
 
 	content := tagSourceReads{
-		r:      io.NewSectionReader(u.source, job.part.Offset, job.part.Size),
-		report: u.report,
+		r: io.NewSectionReader(u.source, job.part.Offset, job.part.Size),
 	}
 
 	// Set before the upload rather than after it, because an upload that dies
 	// mid-body still moved the part's bytes and still spends them.
 	*uploaded = true
 
-	if err := u.blobs.Put(ctx, job.dgst, job.part.Size, content); err != nil {
+	if err := u.blobs.Put(ctx, job.dgst, job.part.Size, content, u.report.wire); err != nil {
 		var src *sourceError
 		if errors.As(err, &src) {
 			return fmt.Errorf(
@@ -386,25 +385,14 @@ func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) err
 // failure the source raises stays recognizable after the adapter has wrapped
 // it as a failed request. [io.EOF] passes through untouched — the transport
 // reads it as the end of the body.
-//
-// It is also where a push counts the bytes it puts on the wire. This is as
-// close to the transport as the core can get: the adapter hands this reader
-// to [net/http.Request], so a byte read out of it is a byte the transport
-// has taken to send. Bytes an attempt read and never got an answer for are
-// counted too, which is the honest account — they crossed the boundary.
 type tagSourceReads struct {
 	// r is the range of the file being uploaded.
 	r io.Reader
-	// report is where the bytes handed over are counted, nil when nobody is
-	// watching.
-	report *reporter
 }
 
-// Read reads from the source's range, counts what the transport took, and
-// tags every failure except EOF.
+// Read reads from the source's range and tags every failure except EOF.
 func (t tagSourceReads) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
-	t.report.wire(int64(n))
 
 	if err != nil && !errors.Is(err, io.EOF) {
 		return n, &sourceError{err: err}
@@ -532,7 +520,7 @@ func ensureEmptyConfig(ctx context.Context, blobs Blobs, policy retry.Policy, re
 			return nil
 		}
 
-		if err := blobs.Put(ctx, descriptor.Digest, descriptor.Size, bytes.NewReader(content)); err != nil {
+		if err := blobs.Put(ctx, descriptor.Digest, descriptor.Size, bytes.NewReader(content), nil); err != nil {
 			return fmt.Errorf("upload the empty config blob: %w", err)
 		}
 

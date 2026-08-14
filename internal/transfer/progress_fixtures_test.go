@@ -122,17 +122,16 @@ func assertBounds(t *testing.T, snap transfer.Snapshot) {
 	assert.LessOrEqual(t, snap.HashedBytes, snap.TotalBytes, "more bytes hashed than the file holds")
 }
 
-// assertReported checks the shape of a whole run: some snapshots arrived,
-// the first one opened in wantFirst, and the last one is the terminal phase
-// the transfer's outcome calls for.
-func assertReported(t *testing.T, s *snapshots, wantFirst, wantLast transfer.Phase) {
+// assertReported checks that a whole successful run opened in wantFirst and
+// ended in the terminal done phase.
+func assertReported(t *testing.T, s *snapshots, wantFirst transfer.Phase) {
 	t.Helper()
 
 	all := s.all()
 	require.NotEmpty(t, all, "a transfer that ran must report at least the terminal snapshot")
 
 	assert.Equal(t, wantFirst, all[0].Phase, "the first snapshot opened in the wrong phase")
-	assert.Equal(t, wantLast, all[len(all)-1].Phase, "the last snapshot is not the terminal one")
+	assert.Equal(t, transfer.PhaseDone, all[len(all)-1].Phase, "the last snapshot is not the terminal one")
 
 	for i, snap := range all[:len(all)-1] {
 		assert.NotEqual(t, transfer.PhaseDone, snap.Phase, "snapshot %d is terminal but is not last", i)

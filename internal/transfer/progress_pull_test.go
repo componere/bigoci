@@ -218,7 +218,7 @@ func TestPullProgressAccounting(t *testing.T) {
 			}))
 
 			assert.Equal(t, content, file.bytes(), "the pull must still assemble the file it was accounting for")
-			assertReported(t, recorded, transfer.PhaseResolving, transfer.PhaseDone)
+			assertReported(t, recorded, transfer.PhaseResolving)
 			assert.Equal(t, tt.want, recorded.last())
 		})
 	}

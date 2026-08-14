@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	ociblob "github.com/imgoci/go-oci-blob"
 	digest "github.com/opencontainers/go-digest"
 
 	"github.com/imgoci/bigoci/internal/retry"
@@ -61,8 +62,8 @@ var ErrNotFound = errors.New("not found")
 
 // ErrUnauthorized reports that the registry refused a request rather than
 // answering it: it wants credentials the request did not carry, or the ones
-// it carried do not reach what the request asked for. A 401's or a 403's
-// [StatusError] matches it through [errors.Is], the same way a 404 matches
+// it carried do not reach what the request asked for. A 401 or 403 registry
+// error matches it through [errors.Is], the same way a 404 matches
 // [ErrNotFound]; nothing wraps the sentinel in a second layer.
 //
 // The sentinel means "your credentials" and nothing else, which is what makes
@@ -76,11 +77,11 @@ var ErrNotFound = errors.New("not found")
 // unauthorized too. That is admitted the way [ErrTooLarge] admits a 413
 // answering a manifest write: sniffing the body to tell the two apart would
 // be the vendor table again in a different shape.
-var ErrUnauthorized = errors.New("unauthorized")
+var ErrUnauthorized = ociblob.ErrUnauthorized
 
 // ErrTooLarge reports that the registry refused a request as larger than it
-// accepts. A 413's [StatusError] matches it through [errors.Is], the same way
-// a 404 matches [ErrNotFound].
+// accepts. A 413 registry error matches it through [errors.Is], the same way a
+// 404 matches [ErrNotFound].
 //
 // A 413 is how a registry states its layer cap. bigoci ships no table of
 // vendor limits — the caps differ per registry, they move, and a stale table
@@ -92,7 +93,7 @@ var ErrUnauthorized = errors.New("unauthorized")
 // against: a bigoci manifest is a few hundred kilobytes at the format's own
 // part cap, no registry rejects one as too large, and sniffing the body to
 // tell the two apart would be the vendor table again in a different shape.
-var ErrTooLarge = errors.New("too large")
+var ErrTooLarge = ociblob.ErrTooLarge
 
 // Option configures a [Repository] as it is built. The set is deliberately
 // small: everything else about a repository comes from the reference it is
@@ -293,7 +294,22 @@ func NewRepository(ref string, opts ...Option) (*Repository, error) {
 
 // Blobs returns the adapter for this repository's blob endpoints.
 func (r *Repository) Blobs() *Blobs {
-	return &Blobs{repo: r}
+	client := ociblob.New(
+		ociblob.WithTransport(registryBlobTransport{repo: r}),
+		ociblob.WithStorageTransport(storageBlobTransport{repo: r}),
+		ociblob.WithPlainHTTP(r.scheme == schemeHTTP),
+		ociblob.WithRetryPolicy(ociblob.RetryPolicy{}),
+		ociblob.WithWriteRedirects(false),
+	)
+
+	return &Blobs{
+		repo:   r,
+		client: client,
+		target: ociblob.Repository{
+			Host: r.host,
+			Name: r.name,
+		},
+	}
 }
 
 // Manifests returns the adapter for this repository's manifest endpoints,
@@ -317,16 +333,14 @@ func (r *Repository) endpoint(path string) *url.URL {
 	}
 }
 
-// newRequest builds a request to endpoint. Every request this package sends
-// is built here, which is what guarantees they all carry the caller's context
-// and whatever credential the registry has asked for.
+// newRequest builds a repository-native request to endpoint with the caller's
+// context and the credential the registry has asked for.
 //
 // Authenticating is a pre-condition of a request rather than a recovery from
 // one: what a request must carry is worked out before it is built, and the
-// header is set here and nowhere else but the two re-issues the registry
-// itself asks for — the one a challenge demands, and the one a redirect back
-// to the registry's own origin demands. A registry that has not challenged
-// asks for nothing, so nothing is set and nothing extra is sent.
+// header is set here and nowhere else but re-issues the registry itself asks
+// for. A registry that has not challenged asks for nothing, so nothing is set
+// and nothing extra is sent.
 func (r *Repository) newRequest(
 	ctx context.Context,
 	method string,
@@ -338,22 +352,32 @@ func (r *Repository) newRequest(
 		return nil, fmt.Errorf("build %s request for %s: %w", method, endpoint.Path, err)
 	}
 
+	if err := r.authorizeRequest(req); err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// authorizeRequest attaches the credential req needs, resolving the registry's
+// challenge first when req carries a body that cannot be replayed.
+func (r *Repository) authorizeRequest(req *http.Request) error {
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
-		if resolved := r.auth.resolve(ctx); resolved != nil {
-			return nil, resolved
+		if resolved := r.auth.resolve(req.Context()); resolved != nil {
+			return resolved
 		}
 	}
 
-	header, err := r.auth.authorize(ctx, method)
+	header, err := r.auth.authorize(req.Context(), req.Method)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if header != "" {
 		req.Header.Set(headerAuthorization, header)
 	}
 
-	return req, nil
+	return nil
 }
 
 // send sends req and reports the registry's verdict on it back to the auth
@@ -364,16 +388,37 @@ func (r *Repository) newRequest(
 // the credential the request carried and goes to [Repository.accepted], which
 // hands back the response unless the registry named somewhere else to get it.
 func (r *Repository) send(req *http.Request) (*http.Response, error) {
-	resp, err := r.do(req)
+	return r.sendWith(req, r.do, r.accepted)
+}
+
+// requestSender performs one HTTP request and returns its raw response.
+type requestSender func(req *http.Request) (*http.Response, error)
+
+// responseAcceptance records a non-refusal response and applies the redirect
+// behavior owned by the caller of [Repository.sendWith].
+type responseAcceptance func(
+	req *http.Request,
+	resp *http.Response,
+	presented string,
+) (*http.Response, error)
+
+// sendWith sends req through send, answers one authentication challenge, and
+// delegates every accepted response to accept.
+func (r *Repository) sendWith(
+	req *http.Request,
+	send requestSender,
+	accept responseAcceptance,
+) (*http.Response, error) {
+	resp, err := send(req)
 	if err != nil {
 		return nil, err
 	}
 
 	if isRefusal(resp.StatusCode) {
-		return r.answer(req, resp)
+		return r.answerWith(req, resp, send, accept)
 	}
 
-	return r.accepted(req, resp, req.Header.Get(headerAuthorization))
+	return accept(req, resp, req.Header.Get(headerAuthorization))
 }
 
 // accepted records that the registry answered a request rather than refusing
@@ -409,6 +454,18 @@ func (r *Repository) accepted(req *http.Request, resp *http.Response, presented 
 	return resp, nil
 }
 
+// acceptedDirect records an accepted credential and returns the response
+// without following a redirect. The embedding blob client owns that policy.
+func (r *Repository) acceptedDirect(
+	_ *http.Request,
+	resp *http.Response,
+	presented string,
+) (*http.Response, error) {
+	r.auth.answered(presented)
+
+	return resp, nil
+}
+
 // answer decides what a refusal is worth and acts on it.
 //
 // A 403 stating no requirement is a permission answer, or something standing
@@ -424,6 +481,17 @@ func (r *Repository) accepted(req *http.Request, resp *http.Response, presented 
 // opens the file again, which is the only place a second copy of those bytes
 // exists.
 func (r *Repository) answer(req *http.Request, resp *http.Response) (*http.Response, error) {
+	return r.answerWith(req, resp, r.do, r.accepted)
+}
+
+// answerWith decides what a refusal is worth and replays an answerable request
+// through send and accept.
+func (r *Repository) answerWith(
+	req *http.Request,
+	resp *http.Response,
+	send requestSender,
+	accept responseAcceptance,
+) (*http.Response, error) {
 	defer resp.Body.Close()
 
 	status := statusError(resp)
@@ -456,18 +524,17 @@ func (r *Repository) answer(req *http.Request, resp *http.Response) (*http.Respo
 		}, 0)
 	}
 
-	return r.replay(req, header)
+	return r.replayWith(req, header, send, accept)
 }
 
-// replay sends a refused request a second time, carrying what the auth state
-// acquired in answer to the challenge.
-//
-// This is the only place in bigoci where a request goes out twice, and it is
-// not a retry: no attempt is spent and no wait is taken, because the registry
-// asked for a different request rather than failing to answer this one. It
-// happens at most once — a refusal of the refreshed credential is the scope's
-// verdict, not another chance.
-func (r *Repository) replay(req *http.Request, header string) (*http.Response, error) {
+// replayWith sends a refused request once with header and delegates an accepted
+// response to accept.
+func (r *Repository) replayWith(
+	req *http.Request,
+	header string,
+	send requestSender,
+	accept responseAcceptance,
+) (*http.Response, error) {
 	second := req.Clone(req.Context())
 	second.Header.Set(headerAuthorization, header)
 
@@ -480,7 +547,7 @@ func (r *Repository) replay(req *http.Request, header string) (*http.Response, e
 		second.Body = body
 	}
 
-	resp, err := r.do(second)
+	resp, err := send(second)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +558,7 @@ func (r *Repository) replay(req *http.Request, header string) (*http.Response, e
 		return nil, r.auth.deny(req.Method, header, statusError(resp))
 	}
 
-	return r.accepted(second, resp, header)
+	return accept(second, resp, header)
 }
 
 // do sends req and reports a transport failure against the method and path it
@@ -526,25 +593,36 @@ func (r *Repository) doWith(
 	req *http.Request,
 	operation string,
 ) (*http.Response, error) {
+	// #nosec G704 -- repository URLs are validated at construction and external URLs at dial time.
 	resp, err := client.Do(req)
 	if err != nil {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-
-		if req.Context().Err() != nil {
-			return nil, fmt.Errorf("%s: %w", operation, req.Context().Err())
-		}
-
-		var targetErr *externalTargetError
-		if errors.As(err, &targetErr) {
-			return nil, fmt.Errorf("%s: %w", operation, targetErr)
-		}
-
-		return nil, retry.Transient(safeCause(operation+": transport failed", transportCause(err)), 0)
+		return nil, transportFailure(req, resp, err, operation)
 	}
 
 	return resp, nil
+}
+
+// transportFailure sanitizes and classifies one failed HTTP exchange.
+func transportFailure(
+	req *http.Request,
+	resp *http.Response,
+	err error,
+	operation string,
+) error {
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	if req.Context().Err() != nil {
+		return fmt.Errorf("%s: %w", operation, req.Context().Err())
+	}
+
+	var targetErr *externalTargetError
+	if errors.As(err, &targetErr) {
+		return fmt.Errorf("%s: %w", operation, targetErr)
+	}
+
+	return retry.Transient(safeCause(operation+": transport failed", transportCause(err)), 0)
 }
 
 // isRefusal reports whether a status is the registry refusing a request
@@ -594,19 +672,17 @@ func boundManifest(named reference.Named) (bound, error) {
 	return bound{}, errors.New("must name a tag or a digest, for example repo:v1 or repo@sha256:<hex>")
 }
 
-// StatusError reports a response whose HTTP status the adapter did not
-// expect. Callers that must react to a specific status — the retry policy's
-// transient-or-terminal split, the public API's unauthorized and
-// part-too-large cases — read [StatusError.Status] through [errors.As]
-// instead of parsing the message.
+// StatusError reports a response whose HTTP status the repository adapter did
+// not expect. Internal callers that must react to a specific status read
+// [StatusError.Status] through [errors.As] instead of parsing the message.
 type StatusError struct {
 	// Method is the HTTP method of the request that failed.
 	Method string
 	// Path is the safe structural request path on the registry. A blob read
-	// replaces its manifest-selected digest with "<digest>", and an upload uses
-	// the stable session-opening path. A token endpoint failure uses the fixed
-	// label "token endpoint" instead. A redirected request is reported against
-	// the original registry path, never against the location it was sent to.
+	// replaces its manifest-selected digest with "<digest>". A token endpoint
+	// failure uses the fixed label "token endpoint". A redirected request is
+	// reported against the original registry path, never against the location
+	// it was sent to.
 	Path string
 	// Status is the HTTP status code the registry answered with.
 	Status int
@@ -652,9 +728,9 @@ func (e *StatusError) Is(target error) bool {
 }
 
 // statusError reports a response whose status the adapter did not expect,
-// against the request that produced it. It is for the endpoints a request
-// never leaves: a write, an upload session, a token exchange. Everything a
-// redirect can move reports through [statusErrorAt] instead.
+// against the request that produced it. It is for endpoints that never leave
+// the registry. Everything a redirect can move reports through
+// [statusErrorAt] instead.
 func statusError(resp *http.Response) error {
 	return statusErrorAt(originOf(resp.Request), resp)
 }

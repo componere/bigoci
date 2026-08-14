@@ -19,6 +19,7 @@ import (
 	"github.com/imgoci/bigoci/internal/manifest"
 	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
 	"github.com/imgoci/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // This file holds the fixtures the retry suites drive transfers with: the
@@ -299,13 +300,13 @@ func scriptedBlobs(t *testing.T, script blobScript) (*ocimocks.MockBlobs, *blobC
 			return answer.held, answer.err
 		},
 	).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, size int64, r io.Reader) error {
-			// The bytes are drained whatever the answer turns out to be: a
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error { // The bytes are drained whatever the answer turns out to be: a
 			// registry that refuses an upload has still read the request body,
 			// and a test that skipped the read could not tell a fresh section
 			// reader from a spent one.
-			content, err := io.ReadAll(r)
+			content, err := readUpload(r, wire)
 			if err != nil {
 				// What the adapter really does with a body its transport could
 				// not read: the failure comes back tagged, because from where
@@ -327,8 +328,8 @@ func scriptedBlobs(t *testing.T, script blobScript) (*ocimocks.MockBlobs, *blobC
 			}
 
 			return answers[nth(calls.put(dgst, size, content), len(answers))]
-		},
-	).Maybe()
+		}).
+		Maybe()
 
 	return blobs, calls
 }

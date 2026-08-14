@@ -9,7 +9,7 @@ We will push a 256 MiB file to a registry running on this machine, pull it back
 to a second path, and check that the two copies are byte for byte the same.
 Everything runs locally, so none of it needs a registry account.
 
-You need Go 1.26.4 or newer, Docker, and a POSIX shell — macOS or Linux. Every
+You need Go 1.26.5 or newer, Docker, and a POSIX shell — macOS or Linux. Every
 command below is meant to be run in order, from the same directory.
 
 ## Start a registry

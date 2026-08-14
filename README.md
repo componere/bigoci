@@ -15,7 +15,7 @@ per-registry layer size caps.
 go get github.com/imgoci/bigoci
 ```
 
-Requires Go 1.26.4 or newer.
+Requires Go 1.26.5 or newer.
 
 ## Usage
 
