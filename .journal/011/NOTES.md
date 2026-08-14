@@ -44,3 +44,6 @@ Verification passed: focused `internal/oci` and `internal/transfer` tests; root 
 
 ## 2026-08-14 08:45 — Integration PR opened
 Pushed `feat/go-oci-blob` at `c210f20` and opened non-draft PR #53, `refactor(oci): delegate blob uploads to go-oci-blob`: https://github.com/imgoci/bigoci/pull/53. GitHub reports the head mergeable against `master`; CI and Pages checks registered and are queued.
+
+## 2026-08-14 08:51 — Close
+Merged approved bigoci PR #53 by squash as master commit `56d6a26`, fast-forwarded the local `master`, and removed the `feat/go-oci-blob` worktree and branch. The session leaves `go-oci-blob` v1.1.1 public and bigoci fully cut over to it with the repository check suite and live zot cold/warm push smoke green. No migration work remains; normal Release Please automation owns the next bigoci release.
