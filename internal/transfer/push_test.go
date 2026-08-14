@@ -145,8 +145,9 @@ func TestPushRecordsPartsInFileOrder(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil)
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, size int64, r io.Reader) error {
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error {
 			if dgst == want.Parts[len(want.Parts)-1].Digest {
 				defer close(lastUploaded)
 			}
@@ -159,9 +160,8 @@ func TestPushRecordsPartsInFileOrder(t *testing.T) {
 				}
 			}
 
-			return recorded.record(dgst, size, r)
-		},
-	)
+			return recorded.record(dgst, size, r, wire)
+		})
 
 	var body []byte
 
@@ -205,15 +205,16 @@ func TestPushStopsAtTheFirstFailure(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, size int64, r io.Reader) error {
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error {
 			if dgst == want.Parts[1].Digest {
 				return rejected
 			}
 
-			return recorded.record(dgst, size, r)
-		},
-	).Maybe()
+			return recorded.record(dgst, size, r, wire)
+		}).
+		Maybe()
 
 	manifests := ocimocks.NewMockManifests(t)
 
@@ -271,13 +272,14 @@ func TestPushStopsWhenTheContextIsCancelled(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, size int64, r io.Reader) error {
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error {
 			cancel()
 
-			return recorded.record(dgst, size, r)
-		},
-	).Maybe()
+			return recorded.record(dgst, size, r, wire)
+		}).
+		Maybe()
 
 	manifests := ocimocks.NewMockManifests(t)
 

@@ -291,6 +291,7 @@ func (r *Repository) checkSession(session *url.URL) error {
 // worth another attempt, and a context the caller ended is the transfer
 // stopping rather than the network failing.
 func (r *Repository) hop(at origin, req *http.Request) (*http.Response, error) {
+	// #nosec G704 -- the guarded external transport validates the destination at dial time.
 	resp, err := r.external.Do(req)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -444,18 +445,6 @@ func portOf(u *url.URL) string {
 // tell them apart further up.
 func offOriginResponse(at origin, resp *http.Response) (*http.Response, error) {
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
-		return resp, nil
-	}
-
-	return nil, offOriginFailure(at, resp)
-}
-
-// offOriginUploadResponse decides what a response from an upload session
-// beyond the registry means. Only Created completes the write; every other
-// status is classified as an external failure without interpreting a
-// challenge or exposing the session response.
-func offOriginUploadResponse(at origin, resp *http.Response) (*http.Response, error) {
-	if resp.StatusCode == http.StatusCreated {
 		return resp, nil
 	}
 

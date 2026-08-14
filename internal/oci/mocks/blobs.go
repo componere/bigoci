@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/imgoci/bigoci/internal/transfer"
 	"github.com/opencontainers/go-digest"
 	mock "github.com/stretchr/testify/mock"
 )
@@ -186,16 +187,16 @@ func (_c *MockBlobs_Get_Call) RunAndReturn(run func(ctx context.Context, dgst di
 }
 
 // Put provides a mock function for the type MockBlobs
-func (_mock *MockBlobs) Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader) error {
-	ret := _mock.Called(ctx, dgst, size, r)
+func (_mock *MockBlobs) Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error {
+	ret := _mock.Called(ctx, dgst, size, r, wire)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Put")
 	}
 
 	var r0 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, digest.Digest, int64, io.Reader) error); ok {
-		r0 = returnFunc(ctx, dgst, size, r)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, digest.Digest, int64, io.Reader, transfer.WireProgress) error); ok {
+		r0 = returnFunc(ctx, dgst, size, r, wire)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -212,11 +213,12 @@ type MockBlobs_Put_Call struct {
 //   - dgst digest.Digest
 //   - size int64
 //   - r io.Reader
-func (_e *MockBlobs_Expecter) Put(ctx any, dgst any, size any, r any) *MockBlobs_Put_Call {
-	return &MockBlobs_Put_Call{Call: _e.mock.On("Put", ctx, dgst, size, r)}
+//   - wire transfer.WireProgress
+func (_e *MockBlobs_Expecter) Put(ctx any, dgst any, size any, r any, wire any) *MockBlobs_Put_Call {
+	return &MockBlobs_Put_Call{Call: _e.mock.On("Put", ctx, dgst, size, r, wire)}
 }
 
-func (_c *MockBlobs_Put_Call) Run(run func(ctx context.Context, dgst digest.Digest, size int64, r io.Reader)) *MockBlobs_Put_Call {
+func (_c *MockBlobs_Put_Call) Run(run func(ctx context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress)) *MockBlobs_Put_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -234,11 +236,16 @@ func (_c *MockBlobs_Put_Call) Run(run func(ctx context.Context, dgst digest.Dige
 		if args[3] != nil {
 			arg3 = args[3].(io.Reader)
 		}
+		var arg4 transfer.WireProgress
+		if args[4] != nil {
+			arg4 = args[4].(transfer.WireProgress)
+		}
 		run(
 			arg0,
 			arg1,
 			arg2,
 			arg3,
+			arg4,
 		)
 	})
 	return _c
@@ -249,7 +256,7 @@ func (_c *MockBlobs_Put_Call) Return(err error) *MockBlobs_Put_Call {
 	return _c
 }
 
-func (_c *MockBlobs_Put_Call) RunAndReturn(run func(ctx context.Context, dgst digest.Digest, size int64, r io.Reader) error) *MockBlobs_Put_Call {
+func (_c *MockBlobs_Put_Call) RunAndReturn(run func(ctx context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error) *MockBlobs_Put_Call {
 	_c.Call.Return(run)
 	return _c
 }

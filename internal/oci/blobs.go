@@ -6,34 +6,34 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
-	digest "github.com/opencontainers/go-digest"
-)
+	ociblob "github.com/imgoci/go-oci-blob"
 
-// mediaTypeBlob is the content type a blob upload declares. A blob is opaque
-// bytes to the registry, and the distribution spec fixes the value.
-const mediaTypeBlob = "application/octet-stream"
+	digest "github.com/opencontainers/go-digest"
+
+	"github.com/imgoci/bigoci/internal/retry"
+	"github.com/imgoci/bigoci/internal/transfer"
+)
 
 // uploadsPath is the endpoint suffix that opens an upload session. The
 // trailing slash is part of the path the spec defines, and registries answer
 // a request without it with 404.
 const uploadsPath = "blobs/uploads/"
 
-// digestParam is the query parameter that names the blob an upload session
-// completes into.
-const digestParam = "digest"
-
 // Blobs reads and writes the blobs of one repository. It implements the
 // transfer package's Blobs port and comes from [Repository.Blobs].
 //
-// Blobs holds no state of its own, so a transfer may run every part of a file
-// through one value concurrently.
+// Blobs is immutable after construction and safe to use concurrently across
+// every part of one transfer.
 type Blobs struct {
 	// repo is the repository whose blob endpoints this adapter talks to.
 	repo *Repository
+	// client owns the retry-disabled upstream blob protocol implementation.
+	client *ociblob.Client
+	// target names the registry repository client uploads into.
+	target ociblob.Repository
 }
 
 // Exists reports whether the repository holds the blob dgst names.
@@ -43,10 +43,10 @@ type Blobs struct {
 // origin: a registry that redirects the check to storage has already decided
 // the blob exists, so a 404 from the location it named is a stale signature
 // rather than an answer, and comes back as an error worth another attempt —
-// matching neither [ErrNotFound] nor [ErrUnauthorized]. This is the check a push makes for every
-// part before uploading it, and on a first push the answer is "no" every
-// time. Any other unexpected status is an error naming the method, the path,
-// and the status.
+// matching neither [ErrNotFound] nor [ErrUnauthorized]. This is the check a
+// push makes for every part before uploading it, and on a first push the
+// answer is "no" every time. Any other unexpected status is an error naming
+// the method, path, and status.
 func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 	req, err := b.repo.newRequest(ctx, http.MethodHead, b.repo.endpoint(blobPath(dgst)), nil)
 	if err != nil {
@@ -127,119 +127,39 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.Read
 // parts small enough to push this way instead of reaching for chunked or
 // resumable uploads.
 //
-// Nothing buffers: the PUT reads r straight onto the wire, so a caller may
-// hand Put a hundreds-of-megabytes section of a file. Put declares size as
-// the request's Content-Length, because [net/http] measures only bodies it
-// recognizes ([bytes.Buffer], [bytes.Reader], [strings.Reader]) and falls
-// back to chunked transfer encoding for everything else — including the
-// [io.SectionReader] a push streams a part from — which some registries
-// reject.
-func (b *Blobs) Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader) error {
-	session, err := b.openUpload(ctx)
-	if err != nil {
-		return err
-	}
-
-	return b.completeUpload(ctx, session, dgst, size, r)
-}
-
-// openUpload opens an upload session and returns the URL the content belongs
-// at. The spec lets the registry answer with a relative Location, so the
-// header is resolved against the URL the request ended up at rather than
-// used as it arrived.
-func (b *Blobs) openUpload(ctx context.Context) (*url.URL, error) {
-	endpoint := b.repo.endpoint(uploadsPath)
-
-	req, err := b.repo.newRequest(ctx, http.MethodPost, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := b.repo.send(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		return nil, statusError(resp)
-	}
-	drain(resp.Body)
-
-	location := resp.Header.Get("Location")
-	if location == "" {
-		return nil, fmt.Errorf("POST %s: registry opened an upload but sent no Location header", endpoint.Path)
-	}
-
-	// The Location is never quoted in a failure: an upload session URL
-	// carries registry-minted state in its query, the same class of string
-	// as a signature.
-	session, err := url.Parse(location)
-	if err != nil {
-		return nil, fmt.Errorf("POST %s: registry sent an unusable Location", endpoint.Path)
-	}
-
-	resolved := resp.Request.URL.ResolveReference(session)
-	if err := b.repo.checkSession(resolved); err != nil {
-		return nil, fmt.Errorf("POST %s: %w", endpoint.Path, err)
-	}
-
-	return resolved, nil
-}
-
-// completeUpload streams size bytes of r into the session and names the
-// digest the registry should store the result under.
-func (b *Blobs) completeUpload(
+// The upstream client keeps memory bounded to its transport staging buffer
+// rather than buffering a part. wire receives only bytes the HTTP transport
+// consumed, including failed attempts, and stops before Put returns.
+func (b *Blobs) Put(
 	ctx context.Context,
-	session *url.URL,
 	dgst digest.Digest,
 	size int64,
 	r io.Reader,
+	wire transfer.WireProgress,
 ) error {
-	target := withDigest(session, dgst)
-	offOrigin := !sameOrigin(b.repo.registryURL(), target)
-
-	var (
-		req *http.Request
-		err error
-	)
-	if offOrigin {
-		req, err = http.NewRequestWithContext(ctx, http.MethodPut, target.String(), uploadBody(size, r))
+	var err error
+	if wire == nil {
+		err = b.client.Push(ctx, b.target, dgst, size, r)
 	} else {
-		req, err = b.repo.newRequest(ctx, http.MethodPut, target, uploadBody(size, r))
+		err = b.client.Push(ctx, b.target, dgst, size, r, ociblob.WithWireProgress(wire))
 	}
-	if err != nil {
-		return errors.New("build the upload PUT request")
+	if err == nil {
+		return nil
 	}
-	req = withOrigin(req, origin{
-		method: http.MethodPut,
-		path:   b.repo.endpoint(uploadsPath).Path,
-	})
 
-	req.ContentLength = size
-	req.Header.Set("Content-Type", mediaTypeBlob)
-
-	var resp *http.Response
-	if offOrigin {
-		at := origin{method: http.MethodPut, path: b.repo.endpoint(uploadsPath).Path}
-		resp, err = b.repo.hop(at, req)
-		if err == nil {
-			resp, err = offOriginUploadResponse(at, resp)
-		}
-	} else {
-		resp, err = b.repo.send(req)
-	}
-	if err != nil {
+	if ctx.Err() != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		return statusError(resp)
+	var targetErr *externalTargetError
+	if errors.As(err, &targetErr) {
+		return err
 	}
-	drain(resp.Body)
 
-	return nil
+	if after, ok := ociblob.Retryable(err); ok {
+		return retry.Transient(err, after)
+	}
+
+	return err
 }
 
 // blobPath returns the endpoint suffix of one blob.
@@ -251,36 +171,6 @@ func blobPath(dgst digest.Digest) string {
 // offset to the end of the blob.
 func rangeFrom(offset int64) string {
 	return "bytes=" + strconv.FormatInt(offset, 10) + "-"
-}
-
-// uploadBody returns the request body for an upload of size bytes read from
-// r.
-//
-// Wrapping r hides its concrete type from [net/http.NewRequestWithContext],
-// so every upload takes the same path through the transport: an unknown
-// length that [Blobs.Put] then declares. A zero-length upload is the one case
-// that declaration cannot cover — [net/http] reads a non-nil body with a zero
-// length as "length unknown" and turns it chunked — so it sends no body at
-// all.
-func uploadBody(size int64, r io.Reader) io.ReadCloser {
-	if size == 0 {
-		return http.NoBody
-	}
-
-	return io.NopCloser(r)
-}
-
-// withDigest returns session with the digest query parameter that completes
-// an upload. The registry may have put its own parameters in the session URL,
-// so the query is parsed and re-encoded instead of concatenated onto the end.
-func withDigest(session *url.URL, dgst digest.Digest) *url.URL {
-	complete := *session
-
-	query := complete.Query()
-	query.Set(digestParam, dgst.String())
-	complete.RawQuery = query.Encode()
-
-	return &complete
 }
 
 // blobReadStart checks a blob read's response against what the request asked

@@ -35,7 +35,7 @@ func TestAnUploadSessionOnAnotherOriginCarriesNoCredential(t *testing.T) {
 	creds := &staticCredentials{cred: Credential{Username: "someone", Password: "the-secret"}}
 	repo := fake.repository(t, WithCredentials(creds))
 
-	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 	require.NoError(t, err)
 
 	arrived := store.all()
@@ -79,7 +79,7 @@ func TestAnOffOriginUploadCannotReplayRegistryAuthentication(t *testing.T) {
 	fake.answerAs = openUploadAt(store)
 
 	repo := fake.repository(t)
-	err := repo.Blobs().Put(t.Context(), authDigest(), 0, strings.NewReader(""))
+	err := repo.Blobs().Put(t.Context(), authDigest(), 0, strings.NewReader(""), nil)
 	require.Error(t, err)
 
 	_, transient := retry.IsTransient(err)
@@ -87,8 +87,14 @@ func TestAnOffOriginUploadCannotReplayRegistryAuthentication(t *testing.T) {
 	require.NotErrorIs(t, err, ErrUnauthorized, "storage did not judge the registry credential")
 
 	requests := store.all()
-	require.Len(t, requests, 1, "the storage request must never be replayed")
-	assert.Empty(t, requests[0].header.Get(headerAuthorization))
+	var puts int
+	for _, request := range requests {
+		if request.method == http.MethodPut {
+			puts++
+		}
+		assert.Empty(t, request.header.Get(headerAuthorization))
+	}
+	assert.Equal(t, 1, puts, "the storage upload must never be replayed")
 }
 
 // TestAnOffOriginUploadCannotReplaceTheRegistryChallenge proves a refusal of
@@ -123,7 +129,7 @@ func TestAnOffOriginUploadCannotReplaceTheRegistryChallenge(t *testing.T) {
 	creds := &staticCredentials{cred: Credential{Username: "someone", Password: "the-secret"}}
 	repo := fake.repository(t, WithCredentials(creds))
 
-	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 	require.Error(t, err)
 
 	exists, err := repo.Blobs().Exists(t.Context(), authDigest())
@@ -164,7 +170,7 @@ func TestAnOffOriginUploadCarriesNoAmbientCookie(t *testing.T) {
 	client.Jar = jar
 	repo := fake.repository(t, WithHTTPClient(&client))
 
-	err = repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err = repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 	require.NoError(t, err)
 
 	repositoryRequests := fake.repositoryRequests()
@@ -191,7 +197,7 @@ func TestAnOffOriginUploadFailureCarriesNoSignedCapability(t *testing.T) {
 	fake.answerAs = openUploadAt(store)
 
 	repo := fake.repository(t)
-	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 	require.Error(t, err)
 
 	var status *StatusError
@@ -223,7 +229,7 @@ func TestAnUploadSessionCarryingUserinfoIsRefused(t *testing.T) {
 
 	repo := fake.repository(t)
 
-	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 	require.Error(t, err)
 
 	_, transient := retry.IsTransient(err)

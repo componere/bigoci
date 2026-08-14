@@ -318,7 +318,7 @@ func TestBlobsPut(t *testing.T) {
 			size := int64(len(tt.payload))
 			body := opaqueReader{r: strings.NewReader(tt.payload)}
 
-			require.NoError(t, repo.Blobs().Put(t.Context(), dgst, size, body))
+			require.NoError(t, repo.Blobs().Put(t.Context(), dgst, size, body, nil))
 
 			requests := rec.all()
 			require.Len(t, requests, 2)
@@ -374,7 +374,7 @@ func TestBlobsPutFailures(t *testing.T) {
 				postStatus: http.StatusAccepted,
 				putStatus:  http.StatusBadRequest,
 			},
-			wantRequests: 2,
+			wantRequests: 3,
 		},
 	}
 
@@ -385,12 +385,10 @@ func TestBlobsPutFailures(t *testing.T) {
 			var rec recorder
 			repo := newRegistry(t, uploadHandler(t, &rec, tt.responses), repoName+":"+tag)
 
-			err := repo.Blobs().Put(
-				t.Context(),
+			err := repo.Blobs().Put(t.Context(),
 				digest.FromString(blobPayload),
 				int64(len(blobPayload)),
-				opaqueReader{r: strings.NewReader(blobPayload)},
-			)
+				opaqueReader{r: strings.NewReader(blobPayload)}, nil)
 
 			require.Error(t, err)
 			assert.Len(t, rec.all(), tt.wantRequests)
@@ -463,12 +461,10 @@ func TestBlobsPutTagsAConnectionResetMidUpload(t *testing.T) {
 		dropConnection(t, w)
 	}), repoName+":"+tag)
 
-	err := repo.Blobs().Put(
-		t.Context(),
+	err := repo.Blobs().Put(t.Context(),
 		digest.FromString(blobPayload),
 		int64(len(blobPayload)),
-		opaqueReader{r: strings.NewReader(blobPayload)},
-	)
+		opaqueReader{r: strings.NewReader(blobPayload)}, nil)
 
 	require.Error(t, err)
 
@@ -502,12 +498,10 @@ func TestBlobsPutLeavesRetryingToItsCaller(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}), repoName+":"+tag)
 
-	err := repo.Blobs().Put(
-		t.Context(),
+	err := repo.Blobs().Put(t.Context(),
 		digest.FromString(blobPayload),
 		int64(len(blobPayload)),
-		opaqueReader{r: strings.NewReader(blobPayload)},
-	)
+		opaqueReader{r: strings.NewReader(blobPayload)}, nil)
 
 	require.Error(t, err)
 
@@ -530,8 +524,8 @@ func uploadsSoFar(requests []recorded) int {
 	return uploads
 }
 
-// uploadResponses is how a fake registry answers the two requests a blob
-// upload makes.
+// uploadResponses is how a fake registry answers the POST and PUT a blob
+// upload makes. A failed PUT may be followed by best-effort DELETE cleanup.
 type uploadResponses struct {
 	// location builds the Location header the session request answers with,
 	// from the request that opened it. An empty string sends no header.
@@ -543,7 +537,7 @@ type uploadResponses struct {
 }
 
 // uploadHandler returns a fake registry that answers a blob upload with
-// responses and records both requests.
+// responses and records every request.
 func uploadHandler(t *testing.T, rec *recorder, responses uploadResponses) http.Handler {
 	t.Helper()
 

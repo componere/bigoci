@@ -567,8 +567,9 @@ func TestPushWakesAWorkerBackingOffWhenAnotherFails(t *testing.T) {
 
 	blobs := ocimocks.NewMockBlobs(t)
 	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, _ int64, _ io.Reader) error {
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, _ int64, _ io.Reader, _ transfer.WireProgress) error {
 			if dgst == parts[1].Digest {
 				return retry.Transient(errBroken, 0)
 			}
@@ -578,8 +579,8 @@ func TestPushWakesAWorkerBackingOffWhenAnotherFails(t *testing.T) {
 			<-sleeps.backingOff()
 
 			return errRefused
-		},
-	).Maybe()
+		}).
+		Maybe()
 
 	source, _ := countingSource(t, content)
 

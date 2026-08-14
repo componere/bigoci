@@ -73,16 +73,16 @@ func benchmarkAttempted(b *testing.B, report *reporter) {
 	}
 }
 
-// benchmarkSourceReads measures the reader an upload streams through, which
-// is the one counting hook on a per-read rather than a per-part path.
-func benchmarkSourceReads(b *testing.B, report *reporter) {
+// benchmarkSourceReads measures the source-error tagging reader on the upload
+// read path.
+func benchmarkSourceReads(b *testing.B, _ *reporter) {
 	b.Helper()
 
 	payload := make([]byte, benchPayload)
 	into := make([]byte, benchPayload)
 
 	source := bytes.NewReader(payload)
-	reader := tagSourceReads{r: source, report: report}
+	reader := tagSourceReads{r: source}
 
 	b.ReportAllocs()
 

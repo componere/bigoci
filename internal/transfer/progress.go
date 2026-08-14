@@ -121,9 +121,7 @@ type reporter struct {
 	// which is what the coalescing threshold is measured against.
 	pending int64
 	// closed is the latch: once the terminal snapshot has been delivered,
-	// every later recording is dropped. It is what makes "nothing arrives
-	// after the transfer returns" true even though a straggling read on
-	// [net/http]'s write goroutine can still be counting bytes.
+	// every later recording is dropped.
 	closed bool
 }
 

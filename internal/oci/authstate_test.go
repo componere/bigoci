@@ -153,7 +153,7 @@ func TestChallengeScopeIsMergedIntoTheRequest(t *testing.T) {
 	repo := fake.repository(t)
 
 	require.NoError(t, repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)),
-		strings.NewReader(authPayload)))
+		strings.NewReader(authPayload), nil))
 
 	asked := fake.tokenRequests()
 	require.Len(t, asked, 1)
@@ -269,7 +269,7 @@ func TestExpiredTokenOnABlobUploadNeverSendsASecondBody(t *testing.T) {
 
 	repo := fake.repository(t)
 
-	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload))
+	err := repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)), strings.NewReader(authPayload), nil)
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrUnauthorized, "the refusal stays readable under the mark")
@@ -292,7 +292,7 @@ func TestExpiredTokenOnABlobUploadNeverSendsASecondBody(t *testing.T) {
 
 	// The next attempt is the point of having refreshed at all.
 	require.NoError(t, repo.Blobs().Put(t.Context(), authDigest(), int64(len(authPayload)),
-		strings.NewReader(authPayload)))
+		strings.NewReader(authPayload), nil))
 
 	made := fake.repositoryRequests()
 	assert.Equal(t, "Bearer token-2", made[len(made)-1].authorization, "the next call carries a different header")

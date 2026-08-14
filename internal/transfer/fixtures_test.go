@@ -19,6 +19,7 @@ import (
 	"github.com/imgoci/bigoci/internal/manifest"
 	ocimocks "github.com/imgoci/bigoci/internal/oci/mocks"
 	"github.com/imgoci/bigoci/internal/plan"
+	"github.com/imgoci/bigoci/internal/transfer"
 )
 
 // The sizes every fixture is built from. They are tiny on purpose: the
@@ -145,13 +146,28 @@ func newUploads() *uploads {
 	return &uploads{blobs: make(map[digest.Digest]upload)}
 }
 
+// readUpload drains r and reports the bytes the mock transport consumed.
+func readUpload(r io.Reader, wire transfer.WireProgress) ([]byte, error) {
+	content, err := io.ReadAll(r)
+	if wire != nil {
+		wire(int64(len(content)))
+	}
+
+	return content, err
+}
+
 // record drains r into the recorder under dgst.
 //
 // It reads the whole blob because a test compares the bytes a push streamed
 // against the file it was given. The orchestrator itself never holds a part in
 // memory; the mock does, because the fixtures are kilobytes.
-func (u *uploads) record(dgst digest.Digest, size int64, r io.Reader) error {
-	content, err := io.ReadAll(r)
+func (u *uploads) record(
+	dgst digest.Digest,
+	size int64,
+	r io.Reader,
+	wire transfer.WireProgress,
+) error {
+	content, err := readUpload(r, wire)
 	if err != nil {
 		return err
 	}
@@ -198,11 +214,12 @@ func mockBlobs(t testing.TB, held map[digest.Digest]bool) (*ocimocks.MockBlobs, 
 			return held[dgst], nil
 		},
 	).Maybe()
-	blobs.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
-		func(_ context.Context, dgst digest.Digest, size int64, r io.Reader) error {
-			return recorded.record(dgst, size, r)
-		},
-	).Maybe()
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dgst digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error {
+			return recorded.record(dgst, size, r, wire)
+		}).
+		Maybe()
 
 	return blobs, recorded
 }

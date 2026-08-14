@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ociblob "github.com/imgoci/go-oci-blob"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,24 +109,22 @@ func TestNewRepositoryDefaultsToHTTPS(t *testing.T) {
 	assert.Len(t, rec.all(), 1, "a repository built without WithPlainHTTP must reach a TLS registry")
 }
 
-func TestStatusErrorCarriesTheCode(t *testing.T) {
+func TestBlobPutPreservesStatusCode(t *testing.T) {
 	t.Parallel()
 
 	repo := newRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusRequestEntityTooLarge)
 	}), repoName+":"+tag)
 
-	err := repo.Blobs().Put(
-		t.Context(),
+	err := repo.Blobs().Put(t.Context(),
 		digest.FromString(blobPayload),
 		int64(len(blobPayload)),
-		strings.NewReader(blobPayload),
-	)
+		strings.NewReader(blobPayload), nil)
 
-	var statusErr *oci.StatusError
-	require.ErrorAs(t, err, &statusErr, "callers branch on the status through errors.As")
-	assert.Equal(t, http.StatusRequestEntityTooLarge, statusErr.Status)
-	assert.Equal(t, http.MethodPost, statusErr.Method, "the failed request here is the session open")
+	code, ok := ociblob.StatusCode(err)
+	require.True(t, ok, "callers can inspect the upstream response status")
+	assert.Equal(t, http.StatusRequestEntityTooLarge, code)
+	require.ErrorIs(t, err, oci.ErrTooLarge)
 }
 
 func TestRequestsHonorContextCancellation(t *testing.T) {
@@ -156,7 +155,7 @@ func TestRequestsHonorContextCancellation(t *testing.T) {
 			call: func(ctx context.Context, repo *oci.Repository) error {
 				payload := strings.NewReader(blobPayload)
 
-				return repo.Blobs().Put(ctx, digest.FromString(blobPayload), int64(len(blobPayload)), payload)
+				return repo.Blobs().Put(ctx, digest.FromString(blobPayload), int64(len(blobPayload)), payload, nil)
 			},
 		},
 		{

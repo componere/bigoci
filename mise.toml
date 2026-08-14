@@ -16,7 +16,7 @@
 
 [tools]
 # Language runtimes (core backend).
-go = "1.26.4"
+go = "1.26.5"
 python = "3.14.3"
 
 # Go dev-tool CLI. The explicit `aqua:` ref forces the VERIFYING backend (checksum +
@@ -37,7 +37,7 @@ python = "3.14.3"
 
 [env]
 # Pin the Go toolchain: never auto-download a toolchain other than the one above.
-# The version here is authoritative and matches go.mod's `go 1.26.4`.
+# The version here is authoritative and matches go.mod's `go 1.26.5`.
 GOTOOLCHAIN = "local"
 
 [settings]

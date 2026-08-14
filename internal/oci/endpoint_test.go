@@ -228,12 +228,10 @@ func TestCrossRegistryUploadLocationCannotResolveToAPrivatePeer(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = defaultRepo.Blobs().Put(
-		t.Context(),
+	err = defaultRepo.Blobs().Put(t.Context(),
 		digest.FromString(payload),
 		int64(len(payload)),
-		strings.NewReader(payload),
-	)
+		strings.NewReader(payload), nil)
 
 	require.Error(t, err)
 	_, transient := retry.IsTransient(err)
@@ -251,7 +249,8 @@ func TestCrossRegistryUploadLocationCannotResolveToAPrivatePeer(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = repo.Blobs().Put(t.Context(), digest.FromString(payload), int64(len(payload)), strings.NewReader(payload))
+	err = repo.Blobs().
+		Put(t.Context(), digest.FromString(payload), int64(len(payload)), strings.NewReader(payload), nil)
 
 	require.NoError(t, err)
 	assert.Positive(t, targetDials.Load(), "the explicit option delegates to the caller's dial hook")
