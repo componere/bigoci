@@ -2,11 +2,13 @@ package oci
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,6 +65,7 @@ func TestARedirectedBlobReadReachesStorageCarryingNothing(t *testing.T) {
 	require.Len(t, asked, 1)
 	assert.Empty(t, asked[0].header.Get(headerAuthorization), "the registry's credential must not reach storage")
 	assert.Empty(t, asked[0].header.Get("Cookie"), "and neither may a cookie")
+	assert.Equal(t, codingIdentity, asked[0].header.Get(headerAcceptEncoding), "the identity marker survives the hop")
 	assert.Equal(t, signatureValue, asked[0].query.Get(signatureParam), "the location's own query is what it carries")
 
 	read := fake.repositoryRequests()
@@ -226,6 +229,12 @@ func TestARangeSurvivesTheHop(t *testing.T) {
 		asked := store.all()
 		require.Len(t, asked, 1)
 		assert.Equal(t, rangeFrom(redirectOffset), asked[0].header.Get("Range"), "the range crossed the hop")
+		assert.Equal(
+			t,
+			codingIdentity,
+			asked[0].header.Get(headerAcceptEncoding),
+			"the identity marker crossed the hop",
+		)
 	})
 
 	t.Run("a store that answers the whole blob instead", func(t *testing.T) {
@@ -807,6 +816,31 @@ func TestSameOriginComparesLikeTheWeb(t *testing.T) {
 	}
 }
 
+// TestCopyAllowedCarriesAcceptEncodingAndNothingPrivate pins the re-issue
+// allow-list: the identity marker, Range, and Accept survive a hop, and
+// Authorization is still not among the headers that list can copy.
+func TestCopyAllowedCarriesAcceptEncodingAndNothingPrivate(t *testing.T) {
+	t.Parallel()
+
+	src := make(http.Header)
+	src.Add("Range", "bytes=10-")
+	src.Add("Accept", "application/vnd.oci.image.manifest.v1+json")
+	src.Add(headerAcceptEncoding, codingIdentity)
+	src.Add(headerAuthorization, "Bearer "+storageSecret)
+	src.Add("Cookie", storageSecret)
+	src.Add("Content-Type", "application/octet-stream")
+
+	dst := make(http.Header)
+	copyAllowed(dst, src)
+
+	assert.Equal(t, []string{"bytes=10-"}, dst.Values("Range"))
+	assert.Equal(t, []string{"application/vnd.oci.image.manifest.v1+json"}, dst.Values("Accept"))
+	assert.Equal(t, []string{codingIdentity}, dst.Values(headerAcceptEncoding))
+	assert.Empty(t, dst.Values(headerAuthorization), "Authorization is still same-origin only")
+	assert.Empty(t, dst.Values("Cookie"))
+	assert.Empty(t, dst.Values("Content-Type"))
+}
+
 // TestARefusedRedirectQuotesNoBody proves a rejected write redirect exposes
 // neither the registry-selected target nor its rendered response body.
 func TestARefusedRedirectQuotesNoBody(t *testing.T) {
@@ -861,6 +895,64 @@ func TestAnUnfollowableRedirectOffOriginIsNotTheRegistrys(t *testing.T) {
 	require.NotErrorAs(t, err, &status, "the registry did not answer 303; the store did")
 	assert.NotContains(t, err.Error(), store.host(t), "the target host is peer-selected direct reflection material")
 	assert.NotContains(t, err.Error(), "registry returned")
+}
+
+// TestACodedStoreResponseIsRejectedAgainstTheRegistryOperation pins identity
+// enforcement at the far end of a hop: a store that answers with a content
+// coding is refused against the original registry operation, the identity
+// marker reached it, and the registry credential did not.
+func TestACodedStoreResponseIsRejectedAgainstTheRegistryOperation(t *testing.T) {
+	t.Parallel()
+
+	fake := newAuthRegistry(t)
+	store := newBlobStore(t)
+	store.serveAs = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(headerContentEncoding, reflectedCoding)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, authPayload)
+	}
+	fake.answerAs = redirectBlobReads(store, http.StatusTemporaryRedirect)
+
+	released := make(chan struct{})
+	var once sync.Once
+	prev := store.server.Config.ConnState
+	store.server.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if prev != nil {
+			prev(conn, state)
+		}
+		if state == http.StateIdle || state == http.StateClosed {
+			once.Do(func() { close(released) })
+		}
+	}
+
+	repo := fake.repository(t)
+
+	_, _, err := repo.Blobs().Get(t.Context(), authDigest(), 0)
+	require.Error(t, err)
+
+	var coding *contentCodingError
+	require.ErrorAs(t, err, &coding)
+	assert.Equal(t, origin{method: http.MethodGet, path: "/v2/" + authRepo + "/blobs/<digest>"}, coding.at)
+	assert.Equal(t, "GET /v2/"+authRepo+"/blobs/<digest>: the response is not identity coded", err.Error())
+	assert.NotContains(t, err.Error(), reflectedCoding)
+	assert.NotContains(t, err.Error(), "registry returned")
+	assertNamesNoPeerValue(t, err, store.host(t))
+	require.NotErrorIs(t, err, ErrNotFound)
+	require.NotErrorIs(t, err, ErrUnauthorized)
+
+	_, transient := retry.IsTransient(err)
+	assert.False(t, transient, "a coded store response will arrive coded again")
+
+	asked := store.all()
+	require.Len(t, asked, 1)
+	assert.Equal(t, codingIdentity, asked[0].header.Get(headerAcceptEncoding), "the identity marker reached storage")
+	assert.Empty(t, asked[0].header.Get(headerAuthorization), "the registry's credential must not reach storage")
+
+	select {
+	case <-released:
+	case <-t.Context().Done():
+		t.Fatal("the coded store response body was never closed")
+	}
 }
 
 // TestARefusalOnAnOnOriginHopIsAnswered pins the wiring that keeps the auth
