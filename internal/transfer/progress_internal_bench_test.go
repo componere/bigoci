@@ -7,6 +7,8 @@ import (
 	"io"
 	"testing"
 
+	digest "github.com/opencontainers/go-digest"
+
 	"github.com/imgoci/bigoci/internal/retry"
 )
 
@@ -16,7 +18,9 @@ import (
 // against generated mocks, and testify records a stack trace on every mock
 // call, so the two extra frames the retry wrapper adds cost more allocations
 // in the harness than the entire feature costs in the code. Measured here, on
-// the same tree, the unwatched rows must report zero allocations.
+// the same tree, the unwatched accounting rows must report zero allocations.
+// The source-read row is different: each iteration hashes the payload and
+// compares the digest, and those allocations are the cost the row reports.
 //
 //	go test ./internal/transfer -run '^$' -bench Unwatched -benchmem
 
@@ -74,22 +78,32 @@ func benchmarkAttempted(b *testing.B, report *reporter) {
 }
 
 // benchmarkSourceReads measures the source-error tagging reader on the upload
-// read path.
+// read path, including the per-part hasher that catches a same-length
+// mutation when a Content-Length transport never reads EOF.
 func benchmarkSourceReads(b *testing.B, _ *reporter) {
 	b.Helper()
 
 	payload := make([]byte, benchPayload)
 	into := make([]byte, benchPayload)
-
+	want := digest.FromBytes(payload)
 	source := bytes.NewReader(payload)
-	reader := tagSourceReads{r: source}
 
 	b.ReportAllocs()
 
 	for b.Loop() {
 		source.Reset(payload)
+		reader := tagSourceReads{
+			r:      source,
+			hasher: sha256.New(),
+			expect: want,
+			size:   int64(len(payload)),
+		}
 
-		if _, err := reader.Read(into); err != nil {
+		n, err := reader.Read(into)
+		if n != len(payload) {
+			b.Fatalf("read %d bytes of a %d-byte payload", n, len(payload))
+		}
+		if err != nil && err != io.EOF {
 			b.Fatal(err)
 		}
 	}

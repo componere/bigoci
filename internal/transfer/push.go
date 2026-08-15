@@ -197,7 +197,9 @@ func (s PushSpec) validate() error {
 // manifest records is the file's own order.
 //
 // The pass checks for cancellation between parts rather than inside one, so a
-// cancelled push stops after at most one more part is hashed.
+// cancelled push stops after at most one more part is hashed. A part shorter
+// than the plan wraps [errSourceChanged]: the source changed under the
+// transfer, and repeating the hash cannot make the file agree with itself.
 //
 // It is also where a push's hashed byte count comes from, which is the only
 // thing a watcher has to look at while the first part is still being read.
@@ -231,8 +233,8 @@ func hashParts(
 		}
 		if read != part.Size {
 			return "", fmt.Errorf(
-				"part %d is %d bytes, but the plan expects %d: the source changed while the push read it",
-				part.Index, read, part.Size,
+				"part %d is %d bytes, but the plan expects %d: %w",
+				part.Index, read, part.Size, errSourceChanged,
 			)
 		}
 
@@ -371,7 +373,7 @@ func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) err
 	content := &tagSourceReads{
 		r:      io.NewSectionReader(u.source, job.part.Offset, job.part.Size),
 		hasher: sha256.New(),
-		want:   job.dgst,
+		expect: job.dgst,
 		size:   job.part.Size,
 	}
 
@@ -393,6 +395,12 @@ func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) err
 	return nil
 }
 
+// errSourceChanged reports that the bytes a push is reading are not the bytes
+// it planned from. A short part, a same-length mutation, and a digest
+// mismatch are the same failure: the source changed under the transfer, and
+// repeating the read cannot make the file agree with itself.
+var errSourceChanged = errors.New("the source changed while the push read it")
+
 // tagSourceReads wraps the section reader an upload streams from, so a
 // failure the source raises stays recognizable after the adapter has wrapped
 // it as a failed request. It also hashes the bytes of this attempt and
@@ -411,9 +419,10 @@ type tagSourceReads struct {
 	// It is created with the wrapper, so a retry hashes the range again
 	// rather than onto the previous attempt.
 	hasher hash.Hash
-	// want is the digest the hash pass recorded for this range.
-	want digest.Digest
-	// size is how many bytes the range is supposed to contain.
+	// expect is the digest the hash pass recorded for this range.
+	expect digest.Digest
+	// size is how many bytes the upload declared, and the moment the digest
+	// is compared.
 	size int64
 	// read is how many of those bytes this attempt has hashed.
 	read int64
@@ -426,44 +435,32 @@ type tagSourceReads struct {
 func (t *tagSourceReads) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
 
-	if n > 0 && t.read < t.size {
-		take := int64(n)
-		if remain := t.size - t.read; take > remain {
-			take = remain
-		}
-
-		if _, werr := t.hasher.Write(p[:take]); werr != nil {
-			return n, &sourceError{err: werr}
-		}
-
-		t.read += take
+	if n > 0 {
+		_, _ = t.hasher.Write(p[:n])
+		t.read += int64(n)
 	}
 
 	if err != nil && !errors.Is(err, io.EOF) {
 		return n, &sourceError{err: err}
 	}
 
-	if t.read == t.size {
-		if got := digest.NewDigest(digest.SHA256, t.hasher); got != t.want {
+	if t.read < t.size {
+		if errors.Is(err, io.EOF) {
 			return n, &sourceError{err: errSourceChanged}
 		}
 
 		return n, err
 	}
 
-	if errors.Is(err, io.EOF) {
-		return n, &sourceError{err: fmt.Errorf(
-			"got %d bytes, expected %d: %w", t.read, t.size, errSourceChanged,
-		)}
+	if got := digest.NewDigest(digest.SHA256, t.hasher); got != t.expect {
+		// Withhold the completing chunk: [io.ReadFull] and a Content-Length
+		// transport treat a full buffer as success and discard the error that
+		// arrived with it.
+		return 0, &sourceError{err: errSourceChanged}
 	}
 
 	return n, err
 }
-
-// errSourceChanged reports that the bytes an upload streamed were not the
-// bytes the hash pass named: the file changed underneath the push, or the
-// range ended short of the plan.
-var errSourceChanged = errors.New("the source changed while the push read it")
 
 // sourceError marks a failure as coming from the source the upload was
 // reading, which is what lets the orchestrator keep a local disk failure

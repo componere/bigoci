@@ -1,10 +1,12 @@
 package transfer_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"slices"
+	"sync"
 	"testing"
 
 	digest "github.com/opencontainers/go-digest"
@@ -121,6 +123,77 @@ func TestPushRejectsASourceThatShrinks(t *testing.T) {
 	})
 
 	require.ErrorContains(t, err, "the source changed while the push read it")
+}
+
+func TestPushRejectsASameLengthSourceMutationWithoutEOF(t *testing.T) {
+	t.Parallel()
+
+	// The hash pass sees original bytes; the upload sees a same-length
+	// mutation. A Content-Length transport consumes exactly the declared size
+	// and never reads EOF, so a comparison deferred until EOF would miss the
+	// change and publish a manifest for the original digest.
+	original := fileContent(singlePartSize)
+	mutated := slices.Clone(original)
+	mutated[0] ^= 0xff
+
+	var mu sync.Mutex
+
+	readsAtStart := 0
+
+	source := filemocks.NewMockSource(t)
+	source.EXPECT().Size().Return(int64(len(original))).Maybe()
+	source.EXPECT().ReadAt(mock.Anything, mock.Anything).RunAndReturn(
+		func(p []byte, off int64) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			body := original
+			if off == 0 {
+				readsAtStart++
+				if readsAtStart > 1 {
+					body = mutated
+				}
+			}
+
+			return bytes.NewReader(body).ReadAt(p, off)
+		},
+	).Maybe()
+
+	puts := 0
+
+	blobs := ocimocks.NewMockBlobs(t)
+	blobs.EXPECT().Exists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
+	blobs.EXPECT().
+		Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _ digest.Digest, size int64, r io.Reader, wire transfer.WireProgress) error {
+			mu.Lock()
+			puts++
+			mu.Unlock()
+
+			_, err := readDeclared(r, size, wire)
+
+			return err
+		}).
+		Maybe()
+
+	manifests := ocimocks.NewMockManifests(t)
+	policy, sleeps := testPolicy(t)
+
+	_, err := transfer.Push(t.Context(), transfer.PushSpec{
+		Source:    source,
+		Blobs:     blobs,
+		Manifests: manifests,
+		PartSize:  fixturePartSize,
+		Workers:   1,
+		Title:     "model.bin",
+		Retry:     policy,
+	})
+
+	require.ErrorContains(t, err, "the source changed while the push read it")
+	assert.NotContains(t, err.Error(), "attempts", "a source change is attempted exactly once")
+	assert.Equal(t, 1, puts, "the mutated upload is not sent again")
+	assert.Empty(t, sleeps.waits())
+	manifests.AssertNotCalled(t, "Put", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestPullSurfacesACommitFailure(t *testing.T) {
