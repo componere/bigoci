@@ -252,6 +252,7 @@ lands here:
 | A file needing more than 4096 parts at the given part size | the message names the smallest part size that fits |
 | A manifest that claims to be bigoci and is broken | see [`ErrNotBigociArtifact`](#errnotbigociartifact) for the split |
 | A transport failure that outlived its retries | a dropped connection, a 429, a 5xx |
+| A source that changes while a push is reading it | same-length mutation, digest mismatch, or a short part; not retried, and no manifest is written |
 | A cancelled context or an expired deadline | see below |
 | A manifest or blob response whose content encoding is not identity | a compressing proxy or middlebox; not retried. See below |
 

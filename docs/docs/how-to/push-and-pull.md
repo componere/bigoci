@@ -169,10 +169,15 @@ connections, 429s, and 5xx answers are retried, and a part whose stream breaks
 is asked for again from the byte it reached.
 
 Some failures are not worth repeating and end the transfer at once: a part the
-registry refuses, a pulled part that fails verification, and a local file that
-will not take the bytes or will not read back. The [retry
-policy](../explanation/design.md#retry-policy) covers what the numbers buy,
-how `Retry-After` is honored, and what a proxy that caps byte ranges costs.
+registry refuses, a pulled part that fails verification, a local file that
+will not take the bytes or will not read back, and a source that changes
+while a push is reading it. A same-length mutation, a digest mismatch, or a
+short read during upload is terminal: the file no longer matches the parts
+already hashed, so another attempt cannot make it agree with itself. The
+manifest is written last, so a push that fails this way publishes nothing.
+The [retry policy](../explanation/design.md#retry-policy) covers what the
+numbers buy, how `Retry-After` is honored, and what a proxy that caps byte
+ranges costs.
 
 Two things to know if you configure the transport:
 

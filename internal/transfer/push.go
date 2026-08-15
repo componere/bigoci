@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"sync"
 
@@ -196,7 +197,9 @@ func (s PushSpec) validate() error {
 // manifest records is the file's own order.
 //
 // The pass checks for cancellation between parts rather than inside one, so a
-// cancelled push stops after at most one more part is hashed.
+// cancelled push stops after at most one more part is hashed. A part shorter
+// than the plan wraps [errSourceChanged]: the source changed under the
+// transfer, and repeating the hash cannot make the file agree with itself.
 //
 // It is also where a push's hashed byte count comes from, which is the only
 // thing a watcher has to look at while the first part is still being read.
@@ -230,8 +233,8 @@ func hashParts(
 		}
 		if read != part.Size {
 			return "", fmt.Errorf(
-				"part %d is %d bytes, but the plan expects %d: the source changed while the push read it",
-				part.Index, read, part.Size,
+				"part %d is %d bytes, but the plan expects %d: %w",
+				part.Index, read, part.Size, errSourceChanged,
 			)
 		}
 
@@ -350,6 +353,14 @@ func (u *uploader) upload(ctx context.Context, job partJob) error {
 // The orchestrator knows better: it unwraps its own tag and reports the disk
 // failure plain, so a source that went away ends the push at once instead of
 // costing three more reads of a range that will not read.
+//
+// The wrapper is also where an attempt checks that the bytes it is sending
+// are still the ones the hash pass named. The hasher is created here, with
+// the reader, so a retry hashes the range again rather than onto the
+// previous attempt — a spent hasher would reject a file that had not
+// changed. The check runs when the expected size has been read, not at EOF:
+// a transport that stops at Content-Length never sees EOF, and that is the
+// ordinary path.
 func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) error {
 	exists, err := u.blobs.Exists(ctx, job.dgst)
 	if err != nil {
@@ -359,8 +370,11 @@ func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) err
 		return nil
 	}
 
-	content := tagSourceReads{
-		r: io.NewSectionReader(u.source, job.part.Offset, job.part.Size),
+	content := &tagSourceReads{
+		r:      io.NewSectionReader(u.source, job.part.Offset, job.part.Size),
+		hasher: sha256.New(),
+		expect: job.dgst,
+		size:   job.part.Size,
 	}
 
 	// Set before the upload rather than after it, because an upload that dies
@@ -381,21 +395,68 @@ func (u *uploader) attempt(ctx context.Context, job partJob, uploaded *bool) err
 	return nil
 }
 
+// errSourceChanged reports that the bytes a push is reading are not the bytes
+// it planned from. A short part, a same-length mutation, and a digest
+// mismatch are the same failure: the source changed under the transfer, and
+// repeating the read cannot make the file agree with itself.
+var errSourceChanged = errors.New("the source changed while the push read it")
+
 // tagSourceReads wraps the section reader an upload streams from, so a
 // failure the source raises stays recognizable after the adapter has wrapped
-// it as a failed request. [io.EOF] passes through untouched — the transport
-// reads it as the end of the body.
+// it as a failed request. It also hashes the bytes of this attempt and
+// checks them against the digest the hash pass recorded, once the expected
+// size has been read.
+//
+// [io.EOF] passes through only when the range was exactly as long as the
+// plan said. A short read, a digest that does not match, and every other
+// source failure are tagged: from where the adapter stands they all look
+// like a connection that stopped carrying, and the orchestrator must be
+// able to keep them terminal.
 type tagSourceReads struct {
 	// r is the range of the file being uploaded.
 	r io.Reader
+	// hasher accumulates the digest of the bytes this attempt has streamed.
+	// It is created with the wrapper, so a retry hashes the range again
+	// rather than onto the previous attempt.
+	hasher hash.Hash
+	// expect is the digest the hash pass recorded for this range.
+	expect digest.Digest
+	// size is how many bytes the upload declared, and the moment the digest
+	// is compared.
+	size int64
+	// read is how many of those bytes this attempt has hashed.
+	read int64
 }
 
-// Read reads from the source's range and tags every failure except EOF.
-func (t tagSourceReads) Read(p []byte) (int, error) {
+// Read reads from the source's range, hashes what arrives, and tags every
+// failure except an EOF that ends a range of the expected size. The digest
+// is compared the moment that size is reached, because a transport that
+// declared Content-Length stops there and never asks for EOF.
+func (t *tagSourceReads) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
+
+	if n > 0 {
+		_, _ = t.hasher.Write(p[:n])
+		t.read += int64(n)
+	}
 
 	if err != nil && !errors.Is(err, io.EOF) {
 		return n, &sourceError{err: err}
+	}
+
+	if t.read < t.size {
+		if errors.Is(err, io.EOF) {
+			return n, &sourceError{err: errSourceChanged}
+		}
+
+		return n, err
+	}
+
+	if got := digest.NewDigest(digest.SHA256, t.hasher); got != t.expect {
+		// Withhold the completing chunk: [io.ReadFull] and a Content-Length
+		// transport treat a full buffer as success and discard the error that
+		// arrived with it.
+		return 0, &sourceError{err: errSourceChanged}
 	}
 
 	return n, err

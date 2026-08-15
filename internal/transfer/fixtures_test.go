@@ -156,6 +156,21 @@ func readUpload(r io.Reader, wire transfer.WireProgress) ([]byte, error) {
 	return content, err
 }
 
+// readDeclared consumes exactly size bytes from r, the way a Content-Length
+// transport reads an upload body, and never asks for EOF.
+func readDeclared(r io.Reader, size int64, wire transfer.WireProgress) ([]byte, error) {
+	content := make([]byte, size)
+	n, err := io.ReadFull(r, content)
+	if wire != nil && n > 0 {
+		wire(int64(n))
+	}
+	if err != nil {
+		return content[:n], err
+	}
+
+	return content, nil
+}
+
 // record drains r into the recorder under dgst.
 //
 // It reads the whole blob because a test compares the bytes a push streamed

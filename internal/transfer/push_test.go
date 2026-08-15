@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -359,4 +360,84 @@ func TestPushRefusesAnIncompleteSpec(t *testing.T) {
 			assert.Equal(t, ocispec.Descriptor{}, descriptor)
 		})
 	}
+}
+
+// TestPushRejectsAMutatedSourceWithoutWritingTheManifest pins the upload
+// verifier: the hash pass names a digest, then the file's bytes change under
+// that same size before the part is streamed. The mismatch is a source
+// failure — terminal, and the manifest is never written.
+func TestPushRejectsAMutatedSourceWithoutWritingTheManifest(t *testing.T) {
+	content := fileContent(singlePartSize)
+	mutated := slices.Clone(content)
+	mutated[0] ^= 0xff
+
+	var mu sync.Mutex
+	reads := 0
+
+	source := filemocks.NewMockSource(t)
+	source.EXPECT().Size().Return(int64(len(content))).Maybe()
+	source.EXPECT().ReadAt(mock.Anything, mock.Anything).RunAndReturn(
+		func(p []byte, off int64) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			reads++
+			if reads == 1 {
+				return readAt(content, p, off)
+			}
+
+			return readAt(mutated, p, off)
+		},
+	).Maybe()
+
+	blobs, calls := scriptedBlobs(t, blobScript{})
+	policy, sleeps := testPolicy(t)
+	manifests := ocimocks.NewMockManifests(t)
+
+	_, err := transfer.Push(t.Context(), transfer.PushSpec{
+		Source:    source,
+		Blobs:     blobs,
+		Manifests: manifests,
+		PartSize:  fixturePartSize,
+		Workers:   1,
+		Title:     "model.bin",
+		Retry:     policy,
+	})
+	require.ErrorContains(t, err, "the source changed while the push read it")
+	require.ErrorContains(t, err, "read part 0 of the source at offset")
+	assert.NotContains(t, err.Error(), "attempts", "a source failure is attempted exactly once")
+
+	assert.Equal(t, 1, calls.puts(digest.FromBytes(content)), "the registry is retried, never the disk")
+	assert.Empty(t, sleeps.waits())
+	manifests.AssertNotCalled(t, "Put", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestPushSucceedsWhenTheSourceIsStable is the counterpart to the mutation
+// row: the same two-pass shape — hash, then upload — still writes the
+// artifact when the bytes do not change.
+func TestPushSucceedsWhenTheSourceIsStable(t *testing.T) {
+	content := fileContent(singlePartSize)
+	want, wantBody := artifactFor(t, content, "model.bin")
+
+	blobs, recorded := mockBlobs(t, nil)
+
+	manifests := ocimocks.NewMockManifests(t)
+	manifests.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
+		func(_ context.Context, _ string, body []byte) (digest.Digest, error) {
+			return digest.FromBytes(body), nil
+		},
+	).Once()
+
+	descriptor, err := transfer.Push(t.Context(), transfer.PushSpec{
+		Source:    mockSource(t, content),
+		Blobs:     blobs,
+		Manifests: manifests,
+		PartSize:  fixturePartSize,
+		Workers:   1,
+		Title:     "model.bin",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, digest.FromBytes(wantBody), descriptor.Digest)
+	assert.Equal(t, content, recorded.blob(want.Parts[0].Digest).content)
 }
