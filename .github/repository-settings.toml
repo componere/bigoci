@@ -82,11 +82,7 @@ contexts = [
 [rulesets.tags_default]
 name = "Default tags"
 enforcement = "active"
-# Creation stays open because GitHub only accepts bypass apps owned by the
-# ruleset's organization. The installed release app is owned by meigma rather
-# than imgoci, so it cannot be a bypass actor here. Write access is still
-# required, and the remaining rules keep every created tag immutable.
-restrict_creations = false
+restrict_creations = true
 restrict_updates = true
 update_allows_fetch_and_merge = false
 restrict_deletions = true
@@ -96,6 +92,8 @@ block_force_pushes = true
 
 bypass = [
   { type = "repository_admin_role", mode = "always" },
+  # Release Please needs tag-creation bypass because tags are protected here.
+  { type = "app", slug = "imgoci-release-please", mode = "always" },
 ]
 
 [rulesets.tags_default.status_checks]
