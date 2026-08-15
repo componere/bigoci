@@ -253,6 +253,23 @@ lands here:
 | A manifest that claims to be bigoci and is broken | see [`ErrNotBigociArtifact`](#errnotbigociartifact) for the split |
 | A transport failure that outlived its retries | a dropped connection, a 429, a 5xx |
 | A cancelled context or an expired deadline | see below |
+| A manifest or blob response whose content encoding is not identity | a compressing proxy or middlebox; not retried. See below |
+
+A registry, proxy, or middlebox that applies a content coding such as gzip to
+a manifest or blob response is this last case. bigoci sends
+`Accept-Encoding: identity` on those reads and refuses anything else, because
+the bytes a pull hashes must be the bytes the registry stored. The error names
+the request (`GET /v2/<name>/manifests/<tag>` or
+`GET /v2/<name>/blobs/<digest>`) and the identity rule. It does not name the
+encoding the far end chose, and it is not retried.
+
+**Left behind.** A pull that failed at the manifest publishes nothing and its
+zero-length partial file is removed. A pull that failed at a part keeps its
+partial file.
+
+**The fix** is on the registry side: turn off compression on the distribution
+API, or on the proxy or middlebox in front of it. Token-endpoint JSON may
+still be gzipped; that path is not a content hash.
 
 ## Cancellation and deadlines
 
@@ -289,7 +306,7 @@ matched.
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | failure, no sentinel matched: transport, local file, malformed reference, expired deadline |
+| 1 | failure, no sentinel matched: transport, local file, malformed reference, expired deadline, non-identity content coding |
 | 2 | usage error: an unknown flag, an unparseable value, a negative duration flag, the wrong operand count, a destination that is a directory |
 | 3 | `errors.Is(err, bigoci.ErrNotFound)` |
 | 4 | `errors.Is(err, bigoci.ErrNotBigociArtifact)` |

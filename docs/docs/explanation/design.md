@@ -541,9 +541,9 @@ surface.
   how custom dial and proxy boundaries opt in. It sends token exchanges and
   off-origin upload requests, and
   follows a blob redirect itself, up to three hops, for a `GET` or a `HEAD` and
-  nothing else. Every redirect hop is a fresh request carrying two headers,
-  `Range` and `Accept` — plus the credential in the one same-origin case the
-  next bullet names, and nothing else.
+  nothing else. Every redirect hop is a fresh request carrying three headers,
+  `Range`, `Accept`, and `Accept-Encoding` — plus the credential in the one
+  same-origin case the next bullet names, and nothing else.
 - A registry-selected cross-host endpoint cannot land on a loopback, private,
   link-local, or unspecified IP address. Token realms and upload locations that
   name such an IP literal are refused before dialing. Every direct cross-host

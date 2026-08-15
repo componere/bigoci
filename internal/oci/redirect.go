@@ -101,7 +101,7 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 // that, until something answers with a status that is not another redirect.
 //
 // Every hop is a request built from nothing: a fresh
-// [net/http.NewRequestWithContext] carrying the two headers [copyAllowed]
+// [net/http.NewRequestWithContext] carrying the three headers [copyAllowed]
 // permits and whatever the same-origin rule allows. Nothing is inherited,
 // which is what makes "can a credential reach signed storage" a question with
 // a written answer rather than a matter of which headers happened to be set.
@@ -334,24 +334,24 @@ func (r *Repository) registryURL() *url.URL {
 	return &url.URL{Scheme: r.scheme, Host: r.host}
 }
 
-// copyAllowed copies the two request headers a re-issue may carry over from
+// copyAllowed copies the three request headers a re-issue may carry over from
 // the request that was redirected, and nothing else.
 //
-// The list is the whole of it. There is no branch that could add a third
+// The list is the whole of it. There is no branch that could add a fourth
 // header and no way to add one at run time, mirroring the allow-lists the
 // reference CLI's log renders: a Content-Type, a cookie, a private header,
 // anything a later phase starts sending, has no path to a host the registry
 // named. Authorization is absent here on purpose — the same-origin rule is the
 // only thing that sets it, and it is stated where that decision is made.
 //
-// Carrying Range has a second effect worth naming. [net/http] asks for gzip on
-// its own only when a request carries no Range header
-// (net/http/transport.go, where the transport adds Accept-Encoding), so a
-// ranged re-issue can never come back as decompressed bytes under a compressed
-// Content-Length — the one shape that would make a part's length disagree with
-// what the manifest says about it.
+// Accept-Encoding is on the list so the identity marker a manifest or blob
+// GET sets reaches the host the registry named. Setting it also stops
+// [net/http] asking for gzip on its own (net/http/transport.go, where the
+// transport adds Accept-Encoding), which is what keeps the bytes a hop
+// returns the stored bytes — the ones the digest describes — rather than
+// decompressed bytes under a compressed Content-Length.
 func copyAllowed(dst, src http.Header) {
-	for _, name := range []string{"Range", "Accept"} {
+	for _, name := range []string{"Range", "Accept", headerAcceptEncoding} {
 		for _, value := range src.Values(name) {
 			dst.Add(name, value)
 		}

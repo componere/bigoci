@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	digest "github.com/opencontainers/go-digest"
@@ -38,6 +39,20 @@ const lyingDigest = "sha256:0000000000000000000000000000000000000000000000000000
 // place in Docker-Content-Digest. The adapter ignores that claim and never
 // repeats it in a bound-manifest mismatch.
 const reflectedDigestHeader = "reusable-digest-header-bearer-a8f4c2"
+
+// headerAcceptEncoding is the identity-coding request header every manifest
+// and blob GET must send.
+const headerAcceptEncoding = "Accept-Encoding"
+
+// codingIdentity is the only Accept-Encoding token those GETs may ask for.
+const codingIdentity = "identity"
+
+// reflectedCoding is a reusable credential-shaped Content-Encoding value. A
+// peer controls this header, so a refusal must not repeat it.
+const reflectedCoding = "reusable-encoding-bearer-a8f4c2"
+
+// codedRefusal is the fixed diagnosis a coded response is refused with.
+const codedRefusal = "the response is not identity coded"
 
 func TestManifestsGet(t *testing.T) {
 	t.Parallel()
@@ -94,6 +109,7 @@ func TestManifestsGet(t *testing.T) {
 			assert.Equal(t, http.MethodGet, request.method)
 			assert.Equal(t, "/v2/"+repoName+"/manifests/"+tag, request.path)
 			assert.Equal(t, ocispec.MediaTypeImageManifest, request.header.Get("Accept"))
+			assert.Equal(t, codingIdentity, request.header.Get(headerAcceptEncoding))
 
 			if tt.wantErr || tt.wantErrIs != nil {
 				require.Error(t, err)
@@ -111,6 +127,74 @@ func TestManifestsGet(t *testing.T) {
 				Digest:    digest.FromString(tt.body),
 				Size:      int64(len(tt.body)),
 			}, desc)
+		})
+	}
+}
+
+// TestManifestsGetRejectsACodedResponse proves a content coding on the
+// manifest body is refused before the bytes are read, whether the status was
+// a success or a failure, and that the body is closed either way.
+func TestManifestsGetRejectsACodedResponse(t *testing.T) {
+	t.Parallel()
+
+	originPath := "/v2/" + repoName + "/manifests/" + tag
+	tests := []struct {
+		name     string
+		status   int
+		encoding string
+		body     string
+		wantErr  bool
+	}{
+		{name: "a gzipped success is refused", status: http.StatusOK, encoding: "gzip", wantErr: true},
+		{name: "a gzipped not-found is refused", status: http.StatusNotFound, encoding: "gzip", wantErr: true},
+		{
+			name:     "a gzipped server failure is refused",
+			status:   http.StatusInternalServerError,
+			encoding: "gzip",
+			wantErr:  true,
+		},
+		{
+			name:     "a peer-selected coding is not reflected",
+			status:   http.StatusOK,
+			encoding: reflectedCoding,
+			wantErr:  true,
+		},
+		{
+			name:     "an identity-coded success is accepted",
+			status:   http.StatusOK,
+			encoding: codingIdentity,
+			body:     manifestBody,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var rec recorder
+			repo, closed := newClosingRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rec.record(t, r)
+				w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+				w.Header().Set("Content-Encoding", tt.encoding)
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, manifestBody)
+			}), repoName+":"+tag)
+
+			body, _, err := repo.Manifests().Get(t.Context())
+
+			request := rec.only(t)
+			assert.Equal(t, codingIdentity, request.header.Get(headerAcceptEncoding))
+
+			if tt.wantErr {
+				assertCodedRefusal(t, err, originPath, tt.encoding)
+				assert.True(t, closed.Load(), "the coded response body must be closed")
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.body, string(body))
+			assert.True(t, closed.Load(), "a successful read still closes the response body")
 		})
 	}
 }
@@ -387,4 +471,72 @@ func TestManifestsGetRejectsDigestPush(t *testing.T) {
 	assert.Empty(t, body)
 	assert.Equal(t, ocispec.Descriptor{}, desc)
 	assert.Empty(t, rec.all())
+}
+
+// assertCodedRefusal checks that a coded manifest or blob response failed as
+// a terminal, origin-safe identity-coding refusal and did not echo the peer
+// header.
+func assertCodedRefusal(t *testing.T, err error, originPath, encoding string) {
+	t.Helper()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GET "+originPath, "the original registry operation stays diagnostic")
+	assert.Contains(t, err.Error(), codedRefusal)
+	assert.NotContains(t, err.Error(), encoding, "a peer-selected coding is direct reflection material")
+	require.NotErrorIs(t, err, oci.ErrNotFound)
+	require.NotErrorIs(t, err, oci.ErrUnauthorized)
+
+	_, transient := retry.IsTransient(err)
+	assert.False(t, transient, "a coded response will arrive coded again")
+}
+
+// newClosingRegistry starts a fake registry and returns a repository bound to
+// ref on it, together with a flag that becomes true when a response body is
+// closed.
+func newClosingRegistry(t *testing.T, handler http.Handler, ref string) (*oci.Repository, *atomic.Bool) {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	closed := &atomic.Bool{}
+	client := &http.Client{Transport: &bodyCloseTransport{closed: closed}}
+	repo, err := oci.NewRepository(hostOf(t, server)+"/"+ref, oci.WithPlainHTTP(), oci.WithHTTPClient(client))
+	require.NoError(t, err)
+
+	return repo, closed
+}
+
+// bodyCloseTransport records whether a response body was closed, so a coded
+// refusal can prove it released the connection.
+type bodyCloseTransport struct {
+	// closed is set when any response body this transport wrapped is closed.
+	closed *atomic.Bool
+}
+
+// RoundTrip sends req with the default transport and wraps the body.
+func (t *bodyCloseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp.Body = &bodyCloseTracker{ReadCloser: resp.Body, closed: t.closed}
+
+	return resp, nil
+}
+
+// bodyCloseTracker is a response body that records its Close.
+type bodyCloseTracker struct {
+	io.ReadCloser
+
+	// closed is set when Close is called.
+	closed *atomic.Bool
+}
+
+// Close closes the wrapped body and records that it happened.
+func (b *bodyCloseTracker) Close() error {
+	b.closed.Store(true)
+
+	return b.ReadCloser.Close()
 }

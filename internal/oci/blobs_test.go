@@ -216,6 +216,7 @@ func TestBlobsGet(t *testing.T) {
 			assert.Equal(t, http.MethodGet, request.method)
 			assert.Equal(t, "/v2/"+repoName+"/blobs/"+dgst.String(), request.path)
 			assert.Equal(t, tt.wantRange, request.header.Get("Range"))
+			assert.Equal(t, codingIdentity, request.header.Get(headerAcceptEncoding))
 
 			if tt.wantErr || tt.wantErrIs != nil {
 				require.Error(t, err)
@@ -240,6 +241,112 @@ func TestBlobsGet(t *testing.T) {
 
 			got, err := io.ReadAll(body)
 			require.NoError(t, err)
+			assert.Equal(t, tt.wantBody, string(got))
+		})
+	}
+}
+
+// TestBlobsGetRejectsACodedResponse proves a content coding on a full or
+// resumed blob body is refused before the bytes are read, whether the status
+// was a success or a failure, and that the body is closed either way.
+func TestBlobsGetRejectsACodedResponse(t *testing.T) {
+	t.Parallel()
+
+	originPath := "/v2/" + repoName + "/blobs/<digest>"
+	tests := []struct {
+		name      string
+		offset    int64
+		status    int
+		send      string
+		encoding  string
+		wantRange string
+		wantStart int64
+		wantBody  string
+		wantErr   bool
+	}{
+		{
+			name:     "a gzipped whole blob is refused",
+			status:   http.StatusOK,
+			send:     blobPayload,
+			encoding: "gzip",
+			wantErr:  true,
+		},
+		{
+			name:      "a gzipped partial blob is refused",
+			offset:    resumeOffset,
+			status:    http.StatusPartialContent,
+			send:      blobPayload[resumeOffset:],
+			encoding:  "gzip",
+			wantRange: "bytes=5-",
+			wantErr:   true,
+		},
+		{
+			name:     "a gzipped not-found is refused",
+			status:   http.StatusNotFound,
+			encoding: "gzip",
+			wantErr:  true,
+		},
+		{
+			name:     "a gzipped server failure is refused",
+			status:   http.StatusInternalServerError,
+			encoding: "gzip",
+			wantErr:  true,
+		},
+		{
+			name:     "a peer-selected coding is not reflected",
+			status:   http.StatusOK,
+			send:     blobPayload,
+			encoding: reflectedCoding,
+			wantErr:  true,
+		},
+		{
+			name:     "an identity-coded whole blob is accepted",
+			status:   http.StatusOK,
+			send:     blobPayload,
+			encoding: codingIdentity,
+			wantBody: blobPayload,
+		},
+		{
+			name:      "an identity-coded resume is accepted",
+			offset:    resumeOffset,
+			status:    http.StatusPartialContent,
+			send:      blobPayload[resumeOffset:],
+			encoding:  codingIdentity,
+			wantRange: "bytes=5-",
+			wantStart: resumeOffset,
+			wantBody:  blobPayload[resumeOffset:],
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var rec recorder
+			handler := codedBlobHandler(t, &rec, tt.status, tt.encoding, tt.send)
+			repo, closed := newClosingRegistry(t, handler, repoName+":"+tag)
+
+			dgst := digest.FromString(blobPayload)
+			body, start, err := repo.Blobs().Get(t.Context(), dgst, tt.offset)
+
+			request := rec.only(t)
+			assert.Equal(t, codingIdentity, request.header.Get(headerAcceptEncoding))
+			assert.Equal(t, tt.wantRange, request.header.Get("Range"))
+
+			if tt.wantErr {
+				assertCodedRefusal(t, err, originPath, tt.encoding)
+				assert.Zero(t, start, "a read that failed opened no stream to report a start for")
+				assert.True(t, closed.Load(), "the coded response body must be closed")
+
+				return
+			}
+
+			require.NoError(t, err)
+			defer body.Close()
+
+			got, err := io.ReadAll(body)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantStart, start)
 			assert.Equal(t, tt.wantBody, string(got))
 		})
 	}
@@ -555,5 +662,21 @@ func uploadHandler(t *testing.T, rec *recorder, responses uploadResponses) http.
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	})
+}
+
+// codedBlobHandler returns a fake registry that answers a blob GET with the
+// given status, content coding, and body.
+func codedBlobHandler(t *testing.T, rec *recorder, status int, encoding, send string) http.Handler {
+	t.Helper()
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(t, r)
+		if status == http.StatusPartialContent {
+			w.Header().Set("Content-Range", "bytes 5-18/19")
+		}
+		w.Header().Set("Content-Encoding", encoding)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, send)
 	})
 }

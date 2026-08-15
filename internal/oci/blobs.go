@@ -91,6 +91,10 @@ func (b *Blobs) Exists(ctx context.Context, dgst digest.Digest) (bool, error) {
 // reads as a stale signature, comes back marked worth another attempt, and
 // matches no sentinel. Public errors use a "<digest>" path label: a digest was
 // selected by the manifest and can itself be a reusable Bearer token.
+//
+// The request asks for identity coding so the bytes the caller hashes are the
+// stored bytes. A response that arrives under any other content coding is
+// refused before its status or body is read, and the body is closed.
 func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.ReadCloser, int64, error) {
 	req, err := b.repo.newRequest(ctx, http.MethodGet, b.repo.endpoint(blobPath(dgst)), nil)
 	if err != nil {
@@ -100,6 +104,7 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.Read
 		method: http.MethodGet,
 		path:   b.repo.endpoint("blobs/<digest>").Path,
 	})
+	req.Header.Set(headerAcceptEncoding, codingIdentity)
 	if off > 0 {
 		req.Header.Set("Range", rangeFrom(off))
 	}
@@ -109,7 +114,15 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.Read
 		return nil, 0, err
 	}
 
-	start, err := blobReadStart(originOf(req), resp, off)
+	at := originOf(req)
+	err = checkIdentityEncoding(at, resp)
+	if err != nil {
+		_ = resp.Body.Close()
+
+		return nil, 0, err
+	}
+
+	start, err := blobReadStart(at, resp, off)
 	if err != nil {
 		_ = resp.Body.Close()
 

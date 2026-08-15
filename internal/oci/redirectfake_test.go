@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -83,8 +84,21 @@ type blobStore struct {
 func newBlobStore(t *testing.T) *blobStore {
 	t.Helper()
 
+	return newBlobStoreWithConnState(t, nil)
+}
+
+// newBlobStoreWithConnState starts an object store whose ConnState hook is
+// installed before the server listens, so httptest can wrap it. connState may
+// be nil.
+func newBlobStoreWithConnState(t *testing.T, connState func(net.Conn, http.ConnState)) *blobStore {
+	t.Helper()
+
 	store := &blobStore{}
-	store.server = httptest.NewServer(store)
+	store.server = httptest.NewUnstartedServer(store)
+	if connState != nil {
+		store.server.Config.ConnState = connState
+	}
+	store.server.Start()
 	t.Cleanup(store.server.Close)
 
 	return store
