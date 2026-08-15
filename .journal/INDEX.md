@@ -13,3 +13,4 @@
 | 009 | 2026-08-09 | Phase 7 — progress, docs set, and v0.1.0 released | complete | Shipped the progress reporting option, the full Diátaxis docs set, and the API surface pass (PRs #44, #45, #47), passed all five phase-7 manual gates, and released v0.1.0 via PR #11 — closing all seven phases of the plan. |
 | 010 | 2026-08-09 | Independent security audit and remediation | complete | Proved six exploitable security boundaries, merged six regression-backed fixes, and passed the final integrated exploit matrix on master. |
 | 011 | 2026-08-14 | go-oci-blob released and integrated | complete | Released the embedding contracts in go-oci-blob v1.1.1, replaced bigoci's bespoke uploader through guarded transport adapters, and merged the fully verified cutover in PR #53. |
+| 012 | 2026-08-15 | Plan IMGOCI upstream requests | in-progress | Analyze the upstream requests and produce a complete implementation plan grounded in the current repository. |
