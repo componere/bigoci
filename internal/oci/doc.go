@@ -57,7 +57,7 @@
 // with a location rather than with bytes, and this package follows that
 // location itself instead of letting [net/http] do it. Automatic following is
 // off for every request; a read is re-issued up to three times, each time as a
-// request built from nothing and carrying two headers and no more. The
+// request built from nothing and carrying three headers and no more. The
 // credential goes along only when the location is the registry itself —
 // same scheme, same host, same port — so a request to signed storage arrives
 // with no Authorization header and no cookie, and a location is never stored:

@@ -908,7 +908,7 @@ func TestACodedStoreResponseIsRejectedAgainstTheRegistryOperation(t *testing.T) 
 	released := make(chan struct{})
 	var once sync.Once
 	store := newBlobStoreWithConnState(t, func(_ net.Conn, state http.ConnState) {
-		if state == http.StateIdle || state == http.StateClosed {
+		if state == http.StateClosed {
 			once.Do(func() { close(released) })
 		}
 	})
@@ -942,9 +942,12 @@ func TestACodedStoreResponseIsRejectedAgainstTheRegistryOperation(t *testing.T) 
 	assert.Equal(t, codingIdentity, asked[0].header.Get(headerAcceptEncoding), "the identity marker reached storage")
 	assert.Empty(t, asked[0].header.Get(headerAuthorization), "the registry's credential must not reach storage")
 
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+
 	select {
 	case <-released:
-	case <-t.Context().Done():
+	case <-timer.C:
 		t.Fatal("the coded store response body was never closed")
 	}
 }
