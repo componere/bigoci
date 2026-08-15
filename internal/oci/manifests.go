@@ -88,7 +88,8 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 	}
 	defer resp.Body.Close()
 
-	if err := checkIdentityEncoding(at, resp); err != nil {
+	err = checkIdentityEncoding(at, resp)
+	if err != nil {
 		return nil, ocispec.Descriptor{}, err
 	}
 

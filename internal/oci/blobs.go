@@ -115,7 +115,8 @@ func (b *Blobs) Get(ctx context.Context, dgst digest.Digest, off int64) (io.Read
 	}
 
 	at := originOf(req)
-	if err := checkIdentityEncoding(at, resp); err != nil {
+	err = checkIdentityEncoding(at, resp)
+	if err != nil {
 		_ = resp.Body.Close()
 
 		return nil, 0, err

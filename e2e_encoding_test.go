@@ -126,13 +126,12 @@ func newGzippingProxy(t *testing.T, upstream, class string) *gzippingProxy {
 	front := &gzippingProxy{log: &authLog{}}
 	proxy := httputil.NewSingleHostReverseProxy(origin)
 	proxy.Transport = newTransport(t)
-	director := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		director(req)
+	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+		pr.SetURL(origin)
 		// The registry must answer in identity so the coding this fixture
 		// adds is the only one on the response. A middlebox that compresses
 		// anyway is the whole of the row.
-		req.Header.Set("Accept-Encoding", "identity")
+		pr.Out.Header.Set("Accept-Encoding", "identity")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		got, _ := classifyRequest(resp.Request)
