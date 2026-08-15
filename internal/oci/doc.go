@@ -8,11 +8,14 @@
 // one, and GET and PUT on a manifest. The reasoning is documented at
 // https://imgoci.github.io/bigoci/explanation/design/.
 //
-// [NewRepository] parses a reference into the repository it names.
-// [Repository.Blobs] and [Repository.Manifests] return the two adapters,
-// which implement the transfer package's Blobs and Manifests ports. The
-// manifest adapter is bound to the reference's tag or digest at construction,
-// so the core asks for "the manifest" and never learns the reference grammar.
+// [NewRepository] parses a reference into the repository it names and binds
+// the manifest adapter to the tag or digest that reference carried.
+// [NewDigestPushRepository] parses a repository-only reference and puts the
+// adapter in digest-publication mode: Put writes at the digest of the body,
+// and Get is unsupported. [Repository.Blobs] and [Repository.Manifests]
+// return the two adapters, which implement the transfer package's Blobs and
+// Manifests ports. Either way the address is fixed at construction, so the
+// core asks for "the manifest" and never learns the reference grammar.
 //
 // Nothing here buffers blob content: a read hands back the response body
 // unread, and a write streams its reader onto the wire under an explicit

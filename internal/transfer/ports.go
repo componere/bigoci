@@ -108,11 +108,13 @@ type Blobs interface {
 	Put(ctx context.Context, dgst digest.Digest, size int64, r io.Reader, wire WireProgress) error
 }
 
-// Manifests is the manifest surface of one repository, bound at construction
-// to one reference: a tag or a digest.
+// Manifests is the manifest surface of one repository. Addressing is fixed
+// at construction, in one of two modes: bound to a tag or a digest, or
+// digest-publication, where Put writes at the digest of the body and Get is
+// unsupported.
 //
-// Binding the reference to the adapter instead of passing one per call keeps
-// reference grammar out of the core. Nothing here parses, validates, or
+// Fixing the address on the adapter instead of passing a reference per call
+// keeps reference grammar out of the core. Nothing here parses, validates, or
 // renders registry/repository:tag@digest, and the adapter that has to speak
 // that grammar is the only code that knows it exists.
 //
@@ -121,13 +123,18 @@ type Blobs interface {
 // must be safe for concurrent use, like every other port here.
 //
 // Failures are classified exactly as [Blobs] describes: transient ones
-// tagged, everything else not. Both methods are also safe to repeat — a Get
-// is a read, and a Put of identical bytes at the same reference reaches the
-// same state — so the orchestrator retries a manifest operation under the
-// same policy it retries a part under.
+// tagged, everything else not. In bound mode both methods are safe to
+// repeat — a Get is a read, and a Put of identical bytes at the same
+// reference reaches the same state. In digest-publication mode Put of
+// identical bytes is the same, and Get is unused. The orchestrator retries
+// a manifest operation under the same policy it retries a part under.
 type Manifests interface {
-	// Get fetches the manifest the bound reference resolves to and returns
-	// its raw bytes together with a descriptor for them.
+	// Get fetches the manifest the bound tag or digest resolves to and
+	// returns its raw bytes together with a descriptor for them.
+	//
+	// Get is unsupported in digest-publication mode: that construction has
+	// no bound tag or digest to fetch. An implementation fails the call
+	// without talking to a registry.
 	//
 	// The descriptor's digest is computed from the returned bytes and never
 	// taken from a header the registry sent. The bytes are what the caller
@@ -141,8 +148,12 @@ type Manifests interface {
 	// delivering verified bytes.
 	Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 
-	// Put writes body as the manifest at the bound reference, under the given
-	// media type, and returns the digest of body.
+	// Put writes body as the manifest under the given media type and returns
+	// the digest of body.
+	//
+	// In bound mode the write addresses the tag or digest the adapter was
+	// constructed with. In digest-publication mode it addresses the digest
+	// of body, which is not known until this call.
 	//
 	// body is sent byte for byte. The bigoci manifest encoding is canonical,
 	// and the manifest digest only stays reproducible when what reaches the
