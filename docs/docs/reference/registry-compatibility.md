@@ -140,6 +140,19 @@ also carried no credential to redirected storage, but that does not test
 credential stripping. The other redirect cells remain `N/A` rather than
 inferring a result from unexercised paths.
 
+## Content coding
+
+Manifest and blob GETs now send `Accept-Encoding: identity` and refuse a
+response whose `Content-Encoding` is not identity. A compressing registry
+front end or middlebox fails immediately as a structural error with no
+sentinel, instead of as a digest mismatch or as a transparent-gzip
+disagreement between a direct read and a redirected one.
+
+This campaign did not exercise coded responses. The rows above do not speak
+to a registry that compresses the distribution API; those deployments must
+turn that coding off before a bigoci pull can succeed. Token-endpoint JSON
+may still be gzipped.
+
 ## Coverage boundary
 
 This campaign does not establish bigoci compatibility for registries absent

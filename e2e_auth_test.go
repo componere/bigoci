@@ -217,6 +217,36 @@ func TestE2EAuthMovesFilesWithACredential(t *testing.T) {
 	})
 }
 
+// TestE2EAuthMovesFilesThroughGzippedTokenJSON is the positive control the
+// identity-coding rows need: a complete authenticated transfer whose token
+// document arrived gzipped. Manifest and blob reads stay identity-coded; only
+// the token realm is compressed, and that path must keep working because it
+// is not a content hash.
+func TestE2EAuthMovesFilesThroughGzippedTokenJSON(t *testing.T) {
+	const repo = "e2e/auth-gzip-token"
+
+	reg := newZot(t)
+	gate := newGateway(t, reg.host, gatewayForever)
+	front := newGzippingTokenFront(t, gate)
+	client := newClient(t, bigoci.WithPlainHTTP(), bigoci.WithCredentials(authUser, authPassword))
+
+	source := newRandomFile(t, multiSize)
+	dest := newPath(t, destName)
+
+	_, err := client.Push(
+		t.Context(), front.at.taggedRef(repo, tag), bigoci.FromFile(source),
+		bigoci.WithPartSize(multiPartSize), bigoci.WithWorkers(gatewayWorkers),
+	)
+	require.NoError(t, err)
+	require.NoError(t, client.Pull(
+		t.Context(), front.at.taggedRef(repo, tag), bigoci.ToFile(dest), bigoci.WithWorkers(gatewayWorkers),
+	))
+
+	assert.Equal(t, fileDigest(t, source), fileDigest(t, dest), "the pulled file must be byte-identical")
+	assert.Positive(t, gate.tokens(), "the transfer must have redeemed a token")
+	assert.Positive(t, front.compressed(), "this row is vacuous unless the token JSON was gzipped")
+}
+
 // TestE2EAuthIgnoresACredentialStoredForAnotherHost checks the lookup key.
 //
 // The credential is the right one, spelled correctly, stored under a host this
@@ -341,6 +371,72 @@ func newAuthZot(t *testing.T) zot {
 			}),
 		),
 	)
+}
+
+// gzippingTokenFront is a registry address in front of a bearer gateway that
+// gzips the token document and rewrites every challenge so the realm still
+// names this host. Registry responses pass through untouched.
+type gzippingTokenFront struct {
+	// at is the address rows aim their transfers at.
+	at zot
+	// innerHost is the gateway host every challenge originally names.
+	innerHost string
+	// outerHost is this fixture's host, which every rewritten realm must name
+	// instead, or the client would fetch the token uncompressed from the
+	// gateway and the row would prove nothing.
+	outerHost string
+	// mu guards gzipped.
+	mu sync.Mutex
+	// gzipped is how many token documents this fixture compressed.
+	gzipped int
+}
+
+// compressed returns how many token documents this fixture gzipped.
+func (f *gzippingTokenFront) compressed() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.gzipped
+}
+
+// newGzippingTokenFront returns a registry address in front of gate that
+// gzips successful token JSON and leaves every other response alone.
+func newGzippingTokenFront(t *testing.T, gate *gateway) *gzippingTokenFront {
+	t.Helper()
+
+	origin, err := url.Parse("http://" + gate.at.host)
+	require.NoError(t, err)
+
+	front := &gzippingTokenFront{innerHost: gate.at.host}
+	proxy := httputil.NewSingleHostReverseProxy(origin)
+	proxy.Transport = newTransport(t)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if challenge := resp.Header.Get(gatewayHeaderChallenge); challenge != "" {
+			resp.Header.Set(gatewayHeaderChallenge, strings.ReplaceAll(challenge, front.innerHost, front.outerHost))
+		}
+		if resp.Request.URL.Path != gatewayTokenPath || resp.StatusCode != http.StatusOK {
+			return nil
+		}
+
+		if err := gzipResponse(resp); err != nil {
+			return err
+		}
+
+		front.mu.Lock()
+		front.gzipped++
+		front.mu.Unlock()
+
+		return nil
+	}
+
+	server := httptest.NewServer(proxy)
+	t.Cleanup(server.Close)
+
+	front.at = zot{host: strings.TrimPrefix(server.URL, "http://")}
+	front.outerHost = front.at.host
+	t.Logf("a gzipping token front on %s is serving %s in front of %s", front.at.host, gatewayTokenPath, gate.at.host)
+
+	return front
 }
 
 // newRecordingProxy returns a registry address in front of upstream that
