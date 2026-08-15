@@ -905,25 +905,19 @@ func TestACodedStoreResponseIsRejectedAgainstTheRegistryOperation(t *testing.T) 
 	t.Parallel()
 
 	fake := newAuthRegistry(t)
-	store := newBlobStore(t)
+	released := make(chan struct{})
+	var once sync.Once
+	store := newBlobStoreWithConnState(t, func(_ net.Conn, state http.ConnState) {
+		if state == http.StateIdle || state == http.StateClosed {
+			once.Do(func() { close(released) })
+		}
+	})
 	store.serveAs = func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(headerContentEncoding, reflectedCoding)
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, authPayload)
 	}
 	fake.answerAs = redirectBlobReads(store, http.StatusTemporaryRedirect)
-
-	released := make(chan struct{})
-	var once sync.Once
-	prev := store.server.Config.ConnState
-	store.server.Config.ConnState = func(conn net.Conn, state http.ConnState) {
-		if prev != nil {
-			prev(conn, state)
-		}
-		if state == http.StateIdle || state == http.StateClosed {
-			once.Do(func() { close(released) })
-		}
-	}
 
 	repo := fake.repository(t)
 

@@ -124,30 +124,31 @@ func newGzippingProxy(t *testing.T, upstream, class string) *gzippingProxy {
 	require.NoError(t, err)
 
 	front := &gzippingProxy{log: &authLog{}}
-	proxy := httputil.NewSingleHostReverseProxy(origin)
-	proxy.Transport = newTransport(t)
-	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
-		pr.SetURL(origin)
-		// The registry must answer in identity so the coding this fixture
-		// adds is the only one on the response. A middlebox that compresses
-		// anyway is the whole of the row.
-		pr.Out.Header.Set("Accept-Encoding", "identity")
-	}
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		got, _ := classifyRequest(resp.Request)
-		if got != class || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(origin)
+			// The registry must answer in identity so the coding this fixture
+			// adds is the only one on the response. A middlebox that compresses
+			// anyway is the whole of the row.
+			pr.Out.Header.Set("Accept-Encoding", "identity")
+		},
+		Transport: newTransport(t),
+		ModifyResponse: func(resp *http.Response) error {
+			got, _ := classifyRequest(resp.Request)
+			if got != class || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				return nil
+			}
+
+			if err := gzipResponse(resp); err != nil {
+				return err
+			}
+
+			front.mu.Lock()
+			front.gzipped++
+			front.mu.Unlock()
+
 			return nil
-		}
-
-		if err := gzipResponse(resp); err != nil {
-			return err
-		}
-
-		front.mu.Lock()
-		front.gzipped++
-		front.mu.Unlock()
-
-		return nil
+		},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
