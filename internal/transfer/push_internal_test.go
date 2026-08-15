@@ -47,7 +47,11 @@ func TestSourceChangedMatchesBothPaths(t *testing.T) {
 			nil,
 		)
 		require.ErrorIs(t, err, errSourceChanged)
-		require.EqualError(t, err, "part 0 is 40 bytes, but the plan expects 1000: the source changed while the push read it")
+		require.EqualError(
+			t,
+			err,
+			"part 0 is 40 bytes, but the plan expects 1000: the source changed while the push read it",
+		)
 	})
 
 	t.Run("a same-length mutation the upload hashes", func(t *testing.T) {
