@@ -70,6 +70,67 @@ func TestNewRepository(t *testing.T) {
 	}
 }
 
+func TestNewDigestPushRepository(t *testing.T) {
+	t.Parallel()
+
+	manifestDigest := digest.FromString(manifestBody).String()
+	tests := []struct {
+		name    string
+		ref     string
+		wantErr bool
+		wantMsg string
+	}{
+		{name: "a repository-only reference publishes by digest", ref: registry + "/repo"},
+		{name: "a nested repository path is a reference", ref: registry + "/team/nested/artifact"},
+		{name: "a registry may carry a port", ref: "localhost:5000/repo"},
+		{name: "an empty reference is rejected", ref: "", wantErr: true},
+		{name: "a reference that is not one is rejected", ref: "not a reference", wantErr: true},
+		{name: "an uppercase repository is rejected", ref: registry + "/Repo", wantErr: true},
+		{name: "a reference without a registry is rejected", ref: "ubuntu", wantErr: true},
+		{
+			name:    "a tagged reference is rejected",
+			ref:     registry + "/repo:" + tag,
+			wantErr: true,
+			wantMsg: "must name a repository only",
+		},
+		{
+			name:    "a digest reference is rejected",
+			ref:     registry + "/repo@" + manifestDigest,
+			wantErr: true,
+			wantMsg: "must name a repository only",
+		},
+		{
+			name:    "a reference carrying both a tag and a digest is rejected",
+			ref:     registry + "/repo:" + tag + "@" + manifestDigest,
+			wantErr: true,
+			wantMsg: "must name a repository only",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo, err := oci.NewDigestPushRepository(tt.ref)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, repo)
+				if tt.wantMsg != "" {
+					assert.Contains(t, err.Error(), tt.wantMsg)
+				}
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, repo)
+			assert.NotNil(t, repo.Blobs())
+			assert.NotNil(t, repo.Manifests())
+		})
+	}
+}
+
 func TestNewRepositoryAddressesTheReferencedRegistry(t *testing.T) {
 	t.Parallel()
 
@@ -78,6 +139,32 @@ func TestNewRepositoryAddressesTheReferencedRegistry(t *testing.T) {
 		rec.record(t, r)
 		w.WriteHeader(http.StatusOK)
 	}), "team/nested/artifact:"+tag)
+
+	dgst := digest.FromString(blobPayload)
+	exists, err := repo.Blobs().Exists(t.Context(), dgst)
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	request := rec.only(t)
+	assert.Equal(t, "/v2/team/nested/artifact/blobs/"+dgst.String(), request.path)
+	assert.NotEmpty(t, request.host, "the request must carry the registry the reference named")
+}
+
+func TestNewDigestPushRepositoryAddressesTheReferencedRegistry(t *testing.T) {
+	t.Parallel()
+
+	var rec recorder
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(t, r)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	repo, err := oci.NewDigestPushRepository(
+		hostOf(t, server)+"/team/nested/artifact",
+		oci.WithPlainHTTP(),
+	)
+	require.NoError(t, err)
 
 	dgst := digest.FromString(blobPayload)
 	exists, err := repo.Blobs().Exists(t.Context(), dgst)

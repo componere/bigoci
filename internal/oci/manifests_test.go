@@ -3,6 +3,7 @@ package oci_test
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -287,4 +288,103 @@ func TestManifestsPut(t *testing.T) {
 			assert.Equal(t, digest.FromString(manifestBody), got)
 		})
 	}
+}
+
+// newDigestPushRegistry starts a fake registry served by handler and returns
+// a repository that publishes manifests by digest on repoName. The server
+// shuts down with the test.
+func newDigestPushRegistry(t *testing.T, handler http.Handler) *oci.Repository {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	repo, err := oci.NewDigestPushRepository(hostOf(t, server)+"/"+repoName, oci.WithPlainHTTP())
+	require.NoError(t, err)
+
+	return repo
+}
+
+func TestManifestsPutPublishesByDigest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		body    string
+		status  int
+		wantErr bool
+	}{
+		{
+			name:   "writes to the digest of the body",
+			body:   manifestBody,
+			status: http.StatusCreated,
+		},
+		{
+			name:   "a different body is a different digest path",
+			body:   otherBody,
+			status: http.StatusCreated,
+		},
+		{
+			name:    "a manifest the registry rejects is an error",
+			body:    manifestBody,
+			status:  http.StatusBadRequest,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var rec recorder
+			repo := newDigestPushRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rec.record(t, r)
+				w.WriteHeader(tt.status)
+			}))
+
+			got, err := repo.Manifests().Put(t.Context(), ocispec.MediaTypeImageManifest, []byte(tt.body))
+
+			wantDigest := digest.FromString(tt.body)
+			request := rec.only(t)
+			assert.Equal(t, http.MethodPut, request.method)
+			assert.Equal(t, "/v2/"+repoName+"/manifests/"+wantDigest.String(), request.path)
+			assert.Equal(t, ocispec.MediaTypeImageManifest, request.header.Get("Content-Type"))
+			assert.Equal(
+				t,
+				wantDigest,
+				digest.FromBytes(request.body),
+				"the manifest must reach the registry byte for byte",
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), strconv.Itoa(tt.status))
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, wantDigest, got)
+		})
+	}
+}
+
+func TestManifestsGetRejectsDigestPush(t *testing.T) {
+	t.Parallel()
+
+	var rec recorder
+	repo := newDigestPushRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(t, r)
+		t.Error("digest-push Get must not talk to the registry")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body, desc, err := repo.Manifests().Get(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no bound manifest")
+	require.NotErrorIs(t, err, oci.ErrNotFound)
+	assert.Empty(t, body)
+	assert.Equal(t, ocispec.Descriptor{}, desc)
+	assert.Empty(t, rec.all())
 }

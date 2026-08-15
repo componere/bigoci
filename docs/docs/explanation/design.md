@@ -454,8 +454,10 @@ type Blobs interface {
     Put(ctx context.Context, dgst Digest, size int64, r io.Reader) error
 }
 
-// Manifests is the distribution-spec manifest surface of one repository,
-// bound at construction to one reference (a tag or a digest).
+// Manifests is the distribution-spec manifest surface of one repository.
+// Addressing is fixed at construction: bound to a tag or a digest, or
+// digest-publication, where Put writes at the body digest and Get is
+// unsupported.
 type Manifests interface {
     Get(ctx context.Context) ([]byte, Descriptor, error)
     Put(ctx context.Context, mediaType string, body []byte) (Digest, error)
@@ -496,11 +498,12 @@ type Sink interface {
 }
 ```
 
-`Manifests` carries no reference parameter because the adapter is bound to
-one reference when it is built. A transfer touches exactly one manifest, and
-binding it at construction keeps reference grammar out of the core: nothing
-behind the ports parses, validates, or renders
-`registry/repository:tag@digest`.
+`Manifests` carries no reference parameter because addressing is fixed when
+the adapter is built. In bound mode that address is a tag or a digest; in
+digest-publication mode Put uses the digest of the body and Get is
+unsupported. A transfer touches exactly one manifest, and fixing the address
+at construction keeps reference grammar out of the core: nothing behind the
+ports parses, validates, or renders `registry/repository:tag@digest`.
 
 **Adapters, one purpose each:** the `net/http` distribution client
 (implements `Blobs` and `Manifests`), the oras-go credentials wrapper

@@ -144,3 +144,34 @@ func Example_progress() {
 	fmt.Println("final phase:", last.Phase)
 	mu.Unlock()
 }
+
+// PushByDigest publishes the file without writing a tag. The returned
+// descriptor is the artifact's only name: a later pull uses it as a digest
+// reference, and an OCI index entry binds to the same digest.
+//
+//nolint:testableexamples // Running would need a live registry; the example exists to be compiled, not executed.
+func ExampleClient_PushByDigest() {
+	client, err := bigoci.New()
+	if err != nil {
+		panic(err)
+	}
+
+	ctx := context.Background()
+
+	desc, err := client.PushByDigest(ctx, "registry.example.com/team/models",
+		bigoci.FromFile("/data/model.bin"),
+		bigoci.WithPartSize(256<<20),
+		bigoci.WithWorkers(8),
+	)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("published as", desc.Digest)
+
+	if err := client.Pull(ctx,
+		bigoci.Reference("registry.example.com/team/models@"+desc.Digest.String()),
+		bigoci.ToFile("/data/model.bin"),
+	); err != nil {
+		panic(err)
+	}
+}
