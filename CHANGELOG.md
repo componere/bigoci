@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/imgoci/bigoci/compare/v0.1.0...v0.1.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **cli:** redact peer-controlled output ([#51](https://github.com/imgoci/bigoci/issues/51)) ([0a80682](https://github.com/imgoci/bigoci/commit/0a80682c32c0025aeadf65f1c6bf31687d7ce62c))
+* **oci:** constrain registry-selected authority ([#49](https://github.com/imgoci/bigoci/issues/49)) ([f73bcf0](https://github.com/imgoci/bigoci/commit/f73bcf05dc9a8c4d046a1a082315b1e7310e720d))
+
 ## [0.1.0](https://github.com/imgoci/bigoci/compare/v0.0.1...v0.1.0) (2026-08-10)
 
 
