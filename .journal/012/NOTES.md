@@ -13,3 +13,7 @@ Plan: Have a planning agent inspect the request and relevant repository code, re
 The planning agent traced all five upstream requests through the current decoder, OCI adapters, redirect path, push orchestrator, public API, tests, docs, benchmark harness, and release workflow.
 Reviewed and tightened the proposal: response coding is checked before status/body handling across repeated header fields; manifest and blob functional failures are exercised separately; token compression is proven through a complete authenticated transfer; `Push` and `PushByDigest` share one private transfer body; upload verification reuses the existing source-error terminal path; and no performance threshold is invented.
 Saved the final six-phase implementation and release plan as `PLAN.md`. Next: implement phases 1–5, run integrated verification, and release `v0.2.0`.
+
+## 2026-08-15 10:03 — Implementation orchestration started
+The approved plan is now being implemented on five isolated Worktrunk branches from the fetched `origin/master`: `feat/manifest-casefold`, `feat/identity-reads`, `feat/push-by-digest`, `docs/external-transport-contract`, and `feat/upload-wire-verify`.
+Each phase will receive independent Programmer implementation, orchestrator-run verification, a focused Conventional Commit, and a squash-merged GitHub PR. Integrated verification and the `v0.2.0` Release Please flow follow only after all phase PRs are green and merged.
