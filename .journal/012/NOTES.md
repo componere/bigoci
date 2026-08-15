@@ -48,3 +48,8 @@ Release PR #62 (`chore(master): release 0.2.1`) remains open for the normal rele
 
 ## 2026-08-15 12:15 — Tag policy comment corrected
 PR #63 removed the inherited template claim that the cross-organization App must be a protected-tag bypass actor and documented the verified write-access/immutable-tag policy instead. It merged as `6406c7d6a8a391f3e6d0aa2953492635cb2c38d3`; subsequent master Release Please run 31903363368 succeeded, and App-created release PR #62 remains green.
+
+## 2026-08-15 12:20 — Corrected App identity and protected tags
+Correction to the two preceding entries: the failed bypass test used the template's `meigma-release-please` slug, not the `imgoci-release-please` App represented by the supplied 1Password credentials. Release PR #62's `app/imgoci-release-please` author exposed the mismatch.
+
+PR #64 now names `imgoci-release-please` in repository settings and merged as `0fc2f5b5e7fbc29efcd2c13e4a204808fb31f81b`. GitHub accepted that App as Integration actor `4553816`; the active tag ruleset now restricts creation and grants only the App and repository-admin recovery bypass, while retaining signature, update, deletion, and non-fast-forward protections. Master Release Please run 31903559160 succeeded through the hardened path, and release PR #62's refreshed CI and Pages checks passed.
