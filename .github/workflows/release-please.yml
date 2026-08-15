@@ -1,8 +1,8 @@
 # Required release app settings:
 # - vars.MEIGMA_RELEASE_APP_CLIENT_ID
 # - secrets.MEIGMA_RELEASE_APP_PRIVATE_KEY
-# - protected-tag ruleset bypass for the release app, because this workflow
-#   creates protected v* tags after the release PR is merged.
+# Repository tag policy permits creation by write-access actors, including the
+# installed App, while update/deletion/force-push rules keep tags immutable.
 
 name: Release Please
 
