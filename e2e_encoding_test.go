@@ -157,7 +157,13 @@ func newGzippingProxy(t *testing.T, upstream, class string) *gzippingProxy {
 	t.Cleanup(server.Close)
 
 	front.at = zot{host: strings.TrimPrefix(server.URL, "http://")}
-	t.Logf("a gzipping proxy on %s is serving %s in front of %s, compressing %s", front.at.host, apiPath, upstream, class)
+	t.Logf(
+		"a gzipping proxy on %s is serving %s in front of %s, compressing %s",
+		front.at.host,
+		apiPath,
+		upstream,
+		class,
+	)
 
 	return front
 }
