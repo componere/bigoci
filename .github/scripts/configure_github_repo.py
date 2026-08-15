@@ -173,7 +173,7 @@ class GitHubApi:
         return self._request_json("POST", f"/repos/{owner}/{repo}/rulesets", payload, expected_statuses={201})
 
     def update_ruleset(self, owner: str, repo: str, ruleset_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request_json("PATCH", f"/repos/{owner}/{repo}/rulesets/{ruleset_id}", payload)
+        return self._request_json("PUT", f"/repos/{owner}/{repo}/rulesets/{ruleset_id}", payload)
 
     def get_pages_site(self, owner: str, repo: str) -> dict[str, Any] | None:
         try:

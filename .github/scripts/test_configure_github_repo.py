@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).with_name("configure_github_repo.py")
@@ -63,6 +64,21 @@ def pages_change(plan: Any) -> Any:
     if len(matches) != 1:
         raise AssertionError(f"Expected exactly one pages.site change, got {len(matches)}")
     return matches[0]
+
+
+class GitHubApiTest(unittest.TestCase):
+    def test_update_ruleset_uses_put(self) -> None:
+        api = configure.GitHubApi("token")
+        payload = {"name": "Default tags"}
+
+        with mock.patch.object(api, "_request_json", return_value={}) as request:
+            api.update_ruleset("imgoci", "bigoci", 123, payload)
+
+        request.assert_called_once_with(
+            "PUT",
+            "/repos/imgoci/bigoci/rulesets/123",
+            payload,
+        )
 
 
 class ConfigureGitHubRepoPagesTest(unittest.TestCase):

@@ -82,11 +82,10 @@ contexts = [
 [rulesets.tags_default]
 name = "Default tags"
 enforcement = "active"
-# Creation stays open: only write-access actors (the maintainer and GitHub
-# Actions, which release-please uses to create v* tags) can create tags, and
-# the GitHub Actions integration cannot be a ruleset bypass actor via the
-# API ("must be part of the ruleset source or owner organization"). Tags are
-# immutable once created via the update/deletion/force-push restrictions.
+# Creation stays open because GitHub only accepts bypass apps owned by the
+# ruleset's organization. The installed release app is owned by meigma rather
+# than imgoci, so it cannot be a bypass actor here. Write access is still
+# required, and the remaining rules keep every created tag immutable.
 restrict_creations = false
 restrict_updates = true
 update_allows_fetch_and_merge = false
