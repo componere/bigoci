@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -205,6 +206,41 @@ func TestE2EFilesRoundTripThroughARealRegistry(t *testing.T) {
 		assert.Equal(t, fileDigest(t, source), fileDigest(t, dest))
 	})
 
+	t.Run("a digest push writes no tag and round-trips by the returned digest", func(t *testing.T) {
+		const repo = "e2e/push-by-digest"
+
+		_, err := client.Push(
+			t.Context(),
+			reg.taggedRef(repo, tag),
+			bigoci.FromFile(newRandomFile(t, smallSize)),
+			bigoci.WithPartSize(multiPartSize),
+		)
+		require.NoError(t, err)
+
+		before := reg.tags(t, repo)
+		require.Equal(t, []string{tag}, before, "the seeded artifact must be visible as a tag")
+
+		source := newRandomFile(t, multiSize)
+		dest := newPath(t, destName)
+
+		desc, err := client.PushByDigest(
+			t.Context(), reg.repoRef(repo), bigoci.FromFile(source), bigoci.WithPartSize(multiPartSize),
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, before, reg.tags(t, repo), "a digest push must not create or move a tag")
+
+		body := reg.rawManifest(t, repo, desc.Digest.String())
+		assert.Equal(t, digest.FromBytes(body), desc.Digest, "the descriptor must name the manifest zot holds")
+		assertCompleteGraph(t, body, func(dgst digest.Digest) bool {
+			return reg.hasBlob(t, repo, dgst)
+		})
+
+		require.NoError(t, client.Pull(t.Context(), reg.digestRef(repo, desc.Digest), bigoci.ToFile(dest)))
+		assert.Equal(t, fileDigest(t, source), fileDigest(t, dest))
+		assert.NoFileExists(t, dest+file.PartialSuffix, "a pull that committed leaves no partial file")
+	})
+
 	t.Run("a file no longer than one part is a single part", func(t *testing.T) {
 		tests := []struct {
 			name string
@@ -374,6 +410,60 @@ func (z zot) taggedRef(repo, target string) bigoci.Reference {
 // digestRef returns the tagless reference of the manifest dgst names in repo.
 func (z zot) digestRef(repo string, dgst digest.Digest) bigoci.Reference {
 	return bigoci.Reference(z.host + "/" + repo + "@" + dgst.String())
+}
+
+// repoRef returns the repository-only reference [bigoci.Client.PushByDigest]
+// accepts for repo on this registry.
+func (z zot) repoRef(repo string) bigoci.Reference {
+	return bigoci.Reference(z.host + "/" + repo)
+}
+
+// tags returns the tags repo currently holds, sorted. A repository zot has
+// not created yet is an empty list rather than a failure, so a snapshot can
+// compare before and after without assuming the listing's empty shape.
+func (z zot) tags(t *testing.T, repo string) []string {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, z.endpoint(repo, "tags/list"), nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "GET tags/list against %s", z.host)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return []string{}
+	}
+	if resp.StatusCode != http.StatusOK {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
+		t.Fatalf("GET tags/list: got %s, want 200 or 404: %s", resp.Status, detail)
+	}
+
+	var listing struct {
+		// Tags is the registry's tag list. A JSON null is an empty list.
+		Tags []string `json:"tags"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&listing))
+	if listing.Tags == nil {
+		listing.Tags = []string{}
+	}
+	slices.Sort(listing.Tags)
+
+	return listing.Tags
+}
+
+// hasBlob reports whether repo holds the blob dgst names.
+func (z zot) hasBlob(t *testing.T, repo string, dgst digest.Digest) bool {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodHead, z.endpoint(repo, "blobs/"+dgst.String()), nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "HEAD blob against %s", z.host)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	return resp.StatusCode == http.StatusOK
 }
 
 // rawManifest fetches the manifest at target in repo over plain HTTP.
@@ -572,6 +662,22 @@ func assertFormat(t *testing.T, body []byte, want artifactFormat) {
 	}
 
 	assert.Equal(t, annotations, got.Annotations)
+}
+
+// assertCompleteGraph checks that every blob the manifest names — the empty
+// config and every part layer — exists in the repository. A digest push that
+// wrote the manifest without those blobs would be an incomplete artifact.
+func assertCompleteGraph(t *testing.T, body []byte, exists func(digest.Digest) bool) {
+	t.Helper()
+
+	var got ocispec.Manifest
+	require.NoError(t, json.Unmarshal(body, &got), "the manifest must be JSON: %s", body)
+	require.NotEmpty(t, got.Layers, "the manifest must list at least one part")
+	require.True(t, exists(got.Config.Digest), "the empty config blob the manifest references must exist")
+
+	for i, layer := range got.Layers {
+		require.True(t, exists(layer.Digest), "part %d must exist in the repository", i)
+	}
 }
 
 // assertEmptyConfig checks the config descriptor against the format

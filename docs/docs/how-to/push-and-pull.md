@@ -44,6 +44,24 @@ for example), build the client with `bigoci.WithPlainHTTP()`.
 For a registry that asks for a credential, see [Authenticate to a
 registry](authenticate.md).
 
+## Publish without a tag
+
+When the artifact should exist only by digest — so an OCI index can
+reference it without any other tag moving — call `PushByDigest` with a
+repository-only name:
+
+```go
+desc, err := client.PushByDigest(ctx, "registry.example.com/team/models",
+    bigoci.FromFile("/data/model.bin"))
+if err != nil {
+    return err
+}
+fmt.Println("published as", desc.Digest)
+```
+
+No tag is created or moved. Pull the returned digest the same way as any
+other digest reference.
+
 ## Pull a file
 
 ```go

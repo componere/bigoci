@@ -349,7 +349,7 @@ func TestPushByDigestHonorsTheSameOptionsAsPush(t *testing.T) {
 	t.Run("an empty title records no name at all", func(t *testing.T) {
 		t.Parallel()
 
-		assert.Equal(t, "", digestPushedArtifact(t, bigoci.WithTitle("")).Title)
+		assert.Empty(t, digestPushedArtifact(t, bigoci.WithTitle("")).Title)
 	})
 
 	t.Run("WithPartSize splits the file the same way a tagged push does", func(t *testing.T) {

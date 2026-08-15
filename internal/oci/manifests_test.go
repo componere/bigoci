@@ -383,7 +383,7 @@ func TestManifestsGetRejectsDigestPush(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no bound manifest")
-	assert.NotErrorIs(t, err, oci.ErrNotFound)
+	require.NotErrorIs(t, err, oci.ErrNotFound)
 	assert.Empty(t, body)
 	assert.Equal(t, ocispec.Descriptor{}, desc)
 	assert.Empty(t, rec.all())

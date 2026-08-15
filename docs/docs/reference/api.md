@@ -97,6 +97,43 @@ manifest it wrote. `ocispec` is
   [`ErrUnauthorized`](errors.md#errunauthorized), and
   [`ErrPartTooLarge`](errors.md#errparttoolarge).
 
+### Client.PushByDigest
+
+```go
+func (c *Client) PushByDigest(
+    ctx context.Context,
+    repo Reference,
+    src FileSource,
+    opts ...PushOption,
+) (ocispec.Descriptor, error)
+```
+
+Uploads the file `src` names into `repo` and returns the descriptor of the
+manifest it wrote, without writing or moving a tag.
+
+`repo` is a repository-only reference: `registry/repo`, with neither a tag
+nor a digest. A tag would bind the write to a name
+[`Client.Push`](#clientpush) already handles, and a digest would claim a
+body that does not exist until the transfer computes it. Every other
+[`Reference`](#reference) rule still applies: the registry is required, the
+name must be canonical, and no short name is expanded to Docker Hub.
+
+The transfer itself is the same as [`Client.Push`](#clientpush): the same
+split, options, retries, overlap of hashing and upload, and the same
+guarantee that a push that dies leaves no artifact behind. The difference is
+only where the manifest is addressed. The registry stores it under the
+digest of the bytes that went on the wire, and nothing else names it.
+
+The returned descriptor is therefore the only name the artifact has. A later
+pull uses it as a digest reference, and an OCI index entry or a signature
+binds to it the same way. The digest is still a pure function of the file
+bytes, the part size, and the title, so pushing the same file twice
+reproduces it.
+
+- **Sentinels.** [`ErrNotFound`](errors.md#errnotfound),
+  [`ErrUnauthorized`](errors.md#errunauthorized), and
+  [`ErrPartTooLarge`](errors.md#errparttoolarge).
+
 ### Client.Pull
 
 ```go
@@ -159,7 +196,13 @@ follow from it:
 |---|---|
 | The registry is required | `team/model:v1` is not a reference, and no short name is expanded to Docker Hub |
 | The name must be canonical | lowercase only |
-| A tag or a digest is required | every transfer names one manifest |
+| A tag or a digest is required | every transfer names one manifest, except [`PushByDigest`](#clientpushbydigest) |
+
+[`Client.PushByDigest`](#clientpushbydigest) is the exception to the
+tag-or-digest rule: it takes a repository-only name, `registry/repo`, and
+publishes the manifest at the digest of the body it writes.
+[`Client.Push`](#clientpush) and [`Client.Pull`](#clientpull) still require a
+tag or a digest.
 
 A reference that carries both is bound to its digest: the digest names one
 manifest exactly, and the tag beside it is a claim about where that tag
@@ -371,7 +414,7 @@ method, so the set is the one this package ships.
 type PushOption interface { /* unexported method */ }
 ```
 
-Configures one call to [`Client.Push`](#clientpush).
+Configures one call to [`Client.Push`](#clientpush) or [`Client.PushByDigest`](#clientpushbydigest).
 
 ### PullOption
 

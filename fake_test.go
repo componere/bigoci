@@ -15,6 +15,7 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/imgoci/bigoci"
@@ -477,4 +478,50 @@ func otherArtifact(t *testing.T) []byte {
 	require.NoError(t, err)
 
 	return body
+}
+
+func TestPushByDigestLeavesExistingTagsInPlace(t *testing.T) {
+	t.Parallel()
+
+	reg := newRegistry(t)
+	client := newClient(t, bigoci.WithPlainHTTP())
+	content := payload(shortFile)
+	dest := newPath(t, destName)
+
+	seedArtifact(t, reg)
+	before := storedTags(reg)
+	require.Equal(t, []string{tag}, before, "the seeded artifact must be visible as a tag")
+
+	desc, err := client.PushByDigest(
+		t.Context(),
+		reg.repoRef(),
+		bigoci.FromFile(newFile(t, content)),
+		bigoci.WithPartSize(testPartSize),
+	)
+	require.NoError(t, err)
+
+	body := reg.manifestAt(t, desc.Digest)
+	artifact, err := manifest.Decode(body)
+	require.NoError(t, err)
+
+	assert.Equal(t, before, storedTags(reg), "a digest push must not create or move a tag")
+	assert.Equal(t, digest.FromBytes(body), desc.Digest, "the descriptor must name the manifest that was written")
+	assert.Equal(t, int64(len(body)), desc.Size)
+
+	config, _ := manifest.EmptyConfig()
+	_, hasConfig := reg.blob(config.Digest.String())
+	assert.True(t, hasConfig, "the empty config blob the manifest references must exist")
+	for i, part := range artifact.Parts {
+		_, hasPart := reg.blob(part.Digest.String())
+		assert.True(t, hasPart, "part %d must exist in the repository", i)
+	}
+
+	require.NoError(t, client.Pull(t.Context(), reg.digestRef(desc.Digest), bigoci.ToFile(dest)))
+
+	pulled, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(
+		t, digest.FromBytes(content), digest.FromBytes(pulled),
+		"the pulled file must be byte-identical to the digest-pushed one",
+	)
 }
