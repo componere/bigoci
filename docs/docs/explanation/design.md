@@ -680,9 +680,13 @@ Three layers, plus measurement:
   exists to set the defaults above and to keep them honest as the
   implementation evolves.
 
-GHCR gets a hand-triggered conformance job, since a real registry needs
-credentials and costs money to exercise at size. Other cloud registries (ECR,
-ACR, Artifact Registry, Docker Hub, Harbor) are not covered yet.
+GHCR has a hand-triggered conformance job because a hosted registry needs
+credentials and costs money to exercise at size. Dated manual campaigns also
+exercise ECR, GHCR, `gcr.io`, and Quay.io through bigoci's complete push and
+pull paths; the
+[registry compatibility reference](../reference/registry-compatibility.md)
+records the precise scope and results. Other cloud registries are not covered
+through bigoci.
 
 ## First slice
 

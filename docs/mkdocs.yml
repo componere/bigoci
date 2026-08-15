@@ -46,6 +46,7 @@ nav:
       - API: reference/api.md
       - Errors: reference/errors.md
       - Format: reference/format.md
+      - Registry compatibility: reference/registry-compatibility.md
       - Benchmarks: reference/benchmarks.md
 
 plugins:
@@ -58,9 +59,14 @@ markdown_extensions:
   - toc:
       permalink: true
   - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
 
 extra_css:
   - stylesheets/palette.css

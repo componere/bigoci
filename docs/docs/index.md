@@ -35,6 +35,8 @@ credential, and reports progress to a callback while a transfer runs.
   each, and what to do about it.
 - [Format](reference/format.md) — the artifact format contract for
   implementers.
+- [Registry compatibility](reference/registry-compatibility.md) — dated push
+  and pull results against hosted registries.
 - [Benchmarks](reference/benchmarks.md) — the measured throughput behind
   the default part size and worker count.
 
