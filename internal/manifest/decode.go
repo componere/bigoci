@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	digest "github.com/opencontainers/go-digest"
@@ -17,8 +18,9 @@ import (
 // Decode parses manifest JSON and returns the artifact it describes.
 //
 // Decode is liberal about formatting and strict about the content bigoci
-// consumes. Whitespace and member order do not matter, so a manifest fetched
-// from a registry decodes even though it was not encoded by [Encode]. Members
+// consumes. Whitespace, member order, and media-type letter case do not
+// matter, so a manifest fetched from a registry decodes even though it was
+// not encoded by [Encode]. Members
 // bigoci does not use — a subject, descriptor URLs and annotations, manifest
 // annotations outside the format — are skipped without materializing them. A
 // config "data" member is accepted when it matches the config digest, and an
@@ -229,11 +231,14 @@ func skipJSONSpace(data []byte, start int) int {
 // An empty media type is accepted when the artifactType matches: the image
 // spec only recommends the embedded member, so a conforming third-party
 // writer may omit it and let the registry's Content-Type carry the type.
+// Media types match case-insensitively: the media type grammar treats type
+// and subtype as case-insensitive, so a third-party writer may emit any
+// spelling.
 func checkKind(mediaType, artifactType string) error {
-	if mediaType != "" && mediaType != ocispec.MediaTypeImageManifest {
+	if mediaType != "" && !strings.EqualFold(mediaType, ocispec.MediaTypeImageManifest) {
 		return fmt.Errorf("%w: manifest media type is not an OCI image manifest", ErrNotBigociArtifact)
 	}
-	if artifactType != ArtifactType {
+	if !strings.EqualFold(artifactType, ArtifactType) {
 		return fmt.Errorf("%w: manifest artifact type is not bigoci", ErrNotBigociArtifact)
 	}
 
@@ -241,15 +246,15 @@ func checkKind(mediaType, artifactType string) error {
 }
 
 // checkConfig checks the config descriptor against the OCI empty descriptor.
-// The three members the format pins must match exactly. A manifest may also
-// inline the config bytes in a "data" member; when it does, the bytes must be
-// the two the config digest addresses, because the image spec defines "data"
-// as the embedded content of that very blob.
+// Media type matches case-insensitively; digest and size must match exactly.
+// A manifest may also inline the config bytes in a "data" member; when it
+// does, the bytes must be the two the config digest addresses, because the
+// image spec defines "data" as the embedded content of that very blob.
 func checkConfig(config wireConfig) error {
 	want := ocispec.DescriptorEmptyJSON
 
 	switch {
-	case config.MediaType != want.MediaType:
+	case !strings.EqualFold(config.MediaType, want.MediaType):
 		return errors.New("config media type does not match the OCI empty descriptor")
 	case config.Digest != want.Digest:
 		return errors.New("config digest does not match the OCI empty descriptor")
@@ -263,11 +268,12 @@ func checkConfig(config wireConfig) error {
 }
 
 // readLayers converts the manifest layers into parts, in file order, checking
-// that every layer carries the part media type.
+// that every layer carries the part media type. The comparison is
+// case-insensitive, matching the other media-type checks in Decode.
 func readLayers(layers wireLayers) ([]Part, error) {
 	parts := make([]Part, len(layers))
 	for i, layer := range layers {
-		if layer.MediaType != MediaTypePart {
+		if !strings.EqualFold(layer.MediaType, MediaTypePart) {
 			return nil, fmt.Errorf("layer %d media type is not a bigoci part", i)
 		}
 		parts[i] = Part{Digest: layer.Digest, Size: layer.Size}
