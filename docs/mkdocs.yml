@@ -46,6 +46,7 @@ nav:
       - API: reference/api.md
       - Errors: reference/errors.md
       - Format: reference/format.md
+      - Registry compatibility: reference/registry-compatibility.md
       - Benchmarks: reference/benchmarks.md
 
 plugins:
