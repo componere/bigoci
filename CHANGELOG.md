@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/imgoci/bigoci/compare/v0.2.0...v0.2.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **release:** authenticate Release Please with app ([#61](https://github.com/imgoci/bigoci/issues/61)) ([0e721c8](https://github.com/imgoci/bigoci/commit/0e721c8be5c5f4c422e1d83bb3d76a423e90ba15))
+* **release:** protect tags with App bypass ([#64](https://github.com/imgoci/bigoci/issues/64)) ([0fc2f5b](https://github.com/imgoci/bigoci/commit/0fc2f5b5e7fbc29efcd2c13e4a204808fb31f81b))
+
 ## [0.2.0](https://github.com/imgoci/bigoci/compare/v0.1.1...v0.2.0) (2026-08-15)
 
 
