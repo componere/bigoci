@@ -26,6 +26,11 @@ import (
 // algorithm the v1 format uses — so a reference naming another one is
 // refused before a request is made.
 //
+// [Client.PushByDigest] is the one exception to the tag-or-digest rule: it
+// takes a repository-only reference, registry/repo, and publishes the
+// manifest at the digest of the body it writes. [Client.Push] and
+// [Client.Pull] still require a tag or a digest.
+//
 // A reference that carries both is bound to its digest: the digest names one
 // manifest exactly, while the tag beside it is a claim about where that tag
 // pointed. Pulling by digest also makes bigoci check the manifest it fetched
@@ -142,7 +147,47 @@ func (c *Client) Push(
 	src FileSource,
 	opts ...PushOption,
 ) (ocispec.Descriptor, error) {
-	desc, err := c.push(ctx, ref, src, opts)
+	desc, err := c.push(ctx, ref, src, opts, c.repository)
+	if err != nil {
+		return ocispec.Descriptor{}, classify(err)
+	}
+
+	return desc, nil
+}
+
+// PushByDigest uploads the file src names into repo and returns the
+// descriptor of the manifest it wrote, without writing or moving a tag.
+//
+// repo is a repository-only reference: registry/repo, with neither a tag nor
+// a digest. A tag would bind the write to a name [Client.Push] already
+// handles, and a digest would claim a body that does not exist until the
+// transfer computes it. Every other grammar rule of [Reference] still
+// applies: the registry is required, the name must be canonical, and no
+// short name is expanded to Docker Hub.
+//
+// The transfer itself is the same as [Client.Push]: the same split, the same
+// options, the same retries, the same overlap of hashing and upload, and the
+// same guarantee that a push that dies leaves no artifact behind. The
+// difference is only where the manifest is addressed. The registry stores it
+// under the digest of the bytes that went on the wire, and nothing else
+// names it.
+//
+// The returned descriptor is therefore the only name the artifact has. A
+// later pull uses it as a digest reference, and an OCI index entry or a
+// signature binds to it the same way. The digest is still a pure function of
+// the file bytes, the part size, and the title, so pushing the same file
+// twice reproduces it.
+//
+// A cancelled ctx stops the workers, cuts short any wait in progress, and
+// returns its error. The errors a caller branches on are [ErrNotFound],
+// [ErrUnauthorized], and [ErrPartTooLarge].
+func (c *Client) PushByDigest(
+	ctx context.Context,
+	repo Reference,
+	src FileSource,
+	opts ...PushOption,
+) (ocispec.Descriptor, error) {
+	desc, err := c.push(ctx, repo, src, opts, c.digestPushRepository)
 	if err != nil {
 		return ocispec.Descriptor{}, classify(err)
 	}
@@ -198,14 +243,17 @@ func (c *Client) Pull(ctx context.Context, ref Reference, dest FileDest, opts ..
 	return nil
 }
 
-// push runs one push and returns the raw error, which [Client.Push] maps onto
-// the public sentinels. Splitting the two keeps that mapping in one place
-// instead of at every return.
+// push runs one push and returns the raw error, which the exported methods
+// map onto the public sentinels. Splitting the two keeps that mapping in one
+// place instead of at every return. newRepo is how the call is bound: a
+// tagged or digested write uses [Client.repository], and a tag-free digest
+// write uses [Client.digestPushRepository].
 func (c *Client) push(
 	ctx context.Context,
 	ref Reference,
 	src FileSource,
 	opts []PushOption,
+	newRepo func(Reference) (*oci.Repository, error),
 ) (ocispec.Descriptor, error) {
 	// The title defaults from the source before the options run, so
 	// [WithTitle] overrides it and WithTitle("") clears it.
@@ -221,7 +269,7 @@ func (c *Client) push(
 		return ocispec.Descriptor{}, err
 	}
 
-	repo, err := c.repository(ref)
+	repo, err := newRepo(ref)
 	if err != nil {
 		return ocispec.Descriptor{}, err
 	}
@@ -359,6 +407,20 @@ func discardEmptyPartial(sink *file.Sink) {
 // transport settings. Reference grammar lives in the adapter, so this is
 // where a malformed reference is reported.
 func (c *Client) repository(ref Reference) (*oci.Repository, error) {
+	return oci.NewRepository(string(ref), c.repositoryOptions()...)
+}
+
+// digestPushRepository builds the digest-publication adapters for ref under
+// the client's transport settings. Reference grammar lives in the adapter,
+// so this is where a tagged or digested reference is reported.
+func (c *Client) digestPushRepository(ref Reference) (*oci.Repository, error) {
+	return oci.NewDigestPushRepository(string(ref), c.repositoryOptions()...)
+}
+
+// repositoryOptions returns the transport options every repository this
+// client builds is given. Both constructors share this list, so a client
+// setting cannot apply to one kind of transfer and miss the other.
+func (c *Client) repositoryOptions() []oci.Option {
 	options := []oci.Option{
 		oci.WithHTTPClient(c.settings.httpClient),
 		oci.WithCredentials(c.creds),
@@ -371,7 +433,7 @@ func (c *Client) repository(ref Reference) (*oci.Repository, error) {
 		options = append(options, oci.WithUnverifiedExternalTransport())
 	}
 
-	return oci.NewRepository(string(ref), options...)
+	return options
 }
 
 // externalTransportBase returns the one caller-derived external transport

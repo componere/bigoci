@@ -100,8 +100,8 @@ var ErrTooLarge = ociblob.ErrTooLarge
 // built from.
 type Option func(*settings)
 
-// settings are the option-configurable parts of a repository, collected so
-// [NewRepository] can apply every option before it builds the immutable
+// settings are the option-configurable parts of a repository, collected so a
+// constructor can apply every option before it builds the immutable
 // [Repository].
 type settings struct {
 	// client sends every request the repository makes.
@@ -178,21 +178,32 @@ func withClock(now func() time.Time) Option {
 	}
 }
 
-// bound is the manifest reference a repository is fixed to for its lifetime.
+// bound is how a repository addresses its manifest endpoints for its
+// lifetime.
 type bound struct {
-	// path is the tag or digest string the manifest endpoints address.
+	// path is the tag or digest string a bound repository's manifest
+	// endpoints address. Empty when [bound.publishByDigest] is set, because
+	// that write's path is the digest of the body and is not known until Put.
 	path string
 	// digest is the manifest digest the reference named, or empty when the
 	// reference named only a tag. A fetch checks what it read against it.
 	digest digest.Digest
+	// publishByDigest reports that Put addresses the digest of the body
+	// rather than a tag or digest the reference named. A repository built
+	// this way has no bound fetch target, so Get is a misuse.
+	publishByDigest bool
 }
 
 // Repository is one repository on one registry: the endpoint prefix every
-// request shares, plus the tag or digest the manifest endpoints are bound to.
+// request shares, plus how the manifest endpoints are addressed.
 //
-// A Repository is immutable once [NewRepository] returns it and is safe to
-// use from several goroutines at once, which is what lets one repository
-// carry a transfer's parts in parallel.
+// Built by [NewRepository], the endpoints are bound to the tag or digest the
+// reference carried. Built by [NewDigestPushRepository], Put publishes at
+// the digest of the body it is given and Get is a misuse.
+//
+// A Repository is immutable once a constructor returns it and is safe to use
+// from several goroutines at once, which is what lets one repository carry a
+// transfer's parts in parallel.
 type Repository struct {
 	// client sends every request the repository makes to the registry itself.
 	// It is the caller's client with redirect following turned off, so a 3xx
@@ -210,7 +221,8 @@ type Repository struct {
 	host string
 	// name is the repository path under /v2/, such as "team/artifact".
 	name string
-	// manifest is the reference the manifest endpoints are bound to.
+	// manifest is how the manifest endpoints are addressed: a bound tag or
+	// digest, or digest publication.
 	manifest bound
 	// auth is what the registry challenged with and the tokens acquired for
 	// it. It is the one part of a repository that changes after construction,
@@ -231,7 +243,9 @@ type Repository struct {
 // reference carrying both is bound to its digest: the digest names exactly
 // one manifest, while the tag beside it is only a claim about where that tag
 // pointed. A reference that names a digest also makes [Manifests.Get] verify
-// what it fetched against it. Blob requests use neither.
+// what it fetched against it. Blob requests use neither. A repository that
+// publishes by digest, with no tag or digest in the reference, is built by
+// [NewDigestPushRepository].
 //
 // The repository talks https with a client built on
 // [net/http.DefaultTransport]. [WithPlainHTTP] and [WithHTTPClient] change
@@ -248,9 +262,9 @@ type Repository struct {
 // enforcing the destination boundary at the actual connection. Repositories
 // built by one public Client share that transport's external connection pool.
 func NewRepository(ref string, opts ...Option) (*Repository, error) {
-	named, err := reference.ParseNamed(ref)
+	named, err := parseNamed(ref)
 	if err != nil {
-		return nil, fmt.Errorf("parse reference %q: %w", ref, err)
+		return nil, err
 	}
 
 	manifest, err := boundManifest(named)
@@ -258,6 +272,61 @@ func NewRepository(ref string, opts ...Option) (*Repository, error) {
 		return nil, fmt.Errorf("reference %q: %w", ref, err)
 	}
 
+	return newRepository(named, manifest, opts...), nil
+}
+
+// NewDigestPushRepository returns a repository that publishes manifests at
+// the digest of the body [Manifests.Put] is given.
+//
+// ref is a reference in the registry/repo grammar, parsed by
+// github.com/distribution/reference, the canonical implementation of that
+// grammar. The registry is required and the name must already be canonical:
+// bigoci pushes where it is told, so a familiar Docker Hub short name such
+// as "ubuntu" is rejected rather than quietly expanded. The reference must
+// carry neither a tag nor a digest. A tag would bind the write to a name
+// [NewRepository] already handles, and a digest would claim a body that does
+// not exist until Put computes it. The digest the registry stores the
+// manifest under is computed from the bytes on the wire, before the PUT is
+// constructed, and the write is addressed at manifests/<digest>.
+//
+// [Manifests.Get] is a misuse of a repository built this way and fails
+// without talking to the registry: there is no bound tag or digest to fetch.
+// Blob requests use neither a tag nor a digest, and are unchanged.
+//
+// The repository talks https with a client built on
+// [net/http.DefaultTransport]. [WithPlainHTTP] and [WithHTTPClient] change
+// that. Authentication and the two derived clients are the same as
+// [NewRepository].
+func NewDigestPushRepository(ref string, opts ...Option) (*Repository, error) {
+	named, err := parseNamed(ref)
+	if err != nil {
+		return nil, err
+	}
+
+	manifest, err := digestPushManifest(named)
+	if err != nil {
+		return nil, fmt.Errorf("reference %q: %w", ref, err)
+	}
+
+	return newRepository(named, manifest, opts...), nil
+}
+
+// parseNamed parses ref as a canonical named reference. The registry is
+// required and the name must already be canonical: the same rules
+// [NewRepository] and [NewDigestPushRepository] document.
+func parseNamed(ref string) (reference.Named, error) {
+	named, err := reference.ParseNamed(ref)
+	if err != nil {
+		return nil, fmt.Errorf("parse reference %q: %w", ref, err)
+	}
+
+	return named, nil
+}
+
+// newRepository wires one repository from named and manifest. Options,
+// authentication, and the two derived clients are applied here and nowhere
+// else, so every constructor shares the same wiring.
+func newRepository(named reference.Named, manifest bound, opts ...Option) *Repository {
 	applied := settings{
 		client: &http.Client{Transport: http.DefaultTransport},
 		scheme: schemeHTTPS,
@@ -289,7 +358,7 @@ func NewRepository(ref string, opts ...Option) (*Repository, error) {
 	}
 	repo.auth = newAuthState(repo, applied.creds, applied.now)
 
-	return repo, nil
+	return repo
 }
 
 // Blobs returns the adapter for this repository's blob endpoints.
@@ -312,8 +381,10 @@ func (r *Repository) Blobs() *Blobs {
 	}
 }
 
-// Manifests returns the adapter for this repository's manifest endpoints,
-// bound to the tag or digest the reference carried.
+// Manifests returns the adapter for this repository's manifest endpoints.
+// A repository built by [NewRepository] is bound to the tag or digest the
+// reference carried. A repository built by [NewDigestPushRepository]
+// publishes at the digest of the body Put is given.
 func (r *Repository) Manifests() *Manifests {
 	return &Manifests{repo: r}
 }
@@ -670,6 +741,17 @@ func boundManifest(named reference.Named) (bound, error) {
 	}
 
 	return bound{}, errors.New("must name a tag or a digest, for example repo:v1 or repo@sha256:<hex>")
+}
+
+// digestPushManifest returns the manifest binding that publishes at the
+// digest of the body. A reference carrying a tag or a digest is a bound
+// write and is rejected here rather than being silently stripped.
+func digestPushManifest(named reference.Named) (bound, error) {
+	if !reference.IsNameOnly(named) {
+		return bound{}, errors.New("must name a repository only, for example registry.example.com/repo")
+	}
+
+	return bound{publishByDigest: true}, nil
 }
 
 // StatusError reports a response whose HTTP status the repository adapter did

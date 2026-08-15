@@ -26,16 +26,20 @@ import (
 // a manifest is answering.
 const maxManifestSize = 4 << 20
 
-// Manifests reads and writes the manifest of one repository at one reference.
-// It implements the transfer package's Manifests port and comes from
-// [Repository.Manifests].
+// Manifests reads and writes the manifest of one repository. It implements
+// the transfer package's Manifests port and comes from [Repository.Manifests].
 //
-// The reference is bound when the repository is built rather than passed on
-// every call, which keeps the reference grammar out of the core: the core
-// asks for "the manifest" and this adapter knows which one that is.
+// How the endpoints are addressed is fixed when the repository is built
+// rather than passed on every call, which keeps the reference grammar out of
+// the core: the core asks for "the manifest" and this adapter knows which
+// one that is. A repository built by [NewRepository] is bound to the tag or
+// digest the reference carried. A repository built by
+// [NewDigestPushRepository] publishes at the digest of the body Put is given
+// and has no bound fetch target.
 type Manifests struct {
 	// repo is the repository whose manifest endpoints this adapter talks to,
-	// and which carries the tag or digest they address.
+	// and which carries either the tag or digest they address or the digest
+	// publication mode Put uses.
 	repo *Repository
 }
 
@@ -54,7 +58,15 @@ type Manifests struct {
 //
 // A reference the registry does not resolve is an error wrapping
 // [ErrNotFound].
+//
+// A repository built by [NewDigestPushRepository] has no bound tag or
+// digest to fetch. Get is a misuse of that repository and fails without
+// talking to the registry.
 func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error) {
+	if m.repo.manifest.publishByDigest {
+		return nil, ocispec.Descriptor{}, errors.New("digest-push repository has no bound manifest to fetch")
+	}
+
 	endpoint := m.repo.endpoint(manifestPath(m.repo.manifest.path))
 
 	req, err := m.repo.newRequest(ctx, http.MethodGet, endpoint, nil)
@@ -100,8 +112,13 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 // it is computed here from the same bytes that went on the wire, a caller can
 // bind a signature or an index entry to it without trusting the registry to
 // report it back.
+//
+// A repository built by [NewDigestPushRepository] has no bound tag or
+// digest. Put computes the digest of body before constructing the request
+// and writes to manifests/<digest>. A repository built by [NewRepository]
+// still writes at the tag or digest the reference named.
 func (m *Manifests) Put(ctx context.Context, mediaType string, body []byte) (digest.Digest, error) {
-	endpoint := m.repo.endpoint(manifestPath(m.repo.manifest.path))
+	endpoint := m.repo.endpoint(manifestPath(m.putTarget(body)))
 
 	req, err := m.repo.newRequest(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -121,6 +138,18 @@ func (m *Manifests) Put(ctx context.Context, mediaType string, body []byte) (dig
 	drain(resp.Body)
 
 	return digest.FromBytes(body), nil
+}
+
+// putTarget returns the tag or digest string the write addresses. A
+// digest-push repository computes the digest of body first, because that
+// digest is the path; a bound repository writes at the name it was built
+// with.
+func (m *Manifests) putTarget(body []byte) string {
+	if m.repo.manifest.publishByDigest {
+		return digest.FromBytes(body).String()
+	}
+
+	return m.repo.manifest.path
 }
 
 // checkBound checks fetched manifest bytes against the digest the repository
