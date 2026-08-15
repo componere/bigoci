@@ -45,3 +45,6 @@ Workflow-dispatch run 31903018406 proved App token creation and Release Please e
 GitHub rejects `meigma-release-please` as a tag-ruleset bypass actor because the App is owned by meigma rather than the imgoci ruleset owner. Tag creation therefore remains open to write-access actors while update, deletion, force-push, and signature protections keep created tags immutable. The repository settings API adapter was also corrected from obsolete `PATCH` to GitHub's current `PUT` update method, with a focused unit test.
 
 Release PR #62 (`chore(master): release 0.2.1`) remains open for the normal release-review decision; it was not merged as part of the authentication repair.
+
+## 2026-08-15 12:15 — Tag policy comment corrected
+PR #63 removed the inherited template claim that the cross-organization App must be a protected-tag bypass actor and documented the verified write-access/immutable-tag policy instead. It merged as `6406c7d6a8a391f3e6d0aa2953492635cb2c38d3`; subsequent master Release Please run 31903363368 succeeded, and App-created release PR #62 remains green.
