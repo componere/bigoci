@@ -598,3 +598,95 @@ func TestPushWakesAWorkerBackingOffWhenAnotherFails(t *testing.T) {
 
 	assert.Len(t, sleeps.waits(), 1, "the worker that backed off did so once and then left")
 }
+
+// TestPushRetriesAPartUploadFromAFreshDigest is the row that catches a hasher
+// hoisted out of the attempt. The first upload drains the part and fails, so
+// a second attempt that hashed onto the first one's digest would reject a
+// file that had not changed.
+func TestPushRetriesAPartUploadFromAFreshDigest(t *testing.T) {
+	t.Parallel()
+
+	content := fileContent(singlePartSize)
+	parts := splitParts(t, content)
+	target := parts[0]
+
+	blobs, calls := scriptedBlobs(t, blobScript{put: map[digest.Digest][]error{
+		target.Digest: {retry.Transient(errBroken, 0), nil},
+	}})
+	policy, sleeps := testPolicy(t)
+	source, reads := countingSource(t, content)
+
+	_, err := transfer.Push(t.Context(), transfer.PushSpec{
+		Source:    source,
+		Blobs:     blobs,
+		Manifests: acceptingManifests(t),
+		PartSize:  fixturePartSize,
+		Workers:   1,
+		Title:     "model.bin",
+		Retry:     policy,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, calls.puts(target.Digest), "the failed attempt is followed by one that lands")
+	assert.Equal(t, 3, reads.at(0), "the hash pass plus one fresh read per attempt")
+	assert.Equal(
+		t,
+		content,
+		calls.blob(target.Digest).content,
+		"the attempt that succeeded streamed the part's own bytes",
+	)
+	assert.Equal(t, []time.Duration{500 * time.Millisecond}, sleeps.waits())
+}
+
+// TestPushDoesNotRetryASourceThatEndsShortDuringUpload pins the short-read
+// half of the upload verifier. The hash pass sees the whole range; the
+// upload then finds fewer bytes than the plan named. That is a source
+// failure — terminal, and the manifest is never written — because a transport
+// that treats a short EOF as a dropped connection would otherwise spend the
+// whole budget re-reading a range that will not grow.
+func TestPushDoesNotRetryASourceThatEndsShortDuringUpload(t *testing.T) {
+	t.Parallel()
+
+	content := fileContent(singlePartSize)
+	short := content[:len(content)/2]
+
+	var mu sync.Mutex
+	reads := 0
+
+	source := filemocks.NewMockSource(t)
+	source.EXPECT().Size().Return(int64(len(content))).Maybe()
+	source.EXPECT().ReadAt(mock.Anything, mock.Anything).RunAndReturn(
+		func(p []byte, off int64) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			reads++
+			if reads == 1 {
+				return readAt(content, p, off)
+			}
+
+			return readAt(short, p, off)
+		},
+	).Maybe()
+
+	blobs, calls := scriptedBlobs(t, blobScript{})
+	policy, sleeps := testPolicy(t)
+	manifests := ocimocks.NewMockManifests(t)
+
+	_, err := transfer.Push(t.Context(), transfer.PushSpec{
+		Source:    source,
+		Blobs:     blobs,
+		Manifests: manifests,
+		PartSize:  fixturePartSize,
+		Workers:   1,
+		Title:     "model.bin",
+		Retry:     policy,
+	})
+	require.ErrorContains(t, err, "the source changed while the push read it")
+	require.ErrorContains(t, err, "read part 0 of the source at offset")
+	assert.NotContains(t, err.Error(), "attempts", "a source failure is attempted exactly once")
+
+	assert.Equal(t, 1, calls.puts(digest.FromBytes(content)), "the registry is retried, never the disk")
+	assert.Empty(t, sleeps.waits())
+	manifests.AssertNotCalled(t, "Put", mock.Anything, mock.Anything, mock.Anything)
+}
