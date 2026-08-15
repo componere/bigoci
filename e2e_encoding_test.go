@@ -25,7 +25,7 @@ import (
 // coded and untouched; the transfer must stop at the manifest, match no
 // public sentinel, and leave nothing published.
 func TestE2EPullRejectsAGzippedManifest(t *testing.T) {
-	const repo = "e2e/gzip-manifest"
+	const repo = "e2e/coded-manifest"
 
 	reg := newZot(t)
 	client := newClient(t, bigoci.WithPlainHTTP())
@@ -58,7 +58,7 @@ func TestE2EPullRejectsAGzippedManifest(t *testing.T) {
 // is identity-coded and whose fault is a gzipped part. The two rows are
 // separate so a single coded-response helper cannot stand in for both paths.
 func TestE2EPullRejectsAGzippedBlob(t *testing.T) {
-	const repo = "e2e/gzip-blob"
+	const repo = "e2e/coded-blob"
 
 	reg := newZot(t)
 	client := newClient(t, bigoci.WithPlainHTTP())
