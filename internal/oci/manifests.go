@@ -56,6 +56,10 @@ type Manifests struct {
 // sends, and a manifest above the limit is an error. The media type is the
 // response's Content-Type and the size is the length of the returned bytes.
 //
+// The request asks for identity coding so the bytes hashed here are the
+// stored bytes. A response that arrives under any other content coding is
+// refused before its status or body is read.
+//
 // A reference the registry does not resolve is an error wrapping
 // [ErrNotFound].
 //
@@ -74,6 +78,7 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 		return nil, ocispec.Descriptor{}, err
 	}
 	req.Header.Set("Accept", ocispec.MediaTypeImageManifest)
+	req.Header.Set(headerAcceptEncoding, codingIdentity)
 
 	at := originOf(req)
 
@@ -82,6 +87,10 @@ func (m *Manifests) Get(ctx context.Context) ([]byte, ocispec.Descriptor, error)
 		return nil, ocispec.Descriptor{}, err
 	}
 	defer resp.Body.Close()
+
+	if err := checkIdentityEncoding(at, resp); err != nil {
+		return nil, ocispec.Descriptor{}, err
+	}
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ocispec.Descriptor{}, statusErrorAt(at, resp)
