@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"testing"
 
@@ -103,7 +104,7 @@ func benchmarkSourceReads(b *testing.B, _ *reporter) {
 		if n != len(payload) {
 			b.Fatalf("read %d bytes of a %d-byte payload", n, len(payload))
 		}
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			b.Fatal(err)
 		}
 	}

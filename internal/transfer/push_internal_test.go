@@ -38,7 +38,14 @@ func TestSourceChangedMatchesBothPaths(t *testing.T) {
 		require.NoError(t, err)
 
 		jobs := make(chan partJob, 1)
-		_, err = hashParts(t.Context(), shortSource(bytes.Repeat([]byte{'a'}, 40)), split, make([]manifest.Part, 1), jobs, nil)
+		_, err = hashParts(
+			t.Context(),
+			shortSource(bytes.Repeat([]byte{'a'}, 40)),
+			split,
+			make([]manifest.Part, 1),
+			jobs,
+			nil,
+		)
 		require.ErrorIs(t, err, errSourceChanged)
 		require.EqualError(t, err, "part 0 is 40 bytes, but the plan expects 1000: the source changed while the push read it")
 	})
@@ -48,7 +55,7 @@ func TestSourceChangedMatchesBothPaths(t *testing.T) {
 
 		original := []byte("original")
 		mutated := []byte("mutated!")
-		require.Equal(t, len(original), len(mutated))
+		require.Len(t, mutated, len(original))
 
 		reader := &tagSourceReads{
 			r:      bytes.NewReader(mutated),
