@@ -34,3 +34,14 @@ Integrated verification passed `mise exec -- moon run root:check`. Regenerating 
 PR #60 released `v0.2.0` at commit `38fdcb2ed737a25cd597e7d593c64daa0032f0b8`. The public GitHub release and remote tag resolve to that commit, and `go list -m github.com/imgoci/bigoci@v0.2.0` resolves successfully. Release notes prominently warn that registry front ends and middleboxes must preserve stored manifest/blob bytes.
 
 Release automation limitation: the default `GITHUB_TOKEN` is not permitted to create pull requests in this repository. Release Please updated its branch but failed when opening the PR, so PR #60 and the draft/public release transition were completed manually. A future session should either enable Actions-created PRs or move Release Please to an appropriately scoped GitHub App token.
+
+## 2026-08-15 12:12 — Release Please GitHub App restored
+The prior limitation was configuration drift, not an intended repository constraint. PR #61 restored the template's GitHub App authentication model. The workflow now mints a short-lived `meigma-release-please` installation token and passes it to Release Please instead of using `GITHUB_TOKEN`.
+
+Configured repository variable `MEIGMA_RELEASE_APP_CLIENT_ID` and secret `MEIGMA_RELEASE_APP_PRIVATE_KEY` from the `imgoci-release-please` item in the 1Password `Development` vault. The current client-ID input avoids the deprecation warning emitted by `actions/create-github-app-token` v3 for `app-id`.
+
+Workflow-dispatch run 31903018406 proved App token creation and Release Please execution without annotations. After PR #61 merged as `0e721c8be5c5f4c422e1d83bb3d76a423e90ba15`, master run 31903199416 passed through the same App path. The App then created release PR #62 as `app/imgoci-release-please`, and that PR's normal CI and Pages checks passed.
+
+GitHub rejects `meigma-release-please` as a tag-ruleset bypass actor because the App is owned by meigma rather than the imgoci ruleset owner. Tag creation therefore remains open to write-access actors while update, deletion, force-push, and signature protections keep created tags immutable. The repository settings API adapter was also corrected from obsolete `PATCH` to GitHub's current `PUT` update method, with a focused unit test.
+
+Release PR #62 (`chore(master): release 0.2.1`) remains open for the normal release-review decision; it was not merged as part of the authentication repair.
