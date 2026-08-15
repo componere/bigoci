@@ -33,3 +33,24 @@
   --md-footer-fg-color: #d9e3ec;
   --md-footer-fg-color--light: #b8c7d9;
 }
+
+/* Compatibility result icons. */
+.md-typeset .result-pass {
+  color: #2e9e5b;
+}
+
+.md-typeset .result-no {
+  color: #e5484d;
+}
+
+.md-typeset .result-na {
+  color: var(--md-default-fg-color--lighter);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .result-pass {
+  color: #4fd17c;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .result-no {
+  color: #ff6369;
+}

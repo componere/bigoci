@@ -38,23 +38,71 @@ through its `gcr.io` compatibility hostname.
 
 ## Result labels
 
-| Label | Meaning |
-|---|---|
-| PASS | The bigoci path worked. Successful artifact results were also checked with ORAS. |
-| NO | The registry and bigoci combination did not complete the path. |
-| N/A | The campaign did not exercise the path on this registry. |
+| Symbol | Label | Meaning |
+|---|---|---|
+| :material-check:{ .result-pass title="PASS" } | PASS | The bigoci path worked. Successful artifact results were also checked with ORAS. |
+| :material-close:{ .result-no title="NO" } | NO | The registry and bigoci combination did not complete the path. |
+| :material-minus:{ .result-na title="N/A" } | N/A | The campaign did not exercise the path on this registry. |
 
-## Results
+## Results by registry
 
-| Path | Amazon ECR Private | GHCR | `gcr.io` | Quay.io |
-|---|---:|---:|---:|---:|
-| Authenticated multipart tagged round-trip | PASS | PASS | PASS | PASS |
-| Digest-reference round-trip | PASS | PASS | PASS | PASS |
-| Anonymous pull refused | PASS | PASS | PASS | N/A |
-| Invalid credential rejected on a protected operation | PASS | PASS | PASS | PASS |
-| Off-origin credential isolation | N/A | PASS | N/A | N/A |
-| Independent manifest and part verification | PASS | PASS | PASS | PASS |
-| Empty-file round-trip | **NO** | PASS | **NO** | **NO** |
+Hover over a path name for the exact behavior that row verified.
+
+=== "ECR"
+
+    Amazon ECR Private.
+
+    | Path | Result |
+    |---|:---:|
+    | <span title="The authenticated campaign pushed and pulled a 2 MiB file as eight 256 KiB parts and compared the result byte-for-byte.">Multipart tagged round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The campaign pulled an artifact by manifest digest and compared the result byte-for-byte.">Digest-reference round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The private repository refused an anonymous pull before the campaign uploaded its payload.">Anonymous pull refused</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The private repository rejected a pull made with invalid credentials as bigoci.ErrUnauthorized with exit code 6.">Invalid credential rejected</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="No registry authorization, cookie, proxy credential, or referrer data follows an authenticated redirect to off-origin blob storage.">Off-origin credential isolation</span> | :material-minus:{ .result-na title="N/A" } |
+    | <span title="ORAS fetched the manifest, config, and every part; declared sizes and SHA-256 digests matched.">Independent manifest and part verification</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="Push and pull of a bigoci empty-file artifact, including its zero-byte part and two-byte OCI config.">Empty-file round-trip</span> | :material-close:{ .result-no title="NO" } |
+
+=== "GHCR"
+
+    GitHub Container Registry.
+
+    | Path | Result |
+    |---|:---:|
+    | <span title="The authenticated campaign pushed and pulled a 2 MiB file as eight 256 KiB parts and compared the result byte-for-byte.">Multipart tagged round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The campaign pulled an artifact by manifest digest and compared the result byte-for-byte.">Digest-reference round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The private repository refused an anonymous pull before the campaign uploaded its payload.">Anonymous pull refused</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The private repository rejected a pull made with invalid credentials as bigoci.ErrUnauthorized with exit code 6.">Invalid credential rejected</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="No registry authorization, cookie, proxy credential, or referrer data followed an authenticated redirect to off-origin blob storage.">Off-origin credential isolation</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="ORAS fetched the manifest, config, and every part; declared sizes and SHA-256 digests matched.">Independent manifest and part verification</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="Push and pull of a bigoci empty-file artifact, including its zero-byte part and two-byte OCI config.">Empty-file round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+
+=== "gcr.io"
+
+    Google Artifact Registry through its `gcr.io` compatibility hostname.
+
+    | Path | Result |
+    |---|:---:|
+    | <span title="The authenticated campaign pushed and pulled a 2 MiB file as eight 256 KiB parts and compared the result byte-for-byte.">Multipart tagged round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The campaign pulled an artifact by manifest digest and compared the result byte-for-byte.">Digest-reference round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The private repository refused an anonymous pull before the campaign uploaded its payload.">Anonymous pull refused</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The private repository rejected a pull made with invalid credentials as bigoci.ErrUnauthorized with exit code 6.">Invalid credential rejected</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="No registry authorization, cookie, proxy credential, or referrer data follows an authenticated redirect to off-origin blob storage.">Off-origin credential isolation</span> | :material-minus:{ .result-na title="N/A" } |
+    | <span title="ORAS fetched the manifest, config, and every part; declared sizes and SHA-256 digests matched.">Independent manifest and part verification</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="Push and pull of a bigoci empty-file artifact, including its zero-byte part and two-byte OCI config.">Empty-file round-trip</span> | :material-close:{ .result-no title="NO" } |
+
+=== "Quay.io"
+
+    Quay.io, using a public campaign repository.
+
+    | Path | Result |
+    |---|:---:|
+    | <span title="The authenticated campaign pushed and pulled a 2 MiB file as eight 256 KiB parts and compared the result byte-for-byte.">Multipart tagged round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The campaign pulled an artifact by manifest digest and compared the result byte-for-byte.">Digest-reference round-trip</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="The public repository accepted anonymous pulls, so refusal was not a valid control.">Anonymous pull refused</span> | :material-minus:{ .result-na title="N/A" } |
+    | <span title="The public repository rejected a push made with invalid credentials as bigoci.ErrUnauthorized with exit code 6.">Invalid credential rejected</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="No registry authorization, cookie, proxy credential, or referrer data follows an authenticated redirect to off-origin blob storage.">Off-origin credential isolation</span> | :material-minus:{ .result-na title="N/A" } |
+    | <span title="ORAS fetched the manifest, config, and every part; declared sizes and SHA-256 digests matched.">Independent manifest and part verification</span> | :material-check:{ .result-pass title="PASS" } |
+    | <span title="Push and pull of a bigoci empty-file artifact, including its zero-byte part and two-byte OCI config.">Empty-file round-trip</span> | :material-close:{ .result-no title="NO" } |
 
 ## Empty-file behavior
 
