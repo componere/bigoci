@@ -126,6 +126,26 @@ func TestDecodeIgnoresWhatTheFormatDoesNotDefine(t *testing.T) {
 			add:  func(m map[string]any) { delete(m, "mediaType") },
 		},
 		{
+			name: "mixed-case manifest media type",
+			add:  func(m map[string]any) { m["mediaType"] = strings.ToUpper(ocispec.MediaTypeImageManifest) },
+		},
+		{
+			name: "mixed-case artifact type",
+			add:  func(m map[string]any) { m["artifactType"] = strings.ToUpper(manifest.ArtifactType) },
+		},
+		{
+			name: "mixed-case config media type",
+			add: func(m map[string]any) {
+				configOf(m)["mediaType"] = strings.ToUpper(ocispec.DescriptorEmptyJSON.MediaType)
+			},
+		},
+		{
+			name: "mixed-case layer media type",
+			add: func(m map[string]any) {
+				layersOf(m)[0]["mediaType"] = strings.ToUpper(manifest.MediaTypePart)
+			},
+		},
+		{
 			name: "annotation from outside the format",
 			add:  func(m map[string]any) { annotationsOf(m)["com.example.build"] = "42" },
 		},
@@ -170,8 +190,22 @@ func TestDecodeRejectsManifestsThatAreNotBigociArtifacts(t *testing.T) {
 			wantErr: "artifact type is",
 		},
 		{
+			name: "mixed-case artifact type of another artifact",
+			corrupt: func(m map[string]any) {
+				m["artifactType"] = strings.ToUpper("application/vnd.example.thing.v1")
+			},
+			wantErr: "artifact type is",
+		},
+		{
 			name:    "media type of an image index",
 			corrupt: func(m map[string]any) { m["mediaType"] = ocispec.MediaTypeImageIndex },
+			wantErr: "media type is",
+		},
+		{
+			name: "mixed-case media type of an image index",
+			corrupt: func(m map[string]any) {
+				m["mediaType"] = strings.ToUpper(ocispec.MediaTypeImageIndex)
+			},
 			wantErr: "media type is",
 		},
 		{
@@ -265,6 +299,13 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 			wantErr: "config media type does not match",
 		},
 		{
+			name: "mixed-case config media type of a real image config",
+			corrupt: func(m map[string]any) {
+				configOf(m)["mediaType"] = strings.ToUpper(ocispec.MediaTypeImageConfig)
+			},
+			wantErr: "config media type does not match",
+		},
+		{
 			name:    "config digest of some other blob",
 			corrupt: func(m map[string]any) { configOf(m)["digest"] = digest.FromString("{}\n").String() },
 			wantErr: "config digest does not match",
@@ -295,6 +336,13 @@ func TestDecodeRejectsBrokenArtifacts(t *testing.T) {
 		{
 			name:    "layer that is a tar layer",
 			corrupt: func(m map[string]any) { layersOf(m)[1]["mediaType"] = ocispec.MediaTypeImageLayerGzip },
+			wantErr: "layer 1 media type is",
+		},
+		{
+			name: "mixed-case layer that is a tar layer",
+			corrupt: func(m map[string]any) {
+				layersOf(m)[1]["mediaType"] = strings.ToUpper(ocispec.MediaTypeImageLayerGzip)
+			},
 			wantErr: "layer 1 media type is",
 		},
 		{

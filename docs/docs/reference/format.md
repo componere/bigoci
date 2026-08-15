@@ -37,6 +37,11 @@ per distribution spec v1.1.
 | `config` | the OCI empty descriptor: media type `application/vnd.oci.empty.v1+json`, size 2, digest `sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a`, content `{}` |
 | `layers` | the parts, in file order, media type `application/vnd.bigoci.file.part.v1` |
 
+Readers compare `mediaType`, `artifactType`, and descriptor media types
+case-insensitively. An empty manifest `mediaType` is accepted when
+`artifactType` identifies a bigoci artifact. Config digest, size, and
+optional `data` must match the empty descriptor exactly.
+
 The empty config blob must exist in the repository before the manifest is
 pushed; registries reject manifests that reference blobs they do not hold.
 
