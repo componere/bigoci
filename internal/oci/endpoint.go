@@ -77,12 +77,25 @@ type externalTransport struct {
 // externalTransportLayer is an observer-style transport wrapper that can be
 // rebuilt around a guarded base transport without losing its observation.
 //
-// The reference CLI's debug tap implements this structural seam. Other opaque
-// transports remain opaque and require the caller's explicit authorization.
+// The two methods are a public structural contract of package bigoci, stable
+// within the current major version. A caller-supplied RoundTripper that
+// implements both is not opaque: inspectableExternalTransport unwraps
+// BigociExternalBase, clones the concrete [http.Transport] underneath, and
+// rebuilds the wrapper with BigociWrapExternal so token realms, redirect
+// targets, and off-origin upload sessions keep the same observation while the
+// destination guard still runs. The wrapper must forward without changing the
+// request or hiding the destination. A compliant wrapper over an inspectable
+// [http.Transport] therefore stays in default verified mode;
+// [WithUnverifiedExternalTransport] is not required merely because of
+// that wrapper.
+//
+// The reference CLI's debug tap implements this structural seam. Other
+// wrappers that omit the methods remain opaque and require the caller's
+// explicit authorization.
 type externalTransportLayer interface {
-	// BigociExternalBase returns the transport this layer forwards to.
+	// BigociExternalBase returns the transport the wrapper forwards to.
 	BigociExternalBase() http.RoundTripper
-	// BigociWrapExternal returns the same layer forwarding to next.
+	// BigociWrapExternal rebuilds the same wrapper layer over next.
 	BigociWrapExternal(next http.RoundTripper) http.RoundTripper
 }
 

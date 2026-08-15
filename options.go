@@ -120,6 +120,23 @@ type TransferOption interface {
 // [WithUnverifiedExternalTransport] explicitly authorizes that trust boundary.
 // The standard dial hook inherited from
 // [http.DefaultTransport] remains automatic.
+//
+// An observer-style wrapper around a concrete [http.Transport] can keep that
+// verified path by implementing two structural methods:
+//
+//	BigociExternalBase() http.RoundTripper
+//	BigociWrapExternal(next http.RoundTripper) http.RoundTripper
+//
+// BigociExternalBase returns the transport the wrapper forwards to.
+// BigociWrapExternal rebuilds the same wrapper layer over next. bigoci calls
+// both while deriving the guarded, cookie-free transport it uses for token
+// realms, redirect targets, and off-origin upload sessions from a client
+// supplied through this option. The wrapper must be a pure observer: it must
+// not change the request, hide the destination, or replace the concrete base.
+// A compliant wrapper over an inspectable [http.Transport] stays in default
+// verified mode; [WithUnverifiedExternalTransport] is not required merely
+// because of that wrapper. These method names and semantics are part of the
+// public contract and remain stable within the current major version.
 func WithHTTPClient(client *http.Client) Option {
 	return func(s *clientSettings) {
 		if client != nil {
