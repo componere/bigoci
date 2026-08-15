@@ -3,6 +3,12 @@
 ## [0.2.0](https://github.com/imgoci/bigoci/compare/v0.1.1...v0.2.0) (2026-08-15)
 
 
+### Compatibility
+
+Manifest and blob reads now require identity content coding. Registry front
+ends and middleboxes must not compress those responses; configure them to
+preserve the stored bytes. Token endpoint compression remains supported.
+
 ### Features
 
 * **api:** push manifests by digest without writing a tag ([#57](https://github.com/imgoci/bigoci/issues/57)) ([43d89bc](https://github.com/imgoci/bigoci/commit/43d89bcd05903f88c7d0d910171b2a2e9590f59a))
